@@ -88,9 +88,14 @@ internal sealed class ProcurementExplainer(HttpClient client, IConfiguration con
                        message.TryGetProperty("content", out var content)
                 ? content.GetString()?.Trim()
                 : null;
-            if (finishReason != "stop" || string.IsNullOrEmpty(text) || text.Length > 700 ||
-                text.Any(char.IsNumber))
+            var containsNumber = text?.Any(char.IsNumber) is true;
+            if (finishReason != "stop" || string.IsNullOrEmpty(text) || text.Length > 700 || containsNumber)
+            {
+                logger.LogWarning(
+                    "Procurement AI response rejected: finish={FinishReason}, hasText={HasText}, length={Length}, containsNumber={ContainsNumber}",
+                    finishReason, !string.IsNullOrEmpty(text), text?.Length ?? 0, containsNumber);
                 throw new PosError(503, "procurement_ai_unavailable");
+            }
             return new ReplenishmentExplanation(text, recommendation.CalculatedAt, recommendation.PolicyVersion,
                 recommendation.OrderDate, recommendation.SuggestedQuantity);
         }
