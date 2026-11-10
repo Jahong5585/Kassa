@@ -285,6 +285,9 @@ public sealed record ReplenishmentRecommendation(string CalculationVersion, Date
 public sealed record ReplenishmentSnapshot(string Status, int PolicyVersion, int? CalculatedPolicyVersion,
     DateTime? CalculatedAt, string? ErrorCode, ReplenishmentRecommendation? Recommendation);
 
+public sealed record ReplenishmentExplanation(string Explanation, DateTime CalculatedAt, int? PolicyVersion,
+    DateOnly OrderDate, decimal? SuggestedQuantity);
+
 public sealed record SalesPeriodAmounts(long SaleCount, long RefundCount, decimal CashSales,
     decimal ManualCashlessSales, decimal CashRefunds, decimal ManualCashlessRefunds,
     decimal Discounts, decimal CashIn, decimal CashOut)
