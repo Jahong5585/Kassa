@@ -4,6 +4,7 @@ using System.Threading.RateLimiting;
 using Kasa.Api;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
 using Npgsql;
@@ -26,9 +27,22 @@ if (!development && string.IsNullOrWhiteSpace(adminAcr))
 
 var connectionString = configuration.GetConnectionString("Pos")
     ?? throw new InvalidOperationException("Configure ConnectionStrings:Pos.");
+var procurementAiEndpoint = configuration["Ai:Endpoint"] ?? "https://api.groq.com/openai/v1/";
+if (!Uri.TryCreate(procurementAiEndpoint, UriKind.Absolute, out var procurementAiUri) ||
+    procurementAiUri.Scheme is not ("http" or "https") ||
+    (!development && (procurementAiUri.Scheme != "https" || procurementAiUri.Host != "api.groq.com")))
+    throw new InvalidOperationException("Configure Ai:Endpoint as Groq HTTPS. Local HTTP is development-only.");
 builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString));
 builder.Services.AddSingleton<InvoiceScanner>();
 builder.Services.AddScoped<PosService>();
+builder.Services.AddHttpClient<ProcurementExplainer>(client =>
+{
+    client.BaseAddress = procurementAiUri;
+    client.Timeout = TimeSpan.FromSeconds(10);
+    client.MaxResponseContentBufferSize = 32 * 1024;
+})
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false })
+    .RedactLoggedHeaders(_ => true);
 builder.Services.AddHostedService<ReplenishmentWorker>();
 builder.Services.AddHostedService<StockMovementExportWorker>();
 builder.Services.AddProblemDetails(options =>
@@ -47,6 +61,9 @@ builder.Services.AddRateLimiter(options =>
         RateLimitPartition.GetFixedWindowLimiter(
             context.User.FindFirst("sub")?.Value ?? context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
             _ => new FixedWindowRateLimiterOptions { PermitLimit = 180, Window = TimeSpan.FromMinutes(1) }));
+    options.AddPolicy("procurement-ai", context => RateLimitPartition.GetFixedWindowLimiter(
+        context.User.FindFirst("sub")?.Value ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 3, Window = TimeSpan.FromMinutes(1) }));
 });
 builder.Services.AddOpenApi(options => options.AddDocumentTransformer((document, _, _) =>
 {
@@ -434,6 +451,18 @@ procurement.MapGet("/recommendations/{code}/{sku}", async (Guid storeId, string 
 procurement.MapPost("/recommendations/{code}/{sku}", async (Guid storeId, string code, string sku,
     ReplenishmentRequest request, PosService pos, HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await pos.RecommendPurchase(context, storeId, code, sku, request, ct))).WithName("RecommendPurchase");
+procurement.MapPost("/recommendations/{code}/{sku}/explain", async (Guid storeId, string code, string sku,
+    string? language, PosService pos, ProcurementExplainer explainer, HttpContext context, CancellationToken ct) =>
+{
+    var languageName = language switch
+    {
+        null or "ru" => "Russian",
+        "uz" => "Uzbek in Latin script",
+        _ => throw new PosError(400, "unsupported_explanation_language")
+    };
+    var recommendation = await pos.RecommendFromPolicy(context, storeId, code, sku, ct, requireAiAccess: true);
+    return TypedResults.Ok(await explainer.Explain(recommendation, languageName, ct));
+}).WithName("ExplainPurchaseRecommendation").RequireRateLimiting("procurement-ai");
 var stockoutDays = procurement.MapGroup("/products/{productId:guid}/stockout-days");
 stockoutDays.MapGet("/{day}", async (Guid storeId, Guid productId, DateOnly day, PosService pos,
     HttpContext context, CancellationToken ct) =>
