@@ -25,7 +25,9 @@ INSERT INTO staff (org_id, id, subject, role) VALUES
  ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000038', 'admin-inventory', 'admin'),
  ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000039', 'receiver-exceptions', 'receiver'),
  ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000040', 'cashier-diagnostics', 'cashier'),
- ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000003044', 'cashier-diagnostics-peer', 'cashier');
+ ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000003044', 'cashier-diagnostics-peer', 'cashier'),
+ ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000003045', 'receiver-ai-denied', 'receiver'),
+ ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000003046', 'admin-ai-scoped', 'admin');
 INSERT INTO staff_stores (org_id, staff_id, store_id)
  SELECT s.org_id, s.id, t.id FROM staff s JOIN stores t ON t.org_id = s.org_id;
 INSERT INTO cashier_registers (org_id, staff_id, store_id, register_id)
@@ -90,7 +92,8 @@ FROM documents d JOIN historical h ON h.sale_id = d.id;
 INSERT INTO stores (org_id, id, name) VALUES
  ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000013', 'Дополнительная точка');
 INSERT INTO staff_stores (org_id, staff_id, store_id) VALUES
- ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000038', '00000000-0000-0000-0000-000000000013');
+ ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000038', '00000000-0000-0000-0000-000000000013'),
+ ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000003046', '00000000-0000-0000-0000-000000000013');
 INSERT INTO audit_events (org_id, store_id, staff_id, action, object_id, request_id, occurred_at, object_code)
 SELECT '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000011',
        '00000000-0000-0000-0000-000000000034', 'fixture.audit_tie',
