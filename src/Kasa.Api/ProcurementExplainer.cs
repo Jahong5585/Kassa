@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 
 namespace Kasa.Api;
@@ -43,7 +44,7 @@ internal sealed class ProcurementExplainer(HttpClient client, IConfiguration con
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "chat/completions")
         {
-            Content = JsonContent.Create(new
+            Content = new StringContent(JsonSerializer.Serialize(new
             {
                 model = Model,
                 messages = new[]
@@ -64,7 +65,7 @@ internal sealed class ProcurementExplainer(HttpClient client, IConfiguration con
                 reasoning_effort = "low",
                 include_reasoning = false,
                 max_completion_tokens = 320
-            })
+            }), Encoding.UTF8, "application/json")
         };
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
 
