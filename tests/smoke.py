@@ -1174,12 +1174,12 @@ def check_replenishment():
     assert stored_forecast["orderDate"] == tomorrow and stored_forecast["draft"] is None
     assert stored_forecast["policyVersion"] == 1
     explain = forecast + "/explain"
-    for staff, status in ((None, 401), ("cashier-a", 403), ("receiver", 403), ("admin-foreign", 404)):
+    for staff, status in ((None, 401), ("receiver-ai-denied", 403), ("admin-foreign", 404)):
         request(explain, staff=staff, expected=status, method="POST")
     assert request(explain, staff="admin-a", expected=403, method="POST")["code"] == "procurement_ai_access_denied"
     calls_before_other_store = groq_calls()
     other_store = explain.replace(fixture_id(11), fixture_id(13))
-    assert request(other_store, staff="admin-inventory", expected=403,
+    assert request(other_store, staff="admin-ai-scoped", expected=403,
                    method="POST")["code"] == "procurement_ai_access_denied"
     assert groq_calls() == calls_before_other_store
     assert request(explain, staff=admin, mfa=False, expected=403, method="POST")["code"] == "admin_mfa_required"
@@ -1191,9 +1191,9 @@ def check_replenishment():
     assert explanation["orderDate"] == stored_forecast["orderDate"]
     assert explanation["suggestedQuantity"] == stored_forecast["suggestedQuantity"]
     assert groq_calls() == calls_before_other_store + 1
-    assert request(explain, staff="admin-inventory", method="POST")["policyVersion"] == 1
-    assert request(explain, staff="admin-inventory", method="POST")["policyVersion"] == 1
-    request(explain, staff="admin-inventory", expected=429, method="POST")
+    assert request(explain, staff="admin-ai-scoped", method="POST")["policyVersion"] == 1
+    assert request(explain, staff="admin-ai-scoped", method="POST")["policyVersion"] == 1
+    request(explain, staff="admin-ai-scoped", expected=429, method="POST")
     saved_snapshot = wait_snapshot(snapshot, lambda value: value["status"] == "ready")
     assert saved_snapshot["calculatedPolicyVersion"] == 1
     assert saved_snapshot["recommendation"]["orderDate"] == tomorrow
