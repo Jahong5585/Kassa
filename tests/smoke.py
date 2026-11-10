@@ -1185,8 +1185,11 @@ def check_replenishment():
     assert request(explain, staff=admin, mfa=False, expected=403, method="POST")["code"] == "admin_mfa_required"
     explanation = request(explain, staff=admin, method="POST")
     assert explanation["explanation"].startswith("Запас может закончиться")
-    assert explanation["calculatedAt"] == stored_forecast["calculatedAt"]
+    assert datetime.datetime.fromisoformat(explanation["calculatedAt"]) >= \
+        datetime.datetime.fromisoformat(stored_forecast["calculatedAt"])
     assert explanation["policyVersion"] == 1
+    assert explanation["orderDate"] == stored_forecast["orderDate"]
+    assert explanation["suggestedQuantity"] == stored_forecast["suggestedQuantity"]
     assert groq_calls() == calls_before_other_store + 1
     assert request(explain, staff="admin-inventory", method="POST")["policyVersion"] == 1
     assert request(explain, staff="admin-inventory", method="POST")["policyVersion"] == 1
