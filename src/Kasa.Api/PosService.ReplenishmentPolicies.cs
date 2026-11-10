@@ -60,13 +60,17 @@ internal sealed partial class PosService
     }
 
     public async Task<ReplenishmentRecommendation> RecommendFromPolicy(HttpContext context, Guid store, string code,
-        string sku, CancellationToken ct)
+        string sku, CancellationToken ct, bool requireAiAccess = false)
     {
         code = SupplierCode(code);
         sku = SupplierCode(sku);
         await using var db = await source.OpenConnectionAsync(ct);
         await using var tx = await db.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct);
         var scope = await Access.RequireStore(db, tx, context, configuration, store, true, ct);
+        if (requireAiAccess && !configuration.GetValue<bool>(
+                $"Ai:ProcurementAccess:{scope.Organization:D}:{scope.Store:D}:{scope.Staff:D}"))
+            throw new PosError(403, "procurement_ai_access_denied");
+
         var policy = await ReadReplenishmentPolicy(db, tx, scope, code, sku, ct)
             ?? throw new PosError(404, "replenishment_policy_not_found");
         return await CalculateReplenishment(db, tx, scope, code, sku, policy.Settings, policy.Version, ct);
