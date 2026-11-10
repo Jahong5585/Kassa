@@ -19,6 +19,7 @@ BASE = os.environ["POS_TEST_URL"]
 KEY = os.environ["POS_TEST_REGISTER_KEY"]
 JWT_KEY = os.environ["Auth__DevelopmentKey"].encode()
 AUDIENCE = os.environ["Auth__Audience"]
+GROQ_TEST_URL = os.environ["GROQ_TEST_URL"]
 
 
 def fixture_id(n):
@@ -61,6 +62,11 @@ def request(path, body=None, staff="cashier-a", register=21, key=KEY, expected=2
         if raw_response:
             return payload, response.headers
         return json.loads(payload) if payload else None
+
+
+def groq_calls():
+    with urllib.request.urlopen(GROQ_TEST_URL + "/calls", timeout=2) as response:
+        return json.load(response)["calls"]
 
 
 def sale(shift, *items, method="manualCashless", tendered=None):
@@ -1167,6 +1173,24 @@ def check_replenishment():
     stored_forecast = request(forecast, staff=admin)
     assert stored_forecast["orderDate"] == tomorrow and stored_forecast["draft"] is None
     assert stored_forecast["policyVersion"] == 1
+    explain = forecast + "/explain"
+    for staff, status in ((None, 401), ("cashier-a", 403), ("receiver", 403), ("admin-foreign", 404)):
+        request(explain, staff=staff, expected=status, method="POST")
+    assert request(explain, staff="admin-a", expected=403, method="POST")["code"] == "procurement_ai_access_denied"
+    calls_before_other_store = groq_calls()
+    other_store = explain.replace(fixture_id(11), fixture_id(13))
+    assert request(other_store, staff="admin-inventory", expected=403,
+                   method="POST")["code"] == "procurement_ai_access_denied"
+    assert groq_calls() == calls_before_other_store
+    assert request(explain, staff=admin, mfa=False, expected=403, method="POST")["code"] == "admin_mfa_required"
+    explanation = request(explain, staff=admin, method="POST")
+    assert explanation["explanation"].startswith("Запас может закончиться")
+    assert explanation["calculatedAt"] == stored_forecast["calculatedAt"]
+    assert explanation["policyVersion"] == 1
+    assert groq_calls() == calls_before_other_store + 1
+    assert request(explain, staff="admin-inventory", method="POST")["policyVersion"] == 1
+    assert request(explain, staff="admin-inventory", method="POST")["policyVersion"] == 1
+    request(explain, staff="admin-inventory", expected=429, method="POST")
     saved_snapshot = wait_snapshot(snapshot, lambda value: value["status"] == "ready")
     assert saved_snapshot["calculatedPolicyVersion"] == 1
     assert saved_snapshot["recommendation"]["orderDate"] == tomorrow
