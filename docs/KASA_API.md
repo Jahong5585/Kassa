@@ -209,6 +209,7 @@ UUID в путях передаются без фигурных скобок. К
 | `GET /v1/stores/{storeId}/procurement/recommendations/{code}/{sku}/snapshot` | `ReadReplenishmentSnapshot` | — | 200 JSON |
 | `GET /v1/stores/{storeId}/procurement/recommendations/{code}/{sku}` | `RecommendFromPolicy` | — | 200 JSON |
 | `POST /v1/stores/{storeId}/procurement/recommendations/{code}/{sku}` | `RecommendPurchase` | `ReplenishmentRequest` | 200 JSON |
+| `POST /v1/stores/{storeId}/procurement/recommendations/{code}/{sku}/explain` | `ExplainPurchaseRecommendation` | `language` | 200 `ReplenishmentExplanation` |
 | `GET /v1/stores/{storeId}/procurement/products/{productId}/stockout-days/{day}` | `ReadStockoutDay` | — | 200 JSON |
 | `PUT /v1/stores/{storeId}/procurement/products/{productId}/stockout-days/{day}` | `SaveStockoutDay` | `WriteStockoutDay` | 200 JSON |
 | `GET /v1/stores/{storeId}/procurement/suppliers/{code}/prices` | `ListSupplierPrices` | `asOf`, `offset` | 200 JSON |
@@ -236,6 +237,20 @@ UUID в путях передаются без фигурных скобок. К
 | `POST /v1/stores/{storeId}/procurement/suppliers/{code}/credit-transfers` | `TransferSupplierCredit` | `TransferSupplierCredit` | 200 JSON |
 | `GET /v1/stores/{storeId}/procurement/suppliers/{code}/credit-transfers/{id}` | `ReadSupplierCreditTransfer` | — | 200 JSON |
 | `POST /v1/stores/{storeId}/procurement/suppliers/{code}/credit-transfers/{id}/reverse` | `ReverseSupplierCreditTransfer` | `ReverseSupplierCreditTransfer` | 200 JSON |
+
+`ExplainPurchaseRecommendation` принимает JWT администратора назначенной точки и пустое тело. Дополнительно требуется разрешение `Ai:ProcurementAccess:<organizationId>:<storeId>:<staffId>`. При отсутствии разрешения API возвращает `403 procurement_ai_access_denied`. Параметр `language` принимает `ru` (по умолчанию) или `uz` (латиница). Маршрут считает рекомендацию по сохранённым настройкам выбранного магазина. Отображайте `explanation` как обычный текст. Дата и объём заказа относятся к версии расчёта с указанными `calculatedAt` и `policyVersion`.
+
+```json
+{
+  "explanation": "До ближайшей поставки может возникнуть дефицит. При расчёте учтён запас, срок годности которого истечёт до поставки.",
+  "calculatedAt": "2026-11-10T10:15:00Z",
+  "policyVersion": 1,
+  "orderDate": "2026-11-10",
+  "suggestedQuantity": 100
+}
+```
+
+Для этого маршрута действует лимит в три запроса на пользователя в минуту (`429`). Неподдерживаемый язык возвращает `400 unsupported_explanation_language`. Если ИИ выключен, квота провайдера исчерпана, вышло время ожидания или ответ недоступен, API возвращает `503` с кодом `procurement_ai_disabled`, `procurement_ai_quota`, `procurement_ai_timeout` или `procurement_ai_unavailable` соответственно. Клиент в этих случаях может отобразить обычный результат расчёта.
 
 
 ### Склад и инвентаризация
