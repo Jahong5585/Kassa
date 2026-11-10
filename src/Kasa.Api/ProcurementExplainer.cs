@@ -2,7 +2,6 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 
 namespace Kasa.Api;
 
@@ -80,10 +79,14 @@ internal sealed class ProcurementExplainer(HttpClient client, IConfiguration con
                 throw new PosError(503, "procurement_ai_unavailable");
             }
 
-            var completion = await response.Content.ReadFromJsonAsync<Completion>(cancellationToken: ct);
-            var choice = completion?.Choices?.FirstOrDefault();
-            var text = choice?.Message?.Content?.Trim();
-            if (choice?.FinishReason != "stop" || string.IsNullOrEmpty(text) || text.Length > 700 ||
+            using var completion = await response.Content.ReadFromJsonAsync<JsonDocument>(cancellationToken: ct);
+            var choice = completion?.RootElement.GetProperty("choices").EnumerateArray().FirstOrDefault();
+            var finishReason = choice.TryGetProperty("finish_reason", out var finish) ? finish.GetString() : null;
+            var text = choice.TryGetProperty("message", out var message) &&
+                       message.TryGetProperty("content", out var content)
+                ? content.GetString()?.Trim()
+                : null;
+            if (finishReason != "stop" || string.IsNullOrEmpty(text) || text.Length > 700 ||
                 text.Any(char.IsNumber))
                 throw new PosError(503, "procurement_ai_unavailable");
             return new ReplenishmentExplanation(text, recommendation.CalculatedAt, recommendation.PolicyVersion,
@@ -99,8 +102,4 @@ internal sealed class ProcurementExplainer(HttpClient client, IConfiguration con
             throw new PosError(503, "procurement_ai_unavailable");
         }
     }
-
-    private sealed record Completion(Choice[]? Choices);
-    private sealed record Choice([property: JsonPropertyName("finish_reason")] string? FinishReason, Message? Message);
-    private sealed record Message(string? Content);
 }
