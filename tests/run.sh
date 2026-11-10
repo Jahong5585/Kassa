@@ -25,20 +25,25 @@ export Auth__AdminAcr=kasa-test-webauthn
 export Refunds__CashierLimit=20000
 export Sales__MaxManualDiscountPercent=10
 export Purchasing__ReplenishmentRefreshSeconds=1
+export Ai__ProcurementEnabled=true
+export GROQ_API_KEY=test-groq-key
 export ASPNETCORE_ENVIRONMENT=Development
 export ASPNETCORE_URLS="http://127.0.0.1:$api_port"
 export POS_TEST_URL="$ASPNETCORE_URLS"
 export ConnectionStrings__Pos="Host=127.0.0.1;Port=$POS_DB_PORT;Database=kasa;Username=kasa_api;Password=$POS_DB_APP_PASSWORD"
 api_pid=
 scanner_pid=
+groq_pid=
 scanner_port_file="$(mktemp)"
+groq_port_file="$(mktemp)"
 logs="$(mktemp)"
 restore_dir=
 cleanup() {
     if [[ -n "$api_pid" ]]; then kill "$api_pid" 2>/dev/null || true; fi
     "${compose[@]}" down --volumes >/dev/null 2>&1 || true
     if [[ -n "$scanner_pid" ]]; then kill "$scanner_pid" 2>/dev/null || true; fi
-    rm -f "$logs" "$scanner_port_file"
+    if [[ -n "$groq_pid" ]]; then kill "$groq_pid" 2>/dev/null || true; fi
+    rm -f "$logs" "$scanner_port_file" "$groq_port_file"
     if [[ -n "$restore_dir" ]]; then rm -rf "$restore_dir"; fi
 }
 trap cleanup EXIT
@@ -51,6 +56,16 @@ done
 export InvoiceScanner__Host=127.0.0.1
 export InvoiceScanner__Port="$(cat "$scanner_port_file")"
 [[ "$InvoiceScanner__Port" =~ ^[0-9]+$ ]] || { echo "Scanner fixture failed to start" >&2; exit 1; }
+python3 tests/groq_stub.py "$groq_port_file" &
+groq_pid=$!
+for ((i=0; i<100; i++)); do
+    if [[ -s "$groq_port_file" ]]; then break; fi
+    sleep 0.05
+done
+groq_port="$(cat "$groq_port_file")"
+[[ "$groq_port" =~ ^[0-9]+$ ]] || { echo "Groq fixture failed to start" >&2; exit 1; }
+export Ai__Endpoint="http://127.0.0.1:$groq_port/openai/v1/"
+export GROQ_TEST_URL="http://127.0.0.1:$groq_port"
 "${compose[@]}" up -d --wait
 if "$restore_check"; then
     pg_version=$("${compose[@]}" exec -T db psql -XAt -U kasa_owner -d kasa -v ON_ERROR_STOP=1 -c 'SHOW server_version_num')
@@ -62,7 +77,9 @@ fi
 "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/sales_period_fixtures.sql
 "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/stock_movement_report_fixtures.sql
 dotnet build src/Kasa.Api/Kasa.Api.csproj -c Release -warnaserror -p:RestoreLockedMode=true
-dotnet src/Kasa.Api/bin/Release/net10.0/Kasa.Api.dll > "$logs" 2>&1 &
+env 'Ai__ProcurementAccess__00000000-0000-0000-0000-000000000001__00000000-0000-0000-0000-000000000011__00000000-0000-0000-0000-000000000036=true' \
+    'Ai__ProcurementAccess__00000000-0000-0000-0000-000000000001__00000000-0000-0000-0000-000000000011__00000000-0000-0000-0000-000000000038=true' \
+    dotnet src/Kasa.Api/bin/Release/net10.0/Kasa.Api.dll > "$logs" 2>&1 &
 api_pid=$!
 for ((i=0; i<60; i++)); do
     if curl -fsS "$POS_TEST_URL/health/live" >/dev/null 2>&1; then break; fi
