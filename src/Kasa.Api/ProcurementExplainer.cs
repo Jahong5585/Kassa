@@ -80,7 +80,9 @@ internal sealed class ProcurementExplainer(HttpClient client, IConfiguration con
             }
 
             using var completion = await response.Content.ReadFromJsonAsync<JsonDocument>(cancellationToken: ct);
-            var choice = completion?.RootElement.GetProperty("choices").EnumerateArray().FirstOrDefault();
+            if (completion is null)
+                throw new PosError(503, "procurement_ai_unavailable");
+            var choice = completion.RootElement.GetProperty("choices").EnumerateArray().FirstOrDefault();
             var finishReason = choice.TryGetProperty("finish_reason", out var finish) ? finish.GetString() : null;
             var text = choice.TryGetProperty("message", out var message) &&
                        message.TryGetProperty("content", out var content)
