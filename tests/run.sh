@@ -89,7 +89,10 @@ for ((i=0; i<60; i++)); do
     fi
     sleep 1
 done
-python3 tests/smoke.py
+if ! python3 tests/smoke.py; then
+    cat "$logs" >&2
+    exit 1
+fi
 "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/sales_period_audit.sql
 if "$restore_check"; then
     kill "$api_pid"
