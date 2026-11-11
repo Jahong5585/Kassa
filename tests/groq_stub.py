@@ -17,6 +17,7 @@ ALLOWED_FACTS = {
 
 class State:
     calls = 0
+    mode = "ok"
     lock = threading.Lock()
 
 
@@ -30,6 +31,15 @@ class GroqStub(BaseHTTPRequestHandler):
         self.reply(200, payload)
 
     def do_POST(self):
+        if self.path.startswith("/mode/"):
+            mode = self.path.removeprefix("/mode/")
+            if mode not in {"ok", "unavailable", "quota"}:
+                self.send_error(400)
+                return
+            with State.lock:
+                State.mode = mode
+            self.reply(200, json.dumps({"mode": mode}).encode())
+            return
         if self.path != "/openai/v1/chat/completions":
             self.send_error(404)
             return
@@ -55,10 +65,22 @@ class GroqStub(BaseHTTPRequestHandler):
             return
         with State.lock:
             State.calls += 1
+            mode = State.mode
+        if mode == "unavailable":
+            self.reply(503, json.dumps({"error": "test_unavailable"}).encode())
+            return
+        if mode == "quota":
+            self.reply(429, json.dumps({"error": "test_quota"}).encode())
+            return
+        explanation = (
+            "Запас может закончиться до следующей поставки. Проверьте рекомендацию магазина."
+            if facts["decision"] == "order_recommended"
+            else "Запаса достаточно до следующей поставки. Дополнительный заказ сейчас не требуется."
+        )
         payload = json.dumps({
             "choices": [{
                 "finish_reason": "stop",
-                "message": {"content": "Запас может закончиться до следующей поставки. Проверьте рекомендацию магазина."},
+                "message": {"content": explanation},
             }]
         }, ensure_ascii=False).encode()
         self.reply(200, payload)
