@@ -19,6 +19,7 @@ BASE = os.environ["POS_TEST_URL"]
 KEY = os.environ["POS_TEST_REGISTER_KEY"]
 JWT_KEY = os.environ["Auth__DevelopmentKey"].encode()
 AUDIENCE = os.environ["Auth__Audience"]
+GROQ_TEST_URL = os.environ["GROQ_TEST_URL"]
 
 
 def fixture_id(n):
@@ -61,6 +62,22 @@ def request(path, body=None, staff="cashier-a", register=21, key=KEY, expected=2
         if raw_response:
             return payload, response.headers
         return json.loads(payload) if payload else None
+
+
+def groq_calls():
+    with urllib.request.urlopen(GROQ_TEST_URL + "/calls", timeout=2) as response:
+        return json.load(response)["calls"]
+
+
+def set_groq_mode(mode):
+    call = urllib.request.Request(GROQ_TEST_URL + "/mode/" + mode, data=b"", method="POST")
+    with urllib.request.urlopen(call, timeout=2) as response:
+        assert response.status == 200
+
+
+def json_with_headers(path, **kwargs):
+    payload, headers = request(path, raw_response=True, **kwargs)
+    return (json.loads(payload) if payload else None), headers
 
 
 def sale(shift, *items, method="manualCashless", tendered=None):
@@ -1167,6 +1184,90 @@ def check_replenishment():
     stored_forecast = request(forecast, staff=admin)
     assert stored_forecast["orderDate"] == tomorrow and stored_forecast["draft"] is None
     assert stored_forecast["policyVersion"] == 1
+    explain = forecast + "/explain"
+    for staff, status in ((None, 401), ("receiver-ai-denied", 403), ("admin-foreign", 404)):
+        request(explain, staff=staff, expected=status, method="POST")
+    assert request(explain, staff="admin-a", expected=403, method="POST")["code"] == "procurement_ai_access_denied"
+    calls_before_other_store = groq_calls()
+    other_store = explain.replace(fixture_id(11), fixture_id(13))
+    assert request(other_store, staff="admin-ai-scoped", expected=403,
+                   method="POST")["code"] == "procurement_ai_access_denied"
+    assert groq_calls() == calls_before_other_store
+    assert request(explain, staff=admin, mfa=False, expected=403, method="POST")["code"] == "admin_mfa_required"
+    explanation = request(explain, staff=admin, method="POST")
+    assert explanation["explanation"].startswith("Запас может закончиться")
+    assert datetime.datetime.fromisoformat(explanation["calculatedAt"]) >= \
+        datetime.datetime.fromisoformat(stored_forecast["calculatedAt"])
+    assert explanation["policyVersion"] == 1
+    assert explanation["orderDate"] == stored_forecast["orderDate"]
+    assert explanation["suggestedQuantity"] == stored_forecast["suggestedQuantity"]
+    assert groq_calls() == calls_before_other_store + 1
+
+    # Two-store acceptance: distinct admins, distinct stock, mutual cross-store denial and provider failure.
+    root_b = f"/v1/stores/{fixture_id(13)}"
+    procurement_b = root_b + "/procurement"
+    admin_a, admin_b = "admin-ai-store-a", "admin-ai-store-b"
+    forecast_b = procurement_b + "/recommendations/REPL-B/COLA-B"
+    snapshot_b = forecast_b + "/snapshot"
+    request(root_b + "/suppliers/REPL-B", {"expectedVersion": 0, "name": "Точка Б",
+            "leadTimeDays": 1, "active": True}, staff=admin_b, method="PUT")
+    request(procurement_b + "/suppliers/REPL-B/prices/COLA-B", {"expectedVersion": 0,
+            "productId": product, "packageUnit": "упаковка", "unitsPerPackage": 10,
+            "packagePrice": 10000, "validFrom": today.isoformat()}, staff=admin_b, method="PUT")
+    policy_b = procurement_b + "/replenishment-policies/REPL-B/COLA-B"
+    request(policy_b, {"expectedVersion": 0, "settings": {"manualDailyDemand": 1,
+            "orderCutoffTime": "00:00:00", "orderWeekdays": weekdays}}, staff=admin_b, method="PUT")
+    stored_b = request(forecast_b, staff=admin_b)
+    assert stored_b["suggestedQuantity"] == 0 and stored_b["sellableStock"] == 500
+    explain_b = forecast_b + "/explain"
+
+    before_cross = groq_calls()
+    cross_ab, cross_ab_headers = json_with_headers(explain_b, staff=admin_a, expected=404, method="POST")
+    cross_ba, cross_ba_headers = json_with_headers(explain, staff=admin_b, expected=404, method="POST")
+    assert isinstance(cross_ab.get("code"), str) and isinstance(cross_ba.get("code"), str)
+    assert "explanation" not in cross_ab and "suggestedQuantity" not in cross_ab
+    assert "explanation" not in cross_ba and "suggestedQuantity" not in cross_ba
+    request(snapshot_b, staff=admin_a, expected=404)
+    request(snapshot, staff=admin_b, expected=404)
+    assert groq_calls() == before_cross
+
+    accepted_a, accepted_a_headers = json_with_headers(explain, staff=admin_a, method="POST")
+    accepted_b, accepted_b_headers = json_with_headers(explain_b, staff=admin_b, method="POST")
+    assert accepted_a["suggestedQuantity"] == stored_forecast["suggestedQuantity"] == 100
+    assert accepted_b["suggestedQuantity"] == stored_b["suggestedQuantity"] == 0
+    assert accepted_a["explanation"].startswith("Запас может закончиться")
+    assert accepted_b["explanation"].startswith("Запаса достаточно")
+    assert accepted_a["explanation"] != accepted_b["explanation"]
+
+    set_groq_mode("unavailable")
+    failure, failure_headers = json_with_headers(explain_b, staff=admin_b, expected=503, method="POST")
+    set_groq_mode("ok")
+    assert failure["code"] == "procurement_ai_unavailable"
+
+    acceptance = {
+        "commitSha": os.environ.get("GITHUB_SHA", "local"),
+        "storeA": {"storeId": fixture_id(11), "staff": admin_a,
+                   "requestId": accepted_a_headers["X-Request-Id"],
+                   "suggestedQuantity": accepted_a["suggestedQuantity"]},
+        "storeB": {"storeId": fixture_id(13), "staff": admin_b,
+                   "requestId": accepted_b_headers["X-Request-Id"],
+                   "suggestedQuantity": accepted_b["suggestedQuantity"]},
+        "crossAccess": {"aToBRequestId": cross_ab_headers["X-Request-Id"],
+                        "bToARequestId": cross_ba_headers["X-Request-Id"],
+                        "status": "denied_without_provider_call",
+                        "aToBCode": cross_ab["code"], "bToACode": cross_ba["code"]},
+        "providerFailure": {"requestId": failure_headers["X-Request-Id"],
+                            "code": failure["code"]},
+        "backendSaleRegression": "passed"
+    }
+    result_path = os.environ.get("AI_ACCEPTANCE_RESULT", "tests/ai-acceptance-result.json")
+    with open(result_path, "w", encoding="utf-8") as result_file:
+        json.dump(acceptance, result_file, ensure_ascii=False, indent=2)
+    print("AI_ACCEPTANCE_RESULT " + json.dumps(acceptance, ensure_ascii=False))
+
+    assert request(explain, staff="admin-ai-scoped", method="POST")["policyVersion"] == 1
+    assert request(explain, staff="admin-ai-scoped", method="POST")["policyVersion"] == 1
+    request(explain, staff="admin-ai-scoped", expected=429, method="POST")
     saved_snapshot = wait_snapshot(snapshot, lambda value: value["status"] == "ready")
     assert saved_snapshot["calculatedPolicyVersion"] == 1
     assert saved_snapshot["recommendation"]["orderDate"] == tomorrow
