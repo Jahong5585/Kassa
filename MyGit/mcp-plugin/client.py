@@ -77,7 +77,7 @@ class Settings:
             raise ValueError("Credentials and query parameters are not allowed in FORGEJO_URL")
         if parsed.scheme == "http" and parsed.hostname not in {"127.0.0.1", "localhost", "::1", "forgejo", "host.docker.internal"}:
             raise ValueError("HTTP allowed only to trusted local endpoints; use HTTPS for remote Forgejo")
-        if not self.token:
+        if not self.token or self.token.startswith("PASTE_"):
             raise ValueError("FORGEJO_TOKEN must be configured (create a scoped token in Forgejo)")
         if self.write_enabled and not self.allowed_repos:
             raise ValueError("MYGIT_ALLOWED_REPOS must be set when write mode is enabled")
@@ -174,6 +174,18 @@ class ForgejoClient:
 
     def actions(self, owner: str, repo: str, limit: int = 20):
         return self._request("GET", self._repo_path(owner, repo) + "/actions/runs", params={"limit": max(1, min(limit, 50))})
+
+    def release_apks(self, owner: str, repo: str, limit: int = 10):
+        """List APK download links attached to Forgejo releases, if published."""
+        releases = self._request("GET", self._repo_path(owner, repo) + "/releases",
+                                 params={"limit": max(1, min(limit, 50))})
+        return [
+            {"tag": release.get("tag_name"), "name": asset.get("name"),
+             "url": asset.get("browser_download_url"), "size": asset.get("size")}
+            for release in releases
+            for asset in (release.get("assets") or [])
+            if str(asset.get("name") or "").lower().endswith(".apk")
+        ]
 
     def create_repo(self, name: str, description: str = ""):
         if not self.settings.write_enabled:
