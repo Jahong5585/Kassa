@@ -6,6 +6,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from mcp.server import MCPServer
+from mcp.types import ToolAnnotations
 
 from client import ForgejoClient, Settings
 
@@ -25,7 +26,7 @@ mcp = MCPServer(
 )
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
 def mygit_status() -> dict:
     """Report local configuration (never returns API tokens or passwords)."""
     return {
@@ -37,7 +38,7 @@ def mygit_status() -> dict:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
 def list_my_repositories(page: int = 1, limit: int = 20) -> list[dict]:
     """List repositories visible to the configured Forgejo user."""
     repos = API.repositories(page, limit)
@@ -53,7 +54,7 @@ def list_my_repositories(page: int = 1, limit: int = 20) -> list[dict]:
     ]
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
 def repository_details(owner: str, repo: str) -> dict:
     """Read name, description, permissions and default branch of a repository."""
     result = API.repository(owner, repo)
@@ -61,19 +62,19 @@ def repository_details(owner: str, repo: str) -> dict:
             ("full_name", "description", "private", "default_branch", "html_url", "permissions")}
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
 def list_repository_files(owner: str, repo: str, path: str = "", ref: str = "") -> object:
     """List entries in a directory. path is relative; ref defaults to the default branch."""
     return API.files(owner, repo, path, ref)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
 def read_repository_file(owner: str, repo: str, path: str, ref: str = "") -> dict:
     """Read one UTF-8 file (max 256 KB) and return its SHA for safe later edits."""
     return API.file(owner, repo, path, ref)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
 def list_repository_branches(owner: str, repo: str) -> list[dict]:
     """List repository branches and their latest commit IDs."""
     return [
@@ -82,7 +83,7 @@ def list_repository_branches(owner: str, repo: str) -> list[dict]:
     ]
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
 def list_repository_commits(owner: str, repo: str, branch: str = "", limit: int = 20) -> list[dict]:
     """List recent commit history on a branch."""
     return [
@@ -95,7 +96,7 @@ def list_repository_commits(owner: str, repo: str, branch: str = "", limit: int 
     ]
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
 def list_build_runs(owner: str, repo: str, limit: int = 20) -> dict:
     """Inspect Forgejo Actions workflow runs; doesn't run or modify builds."""
     result = API.actions(owner, repo, limit)
@@ -109,22 +110,28 @@ def list_build_runs(owner: str, repo: str, limit: int = 20) -> dict:
     }
 
 
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
+def list_published_apks(owner: str, repo: str, limit: int = 10) -> list[dict]:
+    """Return real .apk download URLs from Forgejo release attachments, when available."""
+    return API.release_apks(owner, repo, limit)
+
+
 # Administrative server-side flag. Read-only deployments do not advertise any write tools.
 if SETTINGS.write_enabled:
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=False))
     def create_private_repository(name: str, description: str = "") -> dict:
         """Create a PRIVATE repository on this Forgejo account (never public)."""
         result = API.create_repo(name, description)
         return {"full_name": result.get("full_name"), "private": result.get("private"), "html_url": result.get("html_url")}
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=False))
     def create_ai_branch(owner: str, repo: str, new_branch: str, from_branch: str = "main") -> dict:
         """Create an isolated ai/* branch in an allowlisted repository."""
         result = API.create_branch(owner, repo, new_branch, from_branch)
         return {"name": result.get("name", new_branch), "created": True}
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=False))
     def commit_text_to_ai_branch(
         owner: str, repo: str, branch: str, path: str,
         content: str, message: str, expected_sha: str = ""
@@ -134,7 +141,7 @@ if SETTINGS.write_enabled:
         commit = result.get("commit") or {}
         return {"commit_sha": commit.get("sha"), "file_path": path, "branch": branch}
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=False))
     def request_apk_build(owner: str, repo: str, branch: str) -> dict:
         """Run only the preapproved build-apk.yml workflow from an allowlisted ai/* branch, if a runner exists."""
         result = API.build_apk(owner, repo, branch)
