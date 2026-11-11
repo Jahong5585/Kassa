@@ -34,15 +34,30 @@ internal sealed partial class PosService
                 throw new PosError(404, "register_not_found");
         }
 
-        await db.Run(tx, ct, """
+        var proposedId = Guid.NewGuid();
+        var created = await db.Run(tx, ct, """
             INSERT INTO staff (org_id, id, subject, role) VALUES ($1, $2, $3, $4)
             ON CONFLICT (subject) DO NOTHING
-            """, scope.Organization, Guid.NewGuid(), request.Subject, request.Role);
+            """, scope.Organization, proposedId, request.Subject, request.Role);
         await using var account = db.Sql(tx, """
-            SELECT id FROM staff WHERE org_id = $1 AND subject = $2 AND role = $3 AND active
-            """, scope.Organization, request.Subject, request.Role);
+            SELECT id FROM staff WHERE org_id = $1 AND subject = $2 AND active
+            """, scope.Organization, request.Subject);
         if (await account.ExecuteScalarAsync(ct) is not Guid staffId)
             throw new PosError(409, "staff_account_conflict");
+        if (created != 0)
+        {
+            await db.Run(tx, ct, """
+                INSERT INTO staff_roles (org_id, staff_id, role) VALUES ($1, $2, $3)
+                """, scope.Organization, staffId, request.Role);
+        }
+        else
+        {
+            await using var assignedRole = db.Sql(tx, """
+                SELECT 1 FROM staff_roles WHERE (org_id, staff_id, role) = ($1, $2, $3)
+                """, scope.Organization, staffId, request.Role);
+            if (await assignedRole.ExecuteScalarAsync(ct) is null)
+                throw new PosError(409, "staff_role_not_assigned");
+        }
         var connected = await db.Run(tx, ct, """
             INSERT INTO staff_stores (org_id, staff_id, store_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING
             """, scope.Organization, staffId, store);
@@ -98,7 +113,11 @@ internal sealed partial class PosService
         StoreScope scope, Guid? staffId, int offset, CancellationToken ct)
     {
         await using var command = db.Sql(tx, """
-            SELECT s.id, s.subject, s.role, s.active AND a.active, ARRAY(
+            SELECT s.id, s.subject, s.role, ARRAY(
+                SELECT p.role FROM staff_roles p
+                WHERE (p.org_id, p.staff_id) = (a.org_id, a.staff_id)
+                ORDER BY p.role
+            ), s.active AND a.active, ARRAY(
                 SELECT r.register_id FROM cashier_registers r
                 WHERE (r.org_id, r.store_id, r.staff_id) = (a.org_id, a.store_id, a.staff_id)
                 ORDER BY r.register_id
@@ -110,8 +129,8 @@ internal sealed partial class PosService
         await using var rows = await command.ExecuteReaderAsync(ct);
         List<StoreStaffAccess> result = [];
         while (await rows.ReadAsync(ct))
-            result.Add(new StoreStaffAccess(rows.GetGuid(0), rows.GetString(1), rows.GetString(2), rows.GetBoolean(3),
-                rows.GetFieldValue<Guid[]>(4)));
+            result.Add(new StoreStaffAccess(rows.GetGuid(0), rows.GetString(1), rows.GetString(2),
+                rows.GetFieldValue<string[]>(3), rows.GetBoolean(4), rows.GetFieldValue<Guid[]>(5)));
         return result;
     }
 }
