@@ -127,3 +127,7 @@ Forgejo Actions встроены в сервер, но **не выполняют
 - https://forgejo.org/docs/v15.0/user/actions/security/
 - https://forgejo.org/docs/v15.0/admin/setup/backup/
 - https://docs.docker.com/desktop/setup/install/windows-install/
+
+## Интеграция MyGit с ChatGPT / Codex (MCP)
+
+Дополнительный модуль находится в каталоге [`mcp-plugin/`](mcp-plugin/README_RU.md). По умолчанию он работает только на чтение и прослушивает `127.0.0.1:3030/mcp`. Необходим отдельный токен Forgejo, Python 3.11+ и безопасный туннель для подключения ChatGPT. Модуль подготовлен, но ещё не установлен на пользовательском сервере.
