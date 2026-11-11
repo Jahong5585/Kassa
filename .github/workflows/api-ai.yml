@@ -25,3 +25,11 @@ jobs:
         with:
           dotnet-version: "10.0.x"
       - run: bash tests/run.sh
+      - name: Upload AI acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-acceptance-${{ github.sha }}
+          path: tests/ai-acceptance-result.json
+          if-no-files-found: warn
+          retention-days: 14
