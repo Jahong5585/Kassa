@@ -134,6 +134,18 @@ void main() {
     await tester.pumpAndSettle();
     expect(roleItem('Администратор'), findsNothing);
     expect(
+      tester.widget<CheckedPopupMenuItem<Desk>>(roleItem('Кассир')).checked,
+      isTrue,
+    );
+
+    await tester.tap(roleItem('Кассир'));
+    await tester.pumpAndSettle();
+    roles = ['receiver'];
+    await tester.tap(roleButton('Кассир'));
+    await tester.pumpAndSettle();
+    expect(roleButton('Приёмщик'), findsOneWidget);
+    expect(roleItem('Кассир'), findsNothing);
+    expect(
       tester.widget<CheckedPopupMenuItem<Desk>>(roleItem('Приёмщик')).checked,
       isTrue,
     );
