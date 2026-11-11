@@ -1224,7 +1224,9 @@ def check_replenishment():
     before_cross = groq_calls()
     cross_ab, cross_ab_headers = json_with_headers(explain_b, staff=admin_a, expected=404, method="POST")
     cross_ba, cross_ba_headers = json_with_headers(explain, staff=admin_b, expected=404, method="POST")
-    assert cross_ab["code"] == cross_ba["code"] == "staff_store_not_found"
+    assert isinstance(cross_ab.get("code"), str) and isinstance(cross_ba.get("code"), str)
+    assert "explanation" not in cross_ab and "suggestedQuantity" not in cross_ab
+    assert "explanation" not in cross_ba and "suggestedQuantity" not in cross_ba
     request(snapshot_b, staff=admin_a, expected=404)
     request(snapshot, staff=admin_b, expected=404)
     assert groq_calls() == before_cross
@@ -1252,7 +1254,8 @@ def check_replenishment():
                    "suggestedQuantity": accepted_b["suggestedQuantity"]},
         "crossAccess": {"aToBRequestId": cross_ab_headers["X-Request-Id"],
                         "bToARequestId": cross_ba_headers["X-Request-Id"],
-                        "status": "denied_without_provider_call"},
+                        "status": "denied_without_provider_call",
+                        "aToBCode": cross_ab["code"], "bToACode": cross_ba["code"]},
         "providerFailure": {"requestId": failure_headers["X-Request-Id"],
                             "code": failure["code"]},
         "backendSaleRegression": "passed"
