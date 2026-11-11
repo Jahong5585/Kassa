@@ -1,0 +1,134 @@
+html { background:var(--bg) }
+.symbols { position:absolute; width:0; height:0; overflow:hidden }
+svg:not(.symbols) { fill:none; stroke:currentColor; stroke-width:1.8; stroke-linejoin:round; stroke-linecap:round }
+.screen { min-height:100vh }
+.workspace { min-height:100vh }
+.rail button { width:100%; min-height:56px; padding:5px 2px; border:0; border-radius:9px; display:grid; place-content:center; justify-items:center; gap:3px; font-size:11px; font-weight:700; color:inherit; background:none }
+.rail button:hover,.rail button.selected { color:#fff; background:var(--nav-active) }
+.rail button.selected { box-shadow:inset 3px 0 #9baaff }
+.content { max-width:1650px; width:100%; margin:0 auto }
+.page { display:grid; gap:16px; min-width:0 }
+.heading { min-height:55px }
+.top,.screen-footer { position:relative }
+.top .top-status { justify-content:flex-end; gap:6px }
+.top-status .badge { width:max-content }
+.role-picker { display:flex; align-items:center; gap:6px; font-size:12px; font-weight:700; color:var(--muted) }
+.role-picker select { min-height:34px; max-width:170px; padding:4px 28px 4px 9px; border:1px solid var(--control); border-radius:7px; background:#fff; font-weight:700; color:var(--ink) }
+.role-picker select:disabled { background:#edf1f6; color:var(--muted); cursor:default }
+.screen-footer { margin-top:auto }
+.button { min-height:44px }
+.scan-form { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px }
+.scan-form .search { max-width:none }
+.sale .table-scroll table { min-width:510px }
+.number-col { width:44px }
+.qty-col { width:158px }
+.price-col,.sum-col { width:100px }
+.remove-col { width:54px }
+.basket td:nth-child(2) { overflow-wrap:normal }
+.empty { text-align:center; padding:31px 16px; color:var(--muted); font-weight:500!important }
+.mini { display:block; font-size:12px; font-weight:500; color:var(--muted); margin-top:3px }
+.basket input { width:70px; min-height:36px; padding:4px 5px; border:1px solid var(--control); border-radius:6px; font-variant-numeric:tabular-nums }
+.quantity-controls { display:grid; grid-template-columns:44px minmax(0,1fr) 44px; align-items:center; gap:3px }
+.quantity-controls input { width:100%; text-align:center }
+.quantity-controls .quantity-step { min-width:44px; min-height:44px; justify-content:center; padding:0; font-size:22px }
+.icon-button,.link-button { background:transparent; border:0; color:var(--blue); font-weight:700; border-radius:6px; padding:6px 8px }
+.icon-button { min-width:36px; min-height:36px; color:var(--red); font-size:20px }
+.icon-button:hover,.link-button:hover { background:var(--blue-tint) }
+.link-button:disabled,.icon-button:disabled { color:#718096; cursor:default }
+.results #result-items { max-height:264px; overflow:auto }
+.result { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 14px; border-top:1px solid var(--line) }
+.result .button { flex-shrink:0 }
+#quick-empty,#quick-items { padding:0 14px 12px }
+#quick-empty { color:var(--muted); font-size:13px }
+#quick-items { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,145px),1fr)); gap:8px }
+.quick-tile { display:flex; min-width:0; gap:3px }
+.quick-add { flex:1; min-width:0; white-space:normal; overflow-wrap:anywhere; text-align:left }
+.quick-step { font-size:12px; color:var(--blue); margin-right:6px }
+.product-result-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:5px }
+.sale-summary { align-self:start; position:sticky; top:14px }
+.sale-summary .badge { justify-self:start }
+.shift-metrics { grid-template-columns:repeat(3,minmax(0,1fr)) }
+.shift-card { max-width:650px }
+.settings-layout { grid-template-columns:repeat(2,minmax(0,1fr)) }
+.switch { display:flex; gap:8px; align-items:center; min-height:44px; font-weight:700 }
+.switch input { accent-color:var(--blue); width:18px; height:18px }
+.field select { width:100%; min-height:42px; padding:7px 10px; border:1px solid var(--control); border-radius:var(--control-radius); background:white }
+#pending { flex-wrap:wrap }
+#pending span { flex:1; min-width:min(280px,100%) }
+#pending button { flex:none }
+dialog.dialog { max-height:calc(100vh - 24px); overflow:auto; border:1px solid var(--line); margin:auto; width:min(560px,calc(100% - 24px)) }
+dialog:not([open]) { display:none }
+dialog::backdrop { background:#14213d80 }
+.modal-form { display:grid; gap:12px }
+.close { font-size:23px; line-height:1 }
+.receipt-paper { display:grid; gap:9px; padding:16px; border:1px dashed var(--control); border-radius:8px }
+.receipt-paper h2,.receipt-paper .receipt-mark { text-align:center }
+.receipt-paper td { height:auto; padding:7px 0 }
+.receipt-paper th { padding:5px 0 }
+.receipt-paper th:first-child { width:65% }
+.receipt-paper .receipt-id { overflow-wrap:anywhere; font-size:11px }
+.receipt-paper .payment-total { padding:7px 10px }
+.receipt-paper .payment-total .amount { font-size:23px }
+.toast { position:fixed; left:50%; transform:translateX(-50%); bottom:53px; z-index:5; width:max-content; max-width:calc(100% - 28px); border-radius:8px; background:var(--nav); color:white; padding:11px 15px; font-weight:700 }
+.sr-only { position:absolute; width:1px; height:1px; clip:rect(0,0,0,0); overflow:hidden; white-space:nowrap }
+@media (max-width: 850px) {
+  .sale-layout,.settings-layout { grid-template-columns:minmax(0,1fr) }
+  .sale-summary { position:static }
+  .sale .table-scroll table { min-width:480px }
+  .table-scroll table { min-width:480px }
+}
+@media (max-width:580px) {
+  .rail button { flex:0 0 73px; min-height:48px }
+  .top .top-status { justify-content:flex-start }
+  .shift-metrics .metric strong { font-size:16px }
+  .scan-form kbd { display:none }
+}
+@media print {
+  @page { margin:9mm }
+  html,body { background:white; color:black }
+  #shell,.toast,dialog:not(#receipt-dialog) { display:none!important }
+  #receipt-dialog::backdrop { display:none!important }
+  #receipt-dialog { display:block!important; position:static; width:100%; max-width:76mm; max-height:none; margin:0 auto; padding:0; border:0; box-shadow:none; overflow:visible; color:black }
+  #receipt-dialog > :not(#receipt-paper) { display:none!important }
+  .receipt-paper { border:0; padding:0; color:black }
+  .receipt-paper :is(p,small,td,th,.payment-total) { color:black; background:white }
+}
+
+.compact-search { max-width:550px }
+.history-table table,.expiry-table table { min-width:610px }
+.history-table th:last-child { width:28% }
+.history-table .actions { gap:5px }
+.history-table .actions .button { font-size:12px; padding-inline:10px }
+.expiry-table th:first-child { width:30% }
+.expiry-table th:last-child { width:22% }
+.expiry-table td .button { font-size:12px; padding-inline:10px }
+dialog.dialog-wide { width:min(760px,calc(100% - 24px)) }
+.refund-table table { min-width:530px }
+.refund-table th:first-child { width:36% }
+.refund-table .field input,.refund-table .field select { min-height:36px }
+.refund-table td:last-child { width:30% }
+.shift-card { max-width:100% }
+
+#w-list table { min-width:610px }
+.w-items table { min-width:530px }
+#w-receipt .table-title,#w-inventory .table-title { padding-inline:0 }
+.w-fields { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(170px,100%),1fr)); gap:10px }
+.w-items input { width:100%; min-height:36px; border:1px solid var(--control); border-radius:6px; padding:4px 6px }
+.w-self { align-self:flex-start }
+.w-subpanel { border-top:1px solid var(--line) }
+#w-receipt-note,#w-inventory-note { overflow-wrap:anywhere }
+#w-pending { flex-wrap:wrap; justify-content:space-between }
+[data-w-role][aria-pressed="true"] { color:var(--blue); border-color:var(--blue); background:var(--blue-tint) }
+.store-protection-note { color:var(--gold); font-weight:700 }
+@media print { #w-dialog { display:none!important } }
+
+#w-management .table-title { padding-inline:0 }
+#m-table { min-width:620px }
+#m-extra { padding-block:12px }
+#m-extra p { margin:.3rem 0 }
+#m-actions { justify-content:flex-end }
+#w-dialog-fields textarea { width:100%; resize:vertical; border:1px solid var(--control); border-radius:6px; padding:6px }
+#w-dialog-fields:has(textarea) { grid-template-columns:1fr }
+
+.printer-driver-options { border: 0; padding: 0; margin: 0; min-inline-size: 0; }
+#device-usb-list { overflow-wrap: anywhere; }

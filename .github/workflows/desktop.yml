@@ -1,0 +1,66 @@
+name: Windows desktop
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/kassa-multi-role]
+    paths:
+      - desktop/**
+      - .github/workflows/desktop.yml
+
+permissions:
+  contents: read
+
+jobs:
+  browser-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop/source
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-save playwright
+      - run: npx playwright install --with-deps chromium
+      - run: npm test
+
+  build-windows:
+    needs: browser-tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Build Windows client
+        shell: pwsh
+        run: dotnet build desktop/source/KasaDesktop.csproj -c Release
+      - name: Prepare portable package
+        shell: pwsh
+        run: |
+          $payload = Resolve-Path 'desktop/source/bin/Release/net48'
+          Copy-Item 'desktop/source/KasaPilot.example.json' $payload
+          Copy-Item 'desktop/source/PrinterDrivers.example.json' $payload
+          Copy-Item 'desktop/package/PILOT.md' $payload
+          Copy-Item 'desktop/package/PRINTER_DRIVERS.md' $payload
+          Copy-Item 'desktop/package/START.txt' $payload
+          New-Item -ItemType Directory -Force (Join-Path $payload 'licenses') | Out-Null
+          Copy-Item 'desktop/package/licenses/*' (Join-Path $payload 'licenses')
+          Compress-Archive -Path (Join-Path $payload '*') -DestinationPath 'Kassa_Portable_0.5.9_Windows_x64.zip'
+      - name: Build unsigned installer
+        shell: pwsh
+        run: |
+          choco install nsis --no-progress -y
+          $payload = (Resolve-Path 'desktop/source/bin/Release/net48').Path
+          $setup = Join-Path $PWD 'KassaSetup_0.5.9.exe'
+          & "$env:ProgramFiles(x86)\NSIS\makensis.exe" "/DPAYLOAD=$payload" "/DOUTPUT=$setup" 'desktop/source/installer/Kassa.nsi'
+          if ($LASTEXITCODE -ne 0) { throw "makensis failed with $LASTEXITCODE" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kassa-Windows-0.5.9
+          if-no-files-found: error
+          path: |
+            KassaSetup_0.5.9.exe
+            Kassa_Portable_0.5.9_Windows_x64.zip
