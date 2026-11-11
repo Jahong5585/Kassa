@@ -1,0 +1,6 @@
+.env
+.env.*
+!.env.example
+backups/
+*.tar.gz
+.DS_Store

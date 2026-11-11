@@ -1,0 +1,65 @@
+# MyGit: private Forgejo + PostgreSQL. Runs on 127.0.0.1 only.
+name: mygit
+
+services:
+  database:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: forgejo
+      POSTGRES_DB: forgejo
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Run the setup script first}
+      TZ: Asia/Tashkent
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U forgejo -d forgejo"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      - internal
+
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:15.0.11-rootless
+    user: "1000:1000"
+    restart: unless-stopped
+    depends_on:
+      database:
+        condition: service_healthy
+    environment:
+      TZ: Asia/Tashkent
+      FORGEJO____APP_NAME: MyGit
+      FORGEJO__database__DB_TYPE: postgres
+      FORGEJO__database__HOST: database:5432
+      FORGEJO__database__NAME: forgejo
+      FORGEJO__database__USER: forgejo
+      FORGEJO__database__PASSWD: ${DB_PASSWORD}
+      FORGEJO__server__ROOT_URL: ${MYGIT_ROOT_URL:-http://localhost:3020/}
+      FORGEJO__server__DISABLE_SSH: "true"
+      FORGEJO__server__OFFLINE_MODE: "true"
+      FORGEJO__service__DISABLE_REGISTRATION: "true"
+      FORGEJO__service__REQUIRE_SIGNIN_VIEW: "true"
+      FORGEJO__repository__FORCE_PRIVATE: "true"
+      FORGEJO__repository__DEFAULT_PRIVATE: private
+      FORGEJO__actions__ENABLED: "true"
+      FORGEJO__security__SECRET_KEY: ${FORGEJO_SECRET_KEY:?Run setup first}
+      FORGEJO__security__INTERNAL_TOKEN: ${FORGEJO_INTERNAL_TOKEN:?Run setup first}
+    ports:
+      - "127.0.0.1:${MYGIT_PORT:-3020}:3000"
+    volumes:
+      - forgejo_data:/var/lib/gitea
+      - forgejo_config:/etc/gitea
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - internal
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  forgejo_data:
+  forgejo_config:
+  postgres_data:

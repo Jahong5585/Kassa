@@ -1,7 +1,0 @@
-**/bin/
-**/obj/
-**/__pycache__/
-.env
-*.pfx
-*.pem
-*.log

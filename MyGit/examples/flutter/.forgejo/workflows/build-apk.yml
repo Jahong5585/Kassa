@@ -1,0 +1,31 @@
+# EXAMPLE ONLY. Requires a separate trusted Linux/VM Forgejo Runner,
+# registered with label flutter-android and with Flutter + Android SDK + JDK.
+name: Build Android APK
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  flutter-apk:
+    runs-on: flutter-android
+    steps:
+      - name: Get source
+        uses: actions/checkout@v4
+      - name: Check Flutter and Android tools
+        run: |
+          flutter --version
+          java -version
+          test -f pubspec.yaml
+      - name: Get Flutter packages
+        run: flutter pub get
+      - name: Run tests if test/ exists
+        run: |
+          if [ -d test ]; then flutter test; else echo 'No test/ directory'; fi
+      - name: Build DEBUG APK (not a signed production release)
+        run: flutter build apk --debug
+      - name: Upload APK
+        uses: https://code.forgejo.org/forgejo/upload-artifact@v4
+        with:
+          name: android-debug-apk
+          path: build/app/outputs/flutter-apk/app-debug.apk
+          retention-days: 30
