@@ -87,13 +87,26 @@ builder.Services.AddOpenApi(options => options.AddDocumentTransformer((document,
             {
                 [new OpenApiSecuritySchemeReference("Bearer", document)] = []
             };
-            if (!path.StartsWith("/v1/reports/", StringComparison.Ordinal) &&
+            if (path != "/v1/me/roles" &&
+                !path.StartsWith("/v1/reports/", StringComparison.Ordinal) &&
                 !path.StartsWith("/v1/stores/", StringComparison.Ordinal))
             {
                 security[new OpenApiSecuritySchemeReference("RegisterId", document)] = [];
                 security[new OpenApiSecuritySchemeReference("RegisterKey", document)] = [];
             }
             operation.Security = [security];
+            if (path != "/v1/me/roles")
+            {
+                operation.Parameters ??= [];
+                operation.Parameters.Add(new OpenApiParameter
+                {
+                    Name = "X-Active-Role",
+                    In = ParameterLocation.Header,
+                    Required = false,
+                    Description = "Selected operational role: admin, cashier or receiver. Required for multi-role and owner accounts.",
+                    Schema = new OpenApiSchema { Type = JsonSchemaType.String }
+                });
+            }
             if (operation.OperationId == "UploadInvoiceFile")
             {
                 operation.RequestBody = new OpenApiRequestBody
@@ -177,6 +190,8 @@ app.MapOpenApi();
 var api = app.MapGroup("/v1").RequireAuthorization()
     .ProducesProblem(400).ProducesProblem(401).ProducesProblem(403).ProducesProblem(404)
     .ProducesProblem(409).ProducesProblem(429).ProducesProblem(503);
+api.MapGet("/me/roles", async (Guid storeId, PosService pos, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await pos.ReadMyRoles(context, storeId, ct))).WithName("ReadMyRoles");
 api.MapPost("/shifts", async (OpenShift request, PosService pos, HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await pos.OpenShift(context, request, ct))).WithName("OpenShift");
 api.MapPost("/shifts/{id:guid}/close", async (Guid id, CloseShift request, PosService pos, HttpContext context, CancellationToken ct) =>

@@ -29,14 +29,26 @@ INSERT INTO staff (org_id, id, subject, role) VALUES
  ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000003045', 'receiver-ai-denied', 'receiver'),
  ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000003046', 'admin-ai-scoped', 'admin'),
  ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000003047', 'admin-ai-store-a', 'admin'),
- ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000003048', 'admin-ai-store-b', 'admin');
+ ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000003048', 'admin-ai-store-b', 'admin'),
+ ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000003049', 'admin-multi-role', 'admin'),
+ ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000003050', 'admin-owner', 'admin');
+INSERT INTO staff_roles (org_id, staff_id, role)
+ SELECT org_id, id, role FROM staff;
+INSERT INTO staff_roles (org_id, staff_id, role) VALUES
+ ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000003049', 'cashier'),
+ ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000003049', 'receiver');
+DELETE FROM staff_roles
+ WHERE (org_id, staff_id) = ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000003050');
+INSERT INTO staff_roles (org_id, staff_id, role) VALUES
+ ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000003050', 'owner');
 INSERT INTO staff_stores (org_id, staff_id, store_id)
  SELECT s.org_id, s.id, t.id FROM staff s JOIN stores t ON t.org_id = s.org_id
  WHERE s.subject NOT IN ('admin-ai-store-a', 'admin-ai-store-b');
 INSERT INTO cashier_registers (org_id, staff_id, store_id, register_id)
  SELECT s.org_id, s.id, r.store_id, r.id
  FROM staff s JOIN registers r ON r.org_id = s.org_id
- WHERE (s.subject IN ('cashier-a', 'cashier-diagnostics', 'cashier-diagnostics-peer') AND r.name = 'А1')
+ WHERE (s.subject IN ('cashier-a', 'cashier-diagnostics', 'cashier-diagnostics-peer',
+                       'admin-multi-role', 'admin-owner') AND r.name = 'А1')
     OR (s.subject = 'cashier-b' AND r.name = 'А2');
 INSERT INTO products (org_id, id, name, barcode, unit, requires_expiry) VALUES
  ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000041', 'Учебная кола', '001', 'piece', true),

@@ -6,8 +6,11 @@ public sealed record RegisterDevice(Guid RegisterId, string Name, bool Active, i
 public sealed record RegisterNewDevice(Guid RegisterId, string Name, Guid CashierId, string RegisterKey);
 public sealed record RotateDeviceKey(int ExpectedVersion, string RegisterKey);
 public sealed record RevokeDevice(int ExpectedVersion);
-public sealed record StoreStaffAccess(Guid StaffId, string Subject, string Role, bool Active, IReadOnlyList<Guid> RegisterIds);
+public sealed record StoreStaffAccess(Guid StaffId, string Subject, string Role, IReadOnlyList<string> Roles,
+    bool Active, IReadOnlyList<Guid> RegisterIds);
 public sealed record ConnectStoreStaff(string Subject, string Role, Guid? RegisterId = null);
+public sealed record MyRoleSelection(Guid OrganizationId, Guid StaffId, Guid StoreId, string TimeZone,
+    IReadOnlyList<string> Roles, bool Owner);
 public sealed record StoreAuditEvent(long Id, DateTime OccurredAt, string Action, Guid StaffId, Guid ObjectId,
     Guid? RegisterId, string RequestId);
 public sealed record StoreAuditPage(Guid StoreId, string TimeZone, DateOnly From, DateOnly To, string? Action,

@@ -1,0 +1,10 @@
+{
+  "apiBase": "https://kassa.example.invalid/",
+  "issuer": "https://login.example.invalid/realms/kassa",
+  "clientId": "kassa-windows",
+  "scope": "openid profile",
+  "resource": null,
+  "storeId": null,
+  "registerId": null,
+  "adminAcrValues": null
+}

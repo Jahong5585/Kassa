@@ -43,12 +43,14 @@ def token(subject, mfa):
 
 
 def request(path, body=None, staff="cashier-a", register=21, key=KEY, expected=200, mfa=True, method=None,
-            raw_body=None, extra_headers=None, raw_response=False):
+            raw_body=None, extra_headers=None, raw_response=False, active_role=None):
     headers = {"X-Register-Id": fixture_id(register), "X-Register-Key": key}
     if staff is not None:
         headers["Authorization"] = "Bearer " + token(staff, mfa)
     if body is not None:
         headers["Content-Type"] = "application/json"
+    if active_role is not None:
+        headers["X-Active-Role"] = active_role
     headers.update(extra_headers or {})
     data = json.dumps(body).encode() if body is not None else raw_body
     call = urllib.request.Request(BASE + path, data, headers, method=method)
@@ -112,6 +114,53 @@ def main():
     procurement = spec["paths"]["/v1/stores/{storeId}/procurement/orders/{id}/approve"]["post"]
     assert set(procurement["security"][0]) == {"Bearer"}
     assert {"200", "409"}.issubset(procurement["responses"])
+    role_route = spec["paths"]["/v1/me/roles"]["get"]
+    assert set(role_route["security"][0]) == {"Bearer"}
+    assert "X-Active-Role" not in [parameter["name"] for parameter in role_route.get("parameters", [])]
+    assert "X-Active-Role" in [parameter["name"] for parameter in checkout["parameters"]]
+
+    role_store = fixture_id(11)
+    roles_path = f"/v1/me/roles?storeId={role_store}"
+    multi_subject, owner_subject = "admin-multi-role", "admin-owner"
+    multi_roles = request(roles_path, staff=multi_subject)
+    assert multi_roles["roles"] == ["admin", "cashier", "receiver"] and not multi_roles["owner"]
+    owner_roles = request(roles_path, staff=owner_subject)
+    assert owner_roles["roles"] == ["admin", "cashier", "receiver"] and owner_roles["owner"]
+    request(roles_path.replace(role_store, fixture_id(12)), staff=multi_subject, expected=404)
+
+    missing_role = request("/v1/catalog/barcodes/001", staff=multi_subject, expected=403)
+    assert missing_role["code"] == "active_role_required"
+    assert request("/v1/catalog/barcodes/001", staff=multi_subject, active_role="cashier")["barcode"] == "001"
+    denied_admin = request(f"/v1/stores/{role_store}/staff", staff=multi_subject,
+                           active_role="cashier", expected=403)
+    assert denied_admin["code"] == "staff_access_denied"
+    request(f"/v1/stores/{role_store}/receiving/catalog/barcodes/001",
+            staff=multi_subject, active_role="receiver")
+    request(f"/v1/stores/{role_store}/staff", staff=multi_subject, active_role="admin")
+    assert request(f"/v1/stores/{role_store}/staff", staff=multi_subject, active_role="admin",
+                   mfa=False, expected=403)["code"] == "admin_mfa_required"
+
+    assert request("/v1/catalog/barcodes/001", staff=owner_subject, active_role="cashier")["barcode"] == "001"
+    request(f"/v1/stores/{role_store}/receiving/catalog/barcodes/001",
+            staff=owner_subject, active_role="receiver")
+    request(f"/v1/stores/{role_store}/staff", staff=owner_subject, active_role="admin")
+    assert request(f"/v1/stores/{role_store}/staff", staff=owner_subject, active_role="cashier",
+                   expected=403)["code"] == "staff_access_denied"
+    assert request(f"/v1/stores/{role_store}/staff", staff=owner_subject, active_role="admin",
+                   mfa=False, expected=403)["code"] == "admin_mfa_required"
+    assert request("/v1/catalog/barcodes/001", staff=owner_subject, active_role="owner",
+                   expected=400)["code"] == "active_role_invalid"
+
+    role_shift = str(uuid.uuid4())
+    request("/v1/shifts", {"shiftId": role_shift, "openingCash": 0},
+            staff=multi_subject, active_role="cashier")
+    request(f"/v1/stores/{role_store}/staff", staff=multi_subject, active_role="admin")
+    assert request("/v1/shifts/" + role_shift, staff=multi_subject,
+                   active_role="cashier")["shiftId"] == role_shift
+    request("/v1/shifts/" + role_shift + "/close", {"countedCash": 0},
+            staff=multi_subject, active_role="cashier")
+    print("PASS: multi-role selection, owner inheritance, MFA, store scope and shift continuity")
+
     request("/v1/shifts", opens)
     request("/v1/shifts", opens)
     request("/v1/shifts", {"shiftId": str(uuid.uuid4()), "openingCash": 0}, expected=409)

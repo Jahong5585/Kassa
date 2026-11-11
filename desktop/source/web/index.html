@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
+  <title>Касса минимаркета</title>
+  <link rel="stylesheet" href="design.css">
+  <link rel="stylesheet" href="app.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <defs>
+      <symbol id="i-register" viewBox="0 0 24 24"><path d="M6 4h12v6H6zM4 10h16l2 5v5H2v-5zM2 15h20M9 17.5h6"/></symbol>
+      <symbol id="i-cart" viewBox="0 0 24 24"><path d="M2 3h3l2.4 11.1a2 2 0 0 0 2 1.6h8.8a2 2 0 0 0 2-1.5L22 7H6"/><circle cx="10" cy="20" r="1"/><circle cx="19" cy="20" r="1"/></symbol>
+      <symbol id="i-receipt" viewBox="0 0 24 24"><path d="M5 3l2 1 2-1 3 1 3-1 2 1 2-1v18l-2-1-2 1-3-1-3 1-2-1-2 1zM8 8h8m-8 4h8m-8 4h5"/></symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+      <symbol id="i-expiry" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4m10-4v4M3 10h18m-9 3v4m0 1.5h.01"/></symbol>
+      <symbol id="i-box" viewBox="0 0 24 24"><path d="M3 7l9-4 9 4v10l-9 4-9-4V7zm0 0 9 4 9-4m-9 4v10m-4.5-16L16 9"/></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="10" cy="18" r="2"/></symbol>
+      <symbol id="i-scan" viewBox="0 0 24 24"><path d="M3 8V4h4m10 0h4v4m0 8v4h-4m-10 0H3v-4m4-7v6m3-7v8m4-8v8m3-7v6"/></symbol>
+      <symbol id="i-cash" viewBox="0 0 24 24"><rect x="2.5" y="5" width="19" height="14" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01m12 0h.01"/></symbol>
+    </defs>
+  </svg>
+  <div class="screen sale" id="shell">
+    <nav class="rail" aria-label="Рабочее место кассира">
+      <div class="brand" title="Касса минимаркета"><svg><use href="#i-register"></use></svg></div>
+      <button class="selected" data-page="sale" aria-current="page"><svg><use href="#i-cart"></use></svg>Продажа</button>
+      <button data-page="history"><svg><use href="#i-receipt"></use></svg>Чеки</button>
+      <button data-page="shift"><svg><use href="#i-clock"></use></svg>Смена</button>
+      <button data-page="expiry"><svg><use href="#i-expiry"></use></svg>Сроки</button>
+      <button data-page="warehouse"><svg><use href="#i-box"></use></svg>Приёмка</button>
+      <button data-page="settings"><svg><use href="#i-settings"></use></svg>Настройки</button>
+    </nav>
+    <div class="workspace">
+      <header class="top">
+        <div><b>КАССА МИНИМАРКЕТА</b><span id="register-label">Касса 01 · учебный кассир</span></div>
+        <div class="top-status">
+          <label class="role-picker" for="active-role"><span>Роль</span>
+            <select id="active-role" aria-label="Текущая роль">
+              <option value="cashier">Кассир</option>
+              <option value="receiver">Приёмщик</option>
+              <option value="admin">Администратор</option>
+            </select>
+          </label>
+          <span class="badge blue" id="owner-badge" hidden>Владелец</span>
+          <span class="badge" id="shift-badge">Смена закрыта</span><span class="badge blue" id="mode-badge">◉ Учебный режим</span>
+          <span class="badge" id="api-status" role="status" hidden></span>
+          <span class="badge" id="printer-status" role="status">◷ Принтер не проверен</span>
+        </div>
+      </header>
+      <main class="content" id="main">
+        <div class="notice red" id="alert" role="alert" hidden></div>
+        <div class="notice gold" id="pending" hidden>
+          <span id="pending-text"></span><button type="button" class="button outline" id="check-operation">Проверить статус</button>
+          <button type="button" class="button warning" id="repeat-operation" hidden>Повторить ту же операцию</button>
+          <button type="button" class="button primary" id="approve-refund" hidden>Подтверждение администратора</button>
+          <button type="button" class="button outline" id="cancel-approval" hidden>Отменить запрос</button>
+        </div>
+        <section id="sale" class="page">
+          <header class="heading"><div><h1>Продажа</h1><p>Сканируйте штрихкод или найдите товар по названию.</p></div>
+            <button class="button outline" id="sale-shift">Открыть смену</button></header>
+          <div class="sale-layout">
+            <div class="sale-stack">
+              <form class="scan-form" id="scan-form">
+                <label class="search"><svg><use href="#i-scan"></use></svg>
+                  <input type="search" maxlength="100" id="search" aria-label="Штрихкод или название товара" placeholder="Штрихкод или название товара" autocomplete="off"></label>
+                <button class="button outline" type="submit" id="search-button">Найти <kbd>F3</kbd></button>
+              </form>
+              <section class="card" aria-labelledby="quick-title" id="quick-products">
+                <div class="table-title"><h2 id="quick-title">Быстрые товары</h2>
+                  <button type="button" class="link-button" id="quick-edit" hidden>Настроить</button></div>
+                <p id="quick-empty">Найдите штучный товар по названию и нажмите «Закрепить».</p>
+                <div id="quick-items" hidden></div>
+              </section>
+              <div class="card results" id="results" hidden>
+                <div class="table-title"><h2 id="result-title">Результаты поиска</h2><button type="button" class="link-button" id="hide-results">Скрыть</button></div>
+                <div id="result-items"></div>
+              </div>
+              <article class="card table">
+                <div class="table-title"><h2>Позиции чека</h2><span class="badge" id="item-count">Строк: 0</span></div>
+                <div class="table-scroll">
+                  <table class="basket"><colgroup><col class="number-col"><col><col class="qty-col"><col class="price-col"><col class="sum-col"><col class="remove-col"></colgroup>
+                    <thead><tr><th scope="col">№</th><th scope="col">Товар</th><th scope="col">Кол-во</th><th scope="col" class="numeric">Цена</th><th scope="col" class="numeric">Сумма</th><th scope="col"><span class="sr-only">Действия</span></th></tr></thead>
+                    <tbody id="basket"></tbody></table>
+                </div>
+                <div class="table-bottom"><span>Количество в базовых единицах</span><button class="link-button" id="clear-basket">Очистить чек</button></div>
+              </article>
+            </div>
+            <aside class="card sale-summary" aria-label="Итого к оплате">
+              <div><div class="eyebrow">К ОПЛАТЕ</div><div class="amount"><span id="total">0</span> <small>сум</small></div></div>
+              <div class="totals"><div><span>Позиций</span><b id="summary-count">0</b></div><div><span>Оплата</span><b>Наличные</b></div>
+                <div id="promotion-summary" hidden><span>Скидка 2+1</span><b id="promotion-amount"></b></div></div>
+              <button class="button primary" id="pay" disabled><span>Оплатить</span><kbd>F2</kbd></button>
+              <button class="button outline" id="park-current" hidden>Отложить чек</button>
+              <button class="button outline" id="parked-carts" hidden>Отложенные чеки</button>
+              <span class="badge gold" id="restored-cart" hidden>Восстановленный чек</span>
+              <span class="badge gold">Тестовый • нефискальный</span>
+            </aside>
+          </div>
+        </section>
+        <section id="history" class="page" hidden>
+          <header class="heading"><div><h1>Чеки</h1><p>Сохранённые продажи, возвраты и повторная печать.</p></div><button class="button outline" id="refresh-history">Обновить</button></header>
+          <form id="history-search" class="scan-form compact-search">
+            <label class="search"><svg><use href="#i-receipt"></use></svg><input type="search" id="receipt-query" aria-label="Полный ID чека" placeholder="Полный ID чека" maxlength="36"></label>
+            <button class="button outline">Найти чек</button>
+          </form>
+          <article class="card table history-table">
+            <div class="table-title"><h2>Журнал продаж</h2><span class="badge" id="history-count">—</span></div>
+            <div class="table-scroll"><table><thead><tr><th>Чек</th><th>Дата и время</th><th class="numeric">Сумма, сум</th><th>Возврат</th><th>Действия</th></tr></thead><tbody id="history-rows"></tbody></table></div>
+            <div class="table-bottom"><button class="button outline" id="previous-history">Предыдущая</button><button class="button outline" id="next-history">Следующая</button></div>
+          </article>
+        </section>
+        <section id="shift" class="page" hidden>
+          <header class="heading"><div><h1>Кассовая смена</h1><p>Начальный размен, продажи и пересчёт наличных.</p></div></header>
+          <div class="metrics shift-metrics">
+            <div class="metric card"><small>Размен</small><strong id="metric-opening">—</strong><span>сум</span></div>
+            <div class="metric card"><small>Продажи</small><strong id="metric-sales">—</strong><span>чеков</span></div>
+            <div class="metric card"><small>Ожидается наличными</small><strong id="metric-cash">—</strong><span id="metric-cash-unit">сум</span></div>
+          </div>
+          <article class="card form shift-card"><h2 id="shift-status">Смена закрыта</h2><p id="shift-detail">Укажите стартовый размен, чтобы начать продажи.</p>
+            <div class="actions">
+              <button class="button primary" id="shift-action">Открыть смену</button>
+              <button class="button outline" id="cash-in" hidden>Внести наличные</button>
+              <button class="button outline" id="cash-out" hidden>Изъять наличные</button>
+            </div></article>
+          <article class="card table" id="movement-panel" hidden>
+            <div class="table-title"><h2>Внесения и изъятия</h2><button class="link-button" id="refresh-movements">Обновить</button></div>
+            <div class="table-scroll"><table><thead><tr><th>Время</th><th>Операция</th><th>Причина</th><th class="numeric">Сумма, сум</th></tr></thead><tbody id="movement-rows"></tbody></table></div>
+            <div class="table-bottom"><button class="button outline" id="previous-movements">Предыдущая</button><button class="button outline" id="next-movements">Следующая</button></div>
+          </article>
+        </section>
+        <section id="expiry" class="page" hidden>
+          <header class="heading"><div><h1>Сроки годности</h1><p>Партии вашей точки. Отметка о снятии передаёт задачу администратору.</p></div>
+            <button class="button outline" id="refresh-expiry">Обновить</button></header>
+          <div class="filters" id="expiry-filters" aria-label="Фильтр сроков годности">
+            <button class="filter" data-expiry="all">Все</button>
+            <button class="filter" data-expiry="today">Сегодня</button>
+            <button class="filter" data-expiry="within3">До 3 дней</button>
+            <button class="filter selected" data-expiry="within7" aria-pressed="true">До 7 дней</button>
+            <button class="filter" data-expiry="expired">Просрочено</button>
+            <button class="filter" data-expiry="missing">Нет даты</button>
+          </div>
+          <article class="card table expiry-table">
+            <div class="table-title"><h2>Партии</h2><span class="badge" id="expiry-count">—</span></div>
+            <div class="table-scroll"><table><thead><tr><th>Товар</th><th>Годен до</th><th>Статус</th><th class="numeric">Учётный остаток</th><th>Действия</th></tr></thead><tbody id="expiry-rows"></tbody></table></div>
+            <div class="table-bottom"><button class="button outline" id="previous-expiry">Предыдущая</button><button class="button outline" id="next-expiry">Следующая</button></div>
+          </article>
+        </section>
+        <section id="warehouse" class="page" hidden>
+          <header class="heading">
+            <div><h1>Приёмка и склад</h1><p id="w-mode">Учебный режим · магазин 01</p></div>
+            <div class="actions">
+              <button class="button outline" id="w-connect">Подключить стенд</button>
+              <button class="button outline" id="w-disconnect" hidden>В учебный режим</button>
+            </div>
+          </header>
+          <div class="filters" aria-label="Разделы приёмки и склада">
+            <button class="filter selected" data-w-panel="receipts">Накладные</button>
+            <button class="filter" data-w-panel="lots">Остатки</button>
+            <button class="filter" data-w-panel="shelfTasks">Снятие с полки</button>
+            <button class="filter" data-w-panel="inventoryList">Инвентаризация</button>
+            <button class="filter" data-w-panel="management">Управление</button>
+          </div>
+          <div class="notice red" id="w-alert" role="alert" hidden></div>
+          <div class="notice green" id="w-message" role="status" hidden></div>
+          <div class="notice gold" id="w-pending" hidden><span>Результат операции не подтверждён. Повтор использует исходные данные.</span> <button class="button outline" id="w-retry">Сверить операцию</button></div>
+          <article class="card table" id="w-list">
+            <div class="table-title"><h2 id="w-list-title">Накладные</h2><div class="actions">
+              <label class="field" id="w-filter-wrap"><span class="sr-only">Статус накладной</span><select id="w-filter" aria-label="Статус накладной"><option value="">Все статусы</option><option value="draft">Черновик</option><option value="submitted">На проверке</option><option value="posted">Проведена</option><option value="cancelled">Отменена</option></select></label>
+              <button class="button outline" id="w-refresh">Обновить список</button>
+              <button class="button primary" id="w-new">Новая накладная</button>
+            </div></div>
+            <div class="table-scroll"><table><thead><tr id="w-list-head"></tr></thead><tbody id="w-list-body"></tbody></table></div>
+            <div class="table-bottom"><button class="button outline" id="w-prev">Предыдущая</button><button class="button outline" id="w-next">Следующая</button></div>
+          </article>
+          <article class="card form" id="w-receipt" hidden>
+            <div class="table-title"><div><h2 id="w-receipt-title">Новая накладная</h2><p id="w-receipt-note"></p></div><button class="button outline" id="w-close">К списку</button></div>
+            <div class="w-fields" id="w-headers">
+              <label class="field"><span>Поставщик</span><input id="w-supplier" list="w-suppliers" maxlength="160" autocomplete="off"><datalist id="w-suppliers"></datalist></label>
+              <label class="field"><span>Номер накладной</span><input id="w-number" maxlength="100" autocomplete="off"></label>
+              <label class="field"><span>Дата накладной</span><input id="w-date" type="date"></label>
+              <label class="field"><span>Заказ поставщику</span><select id="w-order" aria-label="Заказ поставщику"></select></label>
+            </div>
+            <div id="w-order-summary" class="notice blue" hidden></div>
+            <div class="actions" id="w-add-row">
+              <form class="scan-form compact-search" id="w-scan"><label class="search"><svg><use href="#i-scan"></use></svg><input type="search" inputmode="numeric" maxlength="48" id="w-barcode" aria-label="Штрихкод товара" placeholder="Штрихкод товара"></label><button class="button outline">Добавить партию</button></form>
+              <button class="button outline" id="w-propose">Предложить товар</button>
+            </div>
+            <div class="table-scroll w-items"><table><thead><tr><th>Товар</th><th>Партия</th><th>Годен до</th><th>Факт</th><th>Действия</th></tr></thead><tbody id="w-items"></tbody></table></div>
+            <button class="button primary w-self" id="w-save">Сохранить черновик</button>
+            <div id="w-files-panel" class="w-subpanel" hidden>
+              <div class="table-title"><h2>Вложения</h2><button class="button outline" id="w-upload">Приложить файл</button></div>
+              <div id="w-files"></div>
+            </div>
+            <div id="w-cost-panel" class="w-subpanel" hidden>
+              <div class="table-title"><div><h2>Закупочная стоимость</h2><p id="w-cost-summary"></p></div><button class="button outline" id="w-save-cost">Сохранить стоимость</button></div>
+              <div class="table-scroll w-items"><table><thead><tr><th>Партия</th><th>Цена за единицу</th><th>Скидка</th><th>Включённый налог</th><th>Расходы</th></tr></thead><tbody id="w-costs"></tbody></table></div>
+            </div>
+            <div class="actions" id="w-transitions">
+              <button class="button primary" id="w-submit">На проверку</button>
+              <button class="button primary" id="w-post">Провести накладную</button>
+              <button class="button outline" id="w-return">Вернуть на правку</button>
+              <button class="button danger" id="w-cancel">Отменить накладную</button>
+            </div>
+          </article>
+          <article class="card form" id="w-management" hidden>
+            <div class="filters" aria-label="Управление магазином">
+              <button class="filter selected" data-m-tab="catalog">Каталог</button>
+              <button class="filter" data-m-tab="proposals">Предложения</button>
+              <button class="filter" data-m-tab="suppliers">Поставщики</button>
+              <button class="filter" data-m-tab="drafts">Закупки</button>
+              <button class="filter" data-m-tab="reports">Отчёты и аудит</button>
+            </div>
+            <div class="table-title"><div><h2 id="m-title">Каталог</h2><p id="m-detail"></p></div><div class="actions" id="m-actions"></div></div>
+            <div id="m-filters" class="w-fields"></div>
+            <div id="m-extra" class="w-subpanel" hidden></div>
+            <div class="table-scroll"><table id="m-table"><thead><tr id="m-head"></tr></thead><tbody id="m-body"></tbody></table></div>
+            <div class="table-bottom"><button class="button outline" id="m-prev">Назад</button><button class="button outline" id="m-next">Следующая</button></div>
+          </article>
+          <article id="w-inventory" class="card form" hidden>
+            <div class="table-title"><div><h2>Инвентаризация</h2><p id="w-inventory-note"></p></div><button class="button outline" id="w-inventory-close">К списку</button></div>
+            <div class="table-scroll w-items"><table><thead><tr><th>Товар и партия</th><th>Учёт / карантин</th><th>Факт</th><th>Карантин, факт</th></tr></thead><tbody id="w-inventory-lines"></tbody></table></div>
+            <div class="actions"><button class="button outline" id="w-inventory-save">Сохранить пересчёт</button><button class="button primary" id="w-inventory-post">Провести пересчёт</button></div>
+          </article>
+        </section>
+        <section id="settings" class="page" hidden>
+          <header class="heading"><div><h1>Настройки</h1><p>Режим работы и проверка кассовых сценариев.</p></div></header>
+          <div class="form-layout settings-layout">
+            <article class="card form">
+              <h2>Подключение к API</h2>
+              <p id="settings-state">Локальный учебный режим работает без интернета. При подключении к стенду следуйте подсказкам окна входа.</p>
+              <div class="actions"><button class="button primary" id="connect">Подключить учебный стенд</button><button class="button outline" id="disconnect" hidden>В учебный режим</button></div>
+            </article>
+            <article class="card form">
+              <h2>Язык интерфейса</h2>
+              <label class="field"><span>Язык</span><select id="ui-language"><option value="ru" lang="ru" translate="no">Русский</option><option value="uz" lang="uz-Latn">O‘zbekcha</option></select></label>
+            </article>
+            <article class="card form">
+              <h2>Защита данных магазина</h2>
+              <p>Когда защита включена, каталог, цены, накладные и складские остатки доступны только для просмотра. Продажи кассира продолжают работать.</p>
+              <label class="switch"><input type="checkbox" id="protect-store-data" checked> Запретить случайное изменение данных</label>
+              <span class="badge green w-self" id="protection-state">● Защита включена</span>
+            </article>
+            <article class="card form">
+              <h2>Проверка оборудования</h2>
+              <form class="modal-form" id="device-scan-form">
+                <label class="field"><span>Сканер штрихкодов</span><input id="device-scan" maxlength="48" autocomplete="off"></label>
+                <button class="button outline w-self">Проверить сканер</button>
+                <p id="device-scan-status" role="status" hidden></p>
+              </form>
+              <form class="modal-form" id="device-scale-form">
+                <label class="field"><span>Весы с клавиатурным вводом</span><input id="device-scale" maxlength="32" autocomplete="off" placeholder="0,375 kg"></label>
+                <button class="button outline w-self">Проверить вес</button>
+                <p id="device-scale-status" role="status" hidden></p>
+              </form>
+              <button class="button outline w-self" id="device-printers">Проверить принтеры</button>
+              <p id="device-printer-status" role="status" hidden></p>
+              <ul id="device-printer-list"></ul>
+              <fieldset class="modal-form printer-driver-options" id="device-driver-actions">
+                <button type="button" class="button outline w-self" id="device-usb-printers">Найти USB-принтеры и драйверы</button>
+                <ul id="device-usb-list" hidden></ul>
+                <div class="modal-form" id="device-driver-catalog" hidden>
+                  <label class="field"><span>Модель чекового принтера</span><select id="device-driver-model"></select></label>
+                  <p id="device-driver-source"></p>
+                  <div class="actions">
+                    <button type="button" class="button outline w-self" id="device-open-driver" disabled>Открыть драйвер производителя</button>
+                    <button type="button" class="button outline w-self" id="device-official-driver" hidden>Страница производителя</button>
+                    <button type="button" class="button outline w-self" id="device-driver-terms" hidden>Условия лицензии</button>
+                  </div>
+                </div>
+                <p id="device-driver-status" role="status" hidden></p>
+              </fieldset>
+            </article>
+            <article class="card form" id="demo-settings">
+              <h2>Проверка потери ответа</h2><p>Следующая продажа сохранится. Касса получит имитацию тайм-аута и проверит чек по исходному ID.</p>
+              <label class="switch"><input type="checkbox" id="simulate"> Потерять ответ на следующую продажу</label>
+            </article>
+          </div>
+        </section>
+      </main>
+      <footer class="screen-footer"><div class="shortcuts"><span><kbd>F2</kbd> Оплата</span><span><kbd>F3</kbd> Поиск</span><span><kbd>Esc</kbd> Закрыть окно</span></div><span>Версия 0.5.9 · Пилот</span></footer>
+    </div>
+  </div>
+  <dialog class="dialog card" id="cart-dialog" aria-labelledby="cart-title">
+    <div class="dialog-head"><h1 id="cart-title">Отложенные чеки</h1><button class="close" type="button" data-dismiss aria-label="Закрыть">×</button></div>
+    <p class="notice red" id="cart-error" role="alert" hidden></p>
+    <div id="cart-list"></div>
+    <div class="actions">
+      <button class="button outline" id="cart-prev" type="button">Назад</button>
+      <button class="button outline" id="cart-next" type="button">Далее</button>
+    </div>
+  </dialog>
+  <dialog class="dialog card" id="amount-dialog" aria-labelledby="dialog-title">
+    <div class="dialog-head"><div class="tile"><svg><use href="#i-cash"></use></svg></div><div><div class="eyebrow" id="dialog-eyebrow">СМЕНА</div><h1 id="dialog-title">Открыть смену</h1></div><button class="close" type="button" data-dismiss aria-label="Закрыть">×</button></div>
+    <form id="amount-form" class="modal-form">
+      <div class="payment-total" id="payment-total"><span>К оплате</span><strong class="amount" id="payment-amount"></strong></div>
+      <label class="field"><span id="amount-label">Начальный размен, сум</span><input id="amount-input" inputmode="decimal" autocomplete="off" maxlength="18" required></label>
+      <p id="amount-hint"></p><div class="notice red" id="amount-error" role="alert" hidden></div>
+      <div class="actions"><button class="button outline" type="button" data-dismiss>Отмена</button><button class="button primary" id="amount-confirm" type="submit">Подтвердить</button></div>
+    </form>
+  </dialog>
+  <dialog class="dialog card" id="lot-dialog" aria-labelledby="lot-title">
+    <div class="dialog-head"><div class="tile"><svg><use href="#i-scan"></use></svg></div><div><div class="eyebrow">ДОБАВЛЕНИЕ ТОВАРА</div><h1 id="lot-title">Выберите партию</h1></div><button class="close" type="button" data-dismiss aria-label="Закрыть">×</button></div>
+    <form id="lot-form" class="modal-form"><p id="lot-product"></p>
+      <div class="notice gold" id="lot-warning" hidden>Сверьте срок на упаковке. Добавьте товар только из подходящей партии.</div>
+      <label class="field"><span>Партия</span><select id="lot-select" aria-label="Партия" required></select></label>
+      <label class="field"><span id="lot-qty-label">Количество</span><input id="lot-quantity" inputmode="decimal" autocomplete="off" maxlength="18" required></label>
+      <div class="notice red" id="lot-error" role="alert" hidden></div>
+      <div class="actions"><button class="button outline" type="button" data-dismiss>Отмена</button><button class="button primary" type="submit">Добавить в чек</button></div>
+    </form>
+  </dialog>
+  <dialog class="dialog card dialog-wide" id="refund-dialog" aria-labelledby="refund-title">
+    <div class="dialog-head"><div class="tile"><svg><use href="#i-receipt"></use></svg></div><div><div class="eyebrow">ЖУРНАЛ ПРОДАЖ</div><h1 id="refund-title">Возврат по чеку</h1></div><button class="close" type="button" data-dismiss aria-label="Закрыть">×</button></div>
+    <form id="refund-form" class="modal-form">
+      <p id="refund-sale"></p>
+      <div class="table-scroll refund-table"><table><thead><tr><th>Товар и партия</th><th>Доступно</th><th>К возврату</th><th>Куда вернуть</th></tr></thead><tbody id="refund-rows"></tbody></table></div>
+      <label class="field"><span>Причина возврата</span><input id="refund-reason" required maxlength="500" autocomplete="off"></label>
+      <div class="payment-total"><span>Предварительно к выдаче</span><strong class="amount" id="refund-total">0 сум</strong></div>
+      <p>Выдайте наличные после сообщения о сохранении возврата.</p>
+      <div class="notice red" id="refund-error" role="alert" hidden></div>
+      <div class="actions"><button class="button outline" type="button" data-dismiss>Отмена</button><button class="button primary" id="refund-confirm">Оформить возврат</button></div>
+    </form>
+  </dialog>
+  <dialog class="dialog card" id="movement-dialog" aria-labelledby="movement-title">
+    <div class="dialog-head"><div class="tile"><svg><use href="#i-cash"></use></svg></div><div><div class="eyebrow">КАССОВАЯ СМЕНА</div><h1 id="movement-title"></h1></div><button class="close" type="button" data-dismiss aria-label="Закрыть">×</button></div>
+    <form id="movement-form" class="modal-form">
+      <label class="field"><span>Сумма, сум</span><input id="movement-amount" required inputmode="decimal" maxlength="18" autocomplete="off"></label>
+      <label class="field"><span>Причина операции</span><input id="movement-reason" required maxlength="500" autocomplete="off"></label>
+      <div class="notice red" id="movement-error" role="alert" hidden></div>
+      <div class="actions"><button class="button outline" type="button" data-dismiss>Отмена</button><button class="button primary" id="movement-confirm">Записать операцию</button></div>
+    </form>
+  </dialog>
+  <dialog class="dialog card" id="shelf-dialog" aria-labelledby="shelf-title">
+    <div class="dialog-head"><div class="tile"><svg><use href="#i-expiry"></use></svg></div><div><div class="eyebrow">СРОКИ ГОДНОСТИ</div><h1 id="shelf-title">Снято с полки</h1></div><button class="close" type="button" data-dismiss aria-label="Закрыть">×</button></div>
+    <form id="shelf-form" class="modal-form">
+      <p id="shelf-detail"></p><div class="notice gold">Сверьте партию и дату на упаковке. Остаток в учёте изменит администратор при обработке задачи.</div>
+      <label class="field"><span id="shelf-label">Снятое количество</span><input id="shelf-quantity" required inputmode="decimal" maxlength="18" autocomplete="off"></label>
+      <div class="notice red" id="shelf-error" role="alert" hidden></div>
+      <div class="actions"><button class="button outline" type="button" data-dismiss>Отмена</button><button class="button primary" id="shelf-confirm">Передать задачу</button></div>
+    </form>
+  </dialog>
+  <dialog class="dialog card" id="receipt-dialog" aria-labelledby="receipt-title">
+    <div class="dialog-head"><div class="tile"><svg><use href="#i-receipt"></use></svg></div><div><div class="eyebrow">ЖУРНАЛ ПРОДАЖ</div><h1 id="receipt-title">Чек сохранён</h1></div><button class="close" type="button" data-dismiss aria-label="Закрыть">×</button></div>
+    <article id="receipt-paper" class="receipt-paper"></article>
+    <div class="notice red" id="print-error" role="alert" hidden></div>
+    <div class="actions"><button class="button outline" type="button" data-dismiss>Закрыть</button><button class="button primary" id="print">Печать чека</button></div>
+  </dialog>
+  <dialog class="dialog card" id="confirm-dialog" aria-labelledby="confirm-title">
+    <div class="dialog-head"><div><div class="eyebrow">ТЕКУЩАЯ ПРОДАЖА</div><h1 id="confirm-title">Очистить чек?</h1></div><button class="close" type="button" data-dismiss aria-label="Закрыть">×</button></div>
+    <p>Все позиции текущей корзины будут удалены.</p>
+    <div class="actions"><button class="button outline" type="button" data-dismiss autofocus>Оставить</button><button class="button danger" id="confirm-clear" type="button">Очистить чек</button></div>
+  </dialog>
+  <dialog class="dialog card" id="w-dialog" aria-labelledby="w-dialog-title">
+    <div class="dialog-head"><div class="tile"><svg><use href="#i-box"></use></svg></div><h1 id="w-dialog-title"></h1><button class="close" type="button" data-dismiss aria-label="Закрыть">×</button></div>
+    <form class="modal-form" id="w-dialog-form"><p id="w-dialog-detail"></p><div id="w-dialog-fields" class="w-fields"></div>
+      <div class="notice red" id="w-dialog-error" role="alert" hidden></div>
+      <div class="actions"><button class="button outline" type="button" data-dismiss>Отмена</button><button class="button primary" id="w-dialog-ok">Подтвердить</button></div>
+    </form>
+  </dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>
