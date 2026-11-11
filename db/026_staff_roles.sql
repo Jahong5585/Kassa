@@ -15,4 +15,6 @@ ON CONFLICT DO NOTHING;
 COMMENT ON TABLE staff_roles IS
     'Authoritative organization-level role assignments. staff.role is legacy compatibility only.';
 
+GRANT SELECT, INSERT, DELETE ON staff_roles TO kasa_api;
+
 COMMIT;
