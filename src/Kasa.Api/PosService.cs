@@ -68,6 +68,14 @@ internal sealed partial class PosService(NpgsqlDataSource source, IConfiguration
             ?? throw new PosError(404, "shift_not_found");
     }
 
+    public async Task<ShiftSummary?> GetActiveShift(HttpContext context, CancellationToken ct)
+    {
+        await using var db = await source.OpenConnectionAsync(ct);
+        await using var tx = await db.BeginTransactionAsync(ct);
+        var scope = await Access.RequireCashier(db, tx, context, false, ct);
+        return await ReadShift(db, tx, scope.Organization, scope.Store, scope.Register, null, scope.Staff, ct);
+    }
+
     public async Task<ShiftSummary> GetAdminShift(HttpContext context, Guid store, Guid register, Guid id, CancellationToken ct)
     {
         await using var db = await source.OpenConnectionAsync(ct);
@@ -103,12 +111,12 @@ internal sealed partial class PosService(NpgsqlDataSource source, IConfiguration
             """;
 
     private static async Task<ShiftSummary?> ReadShift(NpgsqlConnection db, NpgsqlTransaction tx,
-        Guid organization, Guid store, Guid register, Guid id, Guid? cashier, CancellationToken ct)
+        Guid organization, Guid store, Guid register, Guid? id, Guid? cashier, CancellationToken ct)
     {
         await using var command = db.Sql(tx, $"""
             SELECT s.opened_at, s.closed_at, s.opening_cash, s.counted_cash,
                    paid.cash, paid.cashless, paid.count, returned.cash, returned.cashless, returned.count,
-                   movements.incoming, movements.outgoing, pending.count, {ShiftExpectedCashSql}
+                   movements.incoming, movements.outgoing, pending.count, {ShiftExpectedCashSql}, s.id
             FROM shifts s
             {ShiftMoneyJoins}
             CROSS JOIN LATERAL (
@@ -116,9 +124,10 @@ internal sealed partial class PosService(NpgsqlDataSource source, IConfiguration
                 WHERE (org_id, store_id, register_id, shift_id) = (s.org_id, s.store_id, s.register_id, s.id)
                     AND status = 'parked' AND expires_at > statement_timestamp()
             ) pending
-            WHERE (s.org_id, s.store_id, s.register_id, s.id) = ($1, $2, $3, $4)
+            WHERE (s.org_id, s.store_id, s.register_id) = ($1, $2, $3)
+              AND CASE WHEN $7 THEN s.closed_at IS NULL ELSE s.id = $4 END
               AND ($5 OR s.cashier_id = $6)
-            """, organization, store, register, id, cashier is null, cashier ?? Guid.Empty);
+            """, organization, store, register, id ?? Guid.Empty, cashier is null, cashier ?? Guid.Empty, id is null);
         await using var rows = await command.ExecuteReaderAsync(ct);
         if (!await rows.ReadAsync(ct))
             return null;
@@ -130,7 +139,7 @@ internal sealed partial class PosService(NpgsqlDataSource source, IConfiguration
         var cashOut = rows.GetDecimal(11);
         var expected = rows.GetDecimal(13);
         var showCash = cashier is null || counted.HasValue;
-        return new ShiftSummary(id, rows.GetDateTime(0), rows.TimeOrNull(1), opening, showCash ? cash : null,
+        return new ShiftSummary(rows.GetGuid(14), rows.GetDateTime(0), rows.TimeOrNull(1), opening, showCash ? cash : null,
             rows.GetDecimal(5), showCash ? expected : null, counted, counted - expected, rows.GetInt64(6))
         {
             CashRefunds = showCash ? cashRefunds : null,
@@ -168,6 +177,25 @@ internal sealed partial class PosService(NpgsqlDataSource source, IConfiguration
                     Value = discount.Value.ToString("G29", CultureInfo.InvariantCulture)
                 }
             });
+        // Keep the historical fingerprint byte-for-byte for requests without a promotion.
+        if (items.Any(item => item.PromotionVersion.HasValue))
+            fingerprint = JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                Checkout = Convert.ToHexString(SHA256.HashData(fingerprint)),
+                PromotionVersions = items.Select(item => item.PromotionVersion)
+            });
+        if (items.Any(item => item.LotPriceVersion.HasValue))
+            fingerprint = JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                Checkout = Convert.ToHexString(SHA256.HashData(fingerprint)),
+                LotPriceVersions = items.Select(item => item.LotPriceVersion)
+            });
+        if (items.Any(item => item.PriceLabelId.HasValue))
+            fingerprint = JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                Checkout = Convert.ToHexString(SHA256.HashData(fingerprint)),
+                PriceLabelIds = items.Select(item => item.PriceLabelId)
+            });
         var digest = SHA256.HashData(fingerprint);
 
         await using var db = await source.OpenConnectionAsync(ct);
@@ -191,8 +219,12 @@ internal sealed partial class PosService(NpgsqlDataSource source, IConfiguration
         foreach (var item in items)
             lines.Add(await DebitLot(db, tx, scope, item, ct));
 
+        var promotionalDiscount = ApplyQuantityPromotions(lines);
+        if (discount is not null && promotionalDiscount > 0)
+            throw new PosError(409, "quantity_promotion_discount_conflict");
         if (discount is not null)
             ApplyManualDiscount(lines, discount);
+        var discountReason = discount?.Reason ?? (promotionalDiscount > 0 ? "2+1" : null);
         var total = lines.Sum(line => line.LineTotal);
         if (!IsMoney(total) || total == 0)
             throw new PosError(400, "invalid_sale_total");
@@ -208,7 +240,7 @@ internal sealed partial class PosService(NpgsqlDataSource source, IConfiguration
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NULLIF($13, ''))
             ON CONFLICT DO NOTHING
             """, scope.Organization, scope.Store, scope.Register, request.OperationId, request.ShiftId,
-            scope.Staff, request.Method, total, request.Tendered, change, digest, created, discount?.Reason ?? "");
+            scope.Staff, request.Method, total, request.Tendered, change, digest, created, discountReason ?? "");
         if (inserted != 1)
             throw new PosError(409, "operation_id_reused");
 
@@ -217,18 +249,27 @@ internal sealed partial class PosService(NpgsqlDataSource source, IConfiguration
             await db.Run(tx, ct, """
                 INSERT INTO sale_lines (org_id, store_id, register_id, sale_id, product_id, lot_id,
                                         name, unit, quantity, unit_price, line_total, discount_amount, price_version,
-                                        inventory_cost)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                                        inventory_cost, promotion_version, lot_price_version)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
                 """, scope.Organization, scope.Store, scope.Register, request.OperationId, line.ProductId,
                 line.LotId, line.Name, line.Unit, line.Quantity, line.UnitPrice, line.LineTotal,
-                line.DiscountAmount, line.PriceVersion, line.InventoryCost);
+                line.DiscountAmount, line.PriceVersion, line.InventoryCost, line.PromotionVersion, line.LotPriceVersion);
+        }
+        foreach (var item in items.Where(item => item.PriceLabelId.HasValue))
+        {
+            var consumed = await db.Run(tx, ct, """
+                UPDATE weighed_price_labels SET sold_register_id = $4, sold_sale_id = $5
+                WHERE (org_id, store_id, id) = ($1, $2, $3) AND sold_sale_id IS NULL
+                """, scope.Organization, scope.Store, item.PriceLabelId, scope.Register, request.OperationId);
+            if (consumed != 1)
+                throw new PosError(409, "weighed_price_label_unavailable");
         }
         if (request.CartId is { } soldCart)
             await MarkCartSold(db, tx, context, scope, request.ShiftId, soldCart, request.OperationId, ct);
         await Audit(db, tx, context, scope, "sale.committed", request.OperationId, ct);
         await tx.CommitAsync(ct);
         return new SaleResult(request.OperationId, request.ShiftId, request.Method, total, request.Tendered,
-            change, created, lines, ReceiptMark) { DiscountReason = discount?.Reason };
+            change, created, lines, ReceiptMark) { DiscountReason = discountReason };
     }
 
     private static SaleItem[] ValidateSale(CreateSale request)
@@ -253,6 +294,7 @@ internal sealed partial class PosService(NpgsqlDataSource source, IConfiguration
         foreach (var item in items)
         {
             if (item is null || item.ProductId == Guid.Empty || item.LotId == Guid.Empty || item.PriceVersion < 1 ||
+                item.PromotionVersion is <= 0 || item.LotPriceVersion is <= 0 || item.PriceLabelId == Guid.Empty ||
                 !IsQuantity(item.Quantity) ||
                 !distinct.Add((item.ProductId, item.LotId)))
                 throw new PosError(400, "invalid_sale_item");
@@ -265,10 +307,18 @@ internal sealed partial class PosService(NpgsqlDataSource source, IConfiguration
     {
         await LockProduct(db, tx, scope.Organization, item.ProductId, false, ct);
         await using var command = db.Sql(tx, """
-            SELECT p.name, p.unit, p.requires_expiry, sp.unit_price, sp.version
+            SELECT p.name, p.unit, p.requires_expiry, coalesce(markdown.unit_price, sp.unit_price), sp.version,
+                   CASE WHEN markdown.version IS NULL AND promo.enabled AND p.unit = 'piece' THEN promo.version END,
+                   markdown.version, label.weight, label.printed_total, label.sold_sale_id IS NOT NULL
             FROM products p JOIN store_prices sp ON (sp.org_id, sp.product_id) = (p.org_id, p.id)
+            LEFT JOIN store_quantity_promotions promo ON (promo.org_id, promo.store_id, promo.product_id) =
+                                                        (sp.org_id, sp.store_id, sp.product_id)
+            LEFT JOIN active_lot_markdowns markdown ON (markdown.org_id, markdown.store_id, markdown.product_id, markdown.lot_id) =
+                                                       (sp.org_id, sp.store_id, sp.product_id, $4)
+            LEFT JOIN weighed_price_labels label ON (label.org_id, label.store_id, label.product_id, label.lot_id, label.id) =
+                                                   (sp.org_id, sp.store_id, sp.product_id, $4, $5)
             WHERE (p.org_id, sp.store_id, p.id) = ($1, $2, $3) AND sp.active
-            """, scope.Organization, scope.Store, item.ProductId);
+            """, scope.Organization, scope.Store, item.ProductId, item.LotId, item.PriceLabelId ?? Guid.Empty);
         await using var rows = await command.ExecuteReaderAsync(ct);
         if (!await rows.ReadAsync(ct))
             throw new PosError(404, "product_not_found");
@@ -280,12 +330,15 @@ internal sealed partial class PosService(NpgsqlDataSource source, IConfiguration
         var price = rows.GetDecimal(3);
         if (rows.GetInt32(4) != item.PriceVersion)
             throw new PosError(409, "price_changed");
+        var lotPriceVersion = rows.IsDBNull(6) ? (int?)null : rows.GetInt32(6);
+        if (lotPriceVersion != item.LotPriceVersion)
+            throw new PosError(409, "lot_price_changed");
+        var promotion = rows.IsDBNull(5) ? (int?)null : rows.GetInt32(5);
+        if (promotion != item.PromotionVersion)
+            throw new PosError(409, "quantity_promotion_changed");
+        var lineTotal = GetCheckoutLineTotal(unit, price, item.Quantity);
+        ValidateCheckoutPriceLabel(item, unit, lineTotal, rows.DecimalOrNull(7), rows.DecimalOrNull(8), rows.GetBoolean(9));
         await rows.CloseAsync();
-        if (unit == "piece" && item.Quantity != decimal.Truncate(item.Quantity))
-            throw new PosError(400, "fractional_piece_quantity");
-        var lineTotal = decimal.Round(price * item.Quantity, 2, MidpointRounding.AwayFromZero);
-        if (!IsMoney(lineTotal) || lineTotal == 0)
-            throw new PosError(400, "invalid_line_total");
 
         await using var debit = db.Sql(tx, """
             WITH target AS (
@@ -309,7 +362,10 @@ internal sealed partial class PosService(NpgsqlDataSource source, IConfiguration
         if (!await debitRows.ReadAsync(ct))
             throw new PosError(409, "lot_not_sellable_or_insufficient_stock");
         return new SaleLine(item.ProductId, item.LotId, name, unit, item.Quantity, price, lineTotal)
-            { PriceVersion = item.PriceVersion, InventoryCost = debitRows.DecimalOrNull(0) };
+            {
+                PriceVersion = item.PriceVersion, InventoryCost = debitRows.DecimalOrNull(0),
+                PromotionVersion = promotion, LotPriceVersion = lotPriceVersion, PriceLabelId = item.PriceLabelId
+            };
     }
 
     public async Task<SaleResult> GetSale(HttpContext context, Guid id, CancellationToken ct)
@@ -328,9 +384,12 @@ internal sealed partial class PosService(NpgsqlDataSource source, IConfiguration
         await using var command = db.Sql(tx, """
             SELECT p.shift_id, p.method, p.total, p.tendered, p.change_due, p.created_at, p.request_digest,
                    l.product_id, l.lot_id, l.name, l.unit, l.quantity, l.unit_price, l.line_total,
-                   l.discount_amount, l.price_version, p.discount_reason
+                   l.discount_amount, l.price_version, p.discount_reason, l.promotion_version, l.lot_price_version, label.id
             FROM sales p JOIN sale_lines l ON (l.org_id, l.store_id, l.register_id, l.sale_id) =
                                              (p.org_id, p.store_id, p.register_id, p.id)
+            LEFT JOIN weighed_price_labels label
+                ON (label.org_id, label.store_id, label.sold_register_id, label.sold_sale_id, label.product_id, label.lot_id) =
+                    (l.org_id, l.store_id, l.register_id, l.sale_id, l.product_id, l.lot_id)
             WHERE (p.org_id, p.store_id, p.register_id, p.id) = ($1, $2, $3, $4)
               AND ($5 OR p.cashier_id = $6)
             """, org, store, register, id, cashier is null, cashier ?? Guid.Empty);
@@ -346,7 +405,12 @@ internal sealed partial class PosService(NpgsqlDataSource source, IConfiguration
         {
             lines.Add(new SaleLine(rows.GetGuid(7), rows.GetGuid(8), rows.GetString(9), rows.GetString(10),
                 rows.GetDecimal(11), rows.GetDecimal(12), rows.GetDecimal(13))
-            { DiscountAmount = rows.GetDecimal(14), PriceVersion = rows.IsDBNull(15) ? null : rows.GetInt32(15) });
+            {
+                DiscountAmount = rows.GetDecimal(14), PriceVersion = rows.IsDBNull(15) ? null : rows.GetInt32(15),
+                PromotionVersion = rows.IsDBNull(17) ? null : rows.GetInt32(17),
+                LotPriceVersion = rows.IsDBNull(18) ? null : rows.GetInt32(18),
+                PriceLabelId = rows.IsDBNull(19) ? null : rows.GetGuid(19)
+            });
         } while (await rows.ReadAsync(ct));
         return (sale with { Lines = lines.OrderBy(line => line.ProductId).ThenBy(line => line.LotId).ToArray() }, digest);
     }

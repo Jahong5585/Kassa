@@ -194,8 +194,7 @@ internal sealed partial class PosService
             if (cumulative > sold.SoldQuantity)
                 throw new PosError(409, "refund_quantity_exceeded");
 
-            var cumulativeAmount = decimal.Round(sold.SoldAmount * (cumulative / sold.SoldQuantity), 2,
-                MidpointRounding.AwayFromZero);
+            var cumulativeAmount = RoundedShare(sold.SoldAmount, cumulative, sold.SoldQuantity);
             result[i] = new RefundLine(item.ProductId, item.LotId, item.Quantity,
                 cumulativeAmount - sold.ReturnedAmount, item.Destination);
         }

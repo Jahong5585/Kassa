@@ -6,45 +6,71 @@ internal sealed partial class PosService
 {
     public async Task<CatalogProduct> GetProduct(HttpContext context, string barcode, CancellationToken ct)
     {
-        if (!IsBarcode(barcode))
+        var labelId = Guid.Empty;
+        var weighed = barcode.StartsWith("WPL-", StringComparison.OrdinalIgnoreCase);
+        if (weighed || barcode.StartsWith("LOT-", StringComparison.OrdinalIgnoreCase))
+        {
+            if (barcode.Length != 36 || !Guid.TryParseExact(barcode.AsSpan(4), "N", out labelId) || labelId == Guid.Empty)
+                throw new PosError(400, weighed ? "invalid_weighed_price_label" : "invalid_lot_barcode");
+        }
+        else if (!IsBarcode(barcode))
             throw new PosError(400, "invalid_barcode");
-        return await ReadCashierProduct(context, Guid.Empty, barcode, ct);
+        return await ReadCashierProduct(context, Guid.Empty, barcode, ct, labelId, weighed);
     }
 
     public Task<CatalogProduct> GetProductById(HttpContext context, Guid product, CancellationToken ct) =>
         ReadCashierProduct(context, product, "", ct);
 
     private async Task<CatalogProduct> ReadCashierProduct(HttpContext context, Guid product, string barcode,
-        CancellationToken ct)
+        CancellationToken ct, Guid labelId = default, bool weighed = false)
     {
         await using var db = await source.OpenConnectionAsync(ct);
         await using var tx = await db.BeginTransactionAsync(ct);
         var scope = await Access.RequireCashier(db, tx, context, false, ct);
         await using var command = db.Sql(tx, """
             WITH target AS (
-                SELECT product_id, code, quantity_factor FROM product_barcodes
-                WHERE (org_id, code) = ($1, $3) AND $3 <> ''
-                UNION ALL SELECT $5::uuid, '', 1::numeric WHERE $3 = ''
+                SELECT product_id, code, quantity_factor, NULL::uuid AS lot_id, NULL::numeric AS printed_total, false AS sold FROM product_barcodes
+                WHERE (org_id, code) = ($1, $3) AND $3 <> '' AND NOT $7
+                UNION ALL SELECT $5::uuid, '', 1::numeric, NULL::uuid, NULL::numeric, false WHERE $3 = ''
+                UNION ALL SELECT product_id, $3, 1::numeric, lot_id, NULL::numeric, false FROM lot_retail_settings
+                WHERE $7 AND NOT $8 AND (org_id, store_id, label_id) = ($1, $2, $6)
+                UNION ALL SELECT product_id, $3, weight, lot_id, printed_total, sold_sale_id IS NOT NULL
+                FROM weighed_price_labels WHERE $8 AND (org_id, store_id, id) = ($1, $2, $6)
             )
             SELECT p.id, p.name, p.unit, sp.unit_price, sp.version, p.requires_expiry, l.id, l.expiry_date, l.quantity,
-                   EXISTS (SELECT 1 FROM stock_lots risk
+                   t.lot_id IS NULL AND EXISTS (SELECT 1 FROM stock_lots risk
                            WHERE (risk.org_id, risk.store_id, risk.product_id) = (p.org_id, sp.store_id, p.id)
                              AND (risk.quarantine_quantity > 0 OR (risk.quantity > 0
                                   AND (risk.quarantined OR risk.expiry_date < (now() AT TIME ZONE $4)::date
                                        OR (p.requires_expiry AND risk.expiry_date IS NULL))))),
-                   coalesce(nullif(t.code, ''), p.barcode, ''), t.quantity_factor
+                   coalesce(nullif(t.code, ''), p.barcode, ''), t.quantity_factor,
+                   CASE WHEN promo.enabled AND p.unit = 'piece' THEN promo.version END,
+                   markdown.unit_price, markdown.version,
+                   CASE WHEN t.lot_id IS NULL THEN NULL
+                        WHEN t.sold OR (t.printed_total IS NOT NULL AND (p.unit <> 'kg' OR l.quantity < t.quantity_factor))
+                             THEN 'weighed_price_label_unavailable'
+                        WHEN l.expiry_date < (now() AT TIME ZONE $4)::date THEN 'lot_barcode_expired'
+                        WHEN l.id IS NULL OR l.quarantined OR l.quantity <= 0
+                             OR (p.requires_expiry AND l.expiry_date IS NULL) THEN 'lot_barcode_unavailable' END,
+                   t.printed_total
             FROM target t JOIN products p ON (p.org_id, p.id) = ($1, t.product_id)
             JOIN store_prices sp ON (sp.org_id, sp.product_id) = (p.org_id, p.id)
+            LEFT JOIN store_quantity_promotions promo ON (promo.org_id, promo.store_id, promo.product_id) =
+                                                        (sp.org_id, sp.store_id, sp.product_id)
             LEFT JOIN stock_lots l ON (l.org_id, l.store_id, l.product_id) = (sp.org_id, sp.store_id, sp.product_id)
-                AND NOT l.quarantined AND l.quantity > 0
-                AND (NOT p.requires_expiry OR l.expiry_date IS NOT NULL)
-                AND (l.expiry_date IS NULL OR l.expiry_date >= (now() AT TIME ZONE $4)::date)
+                AND (l.id = t.lot_id OR (t.lot_id IS NULL AND NOT l.quarantined AND l.quantity > 0
+                     AND (NOT p.requires_expiry OR l.expiry_date IS NOT NULL)
+                     AND (l.expiry_date IS NULL OR l.expiry_date >= (now() AT TIME ZONE $4)::date)))
+            LEFT JOIN active_lot_markdowns markdown ON (markdown.org_id, markdown.store_id, markdown.product_id, markdown.lot_id) =
+                                                       (l.org_id, l.store_id, l.product_id, l.id)
             WHERE sp.store_id = $2 AND sp.active
             ORDER BY l.expiry_date, l.id LIMIT 100
-            """, scope.Organization, scope.Store, barcode, scope.TimeZone, product);
+            """, scope.Organization, scope.Store, barcode, scope.TimeZone, product, labelId, labelId != Guid.Empty, weighed);
         await using var rows = await command.ExecuteReaderAsync(ct);
         if (!await rows.ReadAsync(ct))
-            throw new PosError(404, "product_not_found");
+            throw new PosError(404, weighed ? "weighed_price_label_not_found" : "product_not_found");
+        if (!rows.IsDBNull(15))
+            throw new PosError(409, rows.GetString(15));
         if (rows.IsDBNull(3))
             throw new PosError(409, "sale_price_not_set");
         List<CatalogLot> lots = [];
@@ -52,12 +78,20 @@ internal sealed partial class PosService
             rows.GetDecimal(3), rows.GetInt32(4), rows.GetBoolean(5), lots)
         {
             RequiresLotVerification = rows.GetBoolean(9),
-            QuantityFactor = rows.GetDecimal(11)
+            QuantityFactor = rows.GetDecimal(11),
+            PromotionVersion = rows.IsDBNull(12) ? null : rows.GetInt32(12),
+            PriceLabel = weighed
+                ? new WeighedPriceLabel(labelId, rows.GetGuid(0), rows.GetGuid(6), rows.GetDecimal(11), rows.GetDecimal(16))
+                : null
         };
         do
         {
             if (!rows.IsDBNull(6))
-                lots.Add(new CatalogLot(rows.GetGuid(6), ReadDate(rows, 7), rows.GetDecimal(8)));
+                lots.Add(new CatalogLot(rows.GetGuid(6), ReadDate(rows, 7), rows.GetDecimal(8))
+                {
+                    MarkdownUnitPrice = rows.DecimalOrNull(13),
+                    LotPriceVersion = rows.IsDBNull(14) ? null : rows.GetInt32(14)
+                });
         } while (await rows.ReadAsync(ct));
         return result;
     }

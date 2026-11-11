@@ -18,7 +18,19 @@ public sealed record StoreAuditPage(Guid StoreId, string TimeZone, DateOnly From
 
 public sealed record OpenShift(Guid ShiftId, [property: JsonRequired] decimal OpeningCash);
 public sealed record CloseShift([property: JsonRequired] decimal CountedCash);
-public sealed record SaleItem(Guid ProductId, Guid LotId, int PriceVersion, decimal Quantity);
+public sealed record SaleItem(Guid ProductId, Guid LotId, int PriceVersion, decimal Quantity,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? PromotionVersion = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? LotPriceVersion = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? PriceLabelId = null);
+public sealed record IssueWeighedPriceLabel(Guid LabelId, [property: JsonRequired] decimal Weight);
+public sealed record WeighedPriceLabel(Guid LabelId, Guid ProductId, Guid LotId, decimal Weight, decimal PrintedTotal)
+{
+    public string Barcode => $"WPL-{LabelId:N}";
+}
+public sealed record QuoteSale(SaleItem[] Items);
+public sealed record SaleQuote(decimal Total, decimal DiscountAmount);
+public sealed record ChangeQuantityPromotion(int ExpectedVersion, [property: JsonRequired] bool Enabled, string Reason);
+public sealed record QuantityPromotion(int Version, bool Enabled);
 public sealed record CreateSale(Guid OperationId, Guid ShiftId, string Method, decimal? Tendered, SaleItem[] Items,
     ManualSaleDiscount? Discount = null, Guid? CartId = null, int? CartVersion = null);
 public sealed record SaleLine(Guid ProductId, Guid LotId, string Name, string Unit, decimal Quantity,
@@ -26,6 +38,12 @@ public sealed record SaleLine(Guid ProductId, Guid LotId, string Name, string Un
 {
     public decimal DiscountAmount { get; init; }
     public int? PriceVersion { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? PromotionVersion { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? LotPriceVersion { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Guid? PriceLabelId { get; init; }
     internal decimal? InventoryCost { get; init; }
 }
 public sealed record SaleResult(Guid OperationId, Guid ShiftId, string Method, decimal Total, decimal? Tendered,
@@ -45,12 +63,22 @@ public sealed record ShiftSummary(Guid ShiftId, DateTime OpenedAt, DateTime? Clo
     public decimal? CashOut { get; init; }
     public long OpenCartCount { get; init; }
 }
-public sealed record CatalogLot(Guid LotId, DateOnly? ExpiryDate, decimal Quantity);
+public sealed record CatalogLot(Guid LotId, DateOnly? ExpiryDate, decimal Quantity)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public decimal? MarkdownUnitPrice { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? LotPriceVersion { get; init; }
+}
 public sealed record CatalogProduct(Guid ProductId, string Name, string Barcode, string Unit, decimal UnitPrice,
     int PriceVersion, bool RequiresExpiry, IReadOnlyList<CatalogLot> Lots)
 {
     public bool RequiresLotVerification { get; init; }
     public decimal QuantityFactor { get; init; } = 1;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public WeighedPriceLabel? PriceLabel { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? PromotionVersion { get; init; }
 }
 
 internal sealed class PosError(int status, string code, int? importRow = null) : Exception(code)
@@ -120,6 +148,9 @@ public sealed record ReceiptCosts(Guid ReceiptId, int ReceiptVersion, string Sta
     IReadOnlyList<ReceiptCostLine> Lines);
 
 public sealed record StockLotKey(Guid ProductId, Guid LotId);
+public sealed record ChangeLotRetailSettings(int ExpectedVersion, [property: JsonRequired] decimal? UnitPrice, string Reason);
+public sealed record LotRetailSettings(Guid ProductId, Guid LotId, string? LabelCode, int Version, decimal? UnitPrice,
+    decimal? BaseUnitPrice);
 public sealed record StockLot(Guid ProductId, Guid LotId, string Name, string Barcode, string Unit,
     DateOnly? ExpiryDate, decimal StockQuantity, decimal QuarantineQuantity, decimal AvailableQuantity, long Revision,
     bool RequiresExpiry)
@@ -209,7 +240,13 @@ public sealed record CancelParkedCart(int ExpectedVersion, string Reason);
 public sealed record ParkedCart(Guid CartId, Guid ShiftId, int Version, string Status, DateTime CreatedAt,
     DateTime ExpiresAt, Guid? SaleId, string? CancelReason, SaleItem[] Items);
 public sealed record ParkedCartLineReview(Guid ProductId, Guid LotId, int SavedPriceVersion, int? CurrentPriceVersion,
-    decimal? CurrentUnitPrice, decimal AvailableQuantity, string Status);
+    decimal? CurrentUnitPrice, decimal AvailableQuantity, string Status)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? CurrentPromotionVersion { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? CurrentLotPriceVersion { get; init; }
+}
 public sealed record ParkedCartReview(ParkedCart Cart, IReadOnlyList<ParkedCartLineReview> Lines);
 public sealed record SaleHistoryEntry(Guid ReceiptId, Guid RegisterId, Guid ShiftId, Guid CashierId, DateTime CreatedAt,
     string Method, decimal Total, decimal RefundedAmount, string RefundStatus)

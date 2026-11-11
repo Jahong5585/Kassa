@@ -2,10 +2,19 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 restore_check=false
+promotion_check=false
+lot_retail_check=false
+label_check=false
 if [[ "${1:-}" == "--restore" && "$#" == 1 ]]; then
     restore_check=true
+elif [[ "${1:-}" == "--promotions" && "$#" == 1 ]]; then
+    promotion_check=true
+elif [[ "${1:-}" == "--price-labels" && "$#" == 1 ]]; then
+    label_check=true
+elif [[ "${1:-}" == "--lot-retail" && "$#" == 1 ]]; then
+    lot_retail_check=true
 elif [[ "$#" != 0 ]]; then
-    echo "Usage: bash tests/run.sh [--restore]" >&2
+    echo "Usage: bash tests/run.sh [--restore | --promotions | --lot-retail | --price-labels]" >&2
     exit 2
 fi
 command -v dotnet >/dev/null || { echo "Install the .NET 10 SDK" >&2; exit 127; }
@@ -91,11 +100,19 @@ for ((i=0; i<60; i++)); do
     fi
     sleep 1
 done
-if ! python3 tests/smoke.py; then
-    cat "$logs" >&2
-    exit 1
+if "$promotion_check"; then
+    python3 tests/quantity_promotions.py
+elif "$lot_retail_check"; then
+    python3 tests/lot_retail.py
+elif "$label_check"; then
+    python3 tests/weighed_price_labels.py
+else
+    if ! python3 tests/smoke.py; then
+        cat "$logs" >&2
+        exit 1
+    fi
+    "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/sales_period_audit.sql
 fi
-"${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/sales_period_audit.sql
 if "$restore_check"; then
     kill "$api_pid"
     wait "$api_pid" || true
