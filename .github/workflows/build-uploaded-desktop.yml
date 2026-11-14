@@ -1,0 +1,114 @@
+name: Build uploaded Desktop EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['ai/windows-exe-20261114']
+    paths:
+      - build/**
+      - .github/workflows/build-uploaded-desktop.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore source snapshot
+        shell: pwsh
+        run: |
+          $output = [System.IO.File]::Create((Join-Path $PWD 'source.zip'))
+          try {
+            Get-ChildItem 'build/source.zip.part.*' | Sort-Object Name | ForEach-Object {
+              $bytes = [System.IO.File]::ReadAllBytes($_.FullName)
+              $output.Write($bytes, 0, $bytes.Length)
+            }
+          } finally {
+            $output.Dispose()
+          }
+          $actual = (Get-FileHash 'source.zip' -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne '2b319ae00da48698fdafd175ecff188bf38bf42aac796973d0de4f85a9872cdb') {
+            throw "Source snapshot checksum mismatch: $actual"
+          }
+          Expand-Archive 'source.zip' -DestinationPath 'src'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Test Desktop interface
+        shell: pwsh
+        working-directory: src/desktop/source
+        run: |
+          npm install --no-save playwright
+          npx playwright install chromium
+          npm test
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Test native diagnostics
+        shell: pwsh
+        run: dotnet run --project src/desktop/source/tests/SupportDiagnosticsTests.csproj -c Release
+
+      - name: Build Windows x64 client
+        shell: pwsh
+        run: dotnet build src/desktop/source/KasaDesktop.csproj -c Release
+
+      - name: Prepare unsigned pilot package
+        shell: pwsh
+        run: |
+          $payload = (Resolve-Path 'src/desktop/source/bin/Release/net48').Path
+          Copy-Item 'src/desktop/source/KasaPilot.example.json' $payload
+          Copy-Item 'src/desktop/source/PrinterDrivers.example.json' $payload
+          Copy-Item 'src/desktop/package/PILOT.md' $payload
+          Copy-Item 'src/desktop/package/PRINTER_DRIVERS.md' $payload
+          Copy-Item 'src/desktop/package/START.txt' $payload
+          Copy-Item 'src/desktop/package/UPDATES.md' $payload
+          Copy-Item 'src/desktop/package/SIGNING.md' $payload
+          @"
+          ВНИМАНИЕ: ЭТО НЕПОДПИСАННАЯ ТЕСТОВАЯ СБОРКА.
+          Используйте её только на согласованном пилотном компьютере.
+          Перед установкой в реальные магазины выпуск должен быть подписан сертификатом Code Signing.
+          "@ | Set-Content (Join-Path $payload 'UNSIGNED-TEST-BUILD.txt') -Encoding UTF8
+          New-Item -ItemType Directory -Force (Join-Path $payload 'licenses') | Out-Null
+          Copy-Item 'src/desktop/package/licenses/*' (Join-Path $payload 'licenses')
+          Compress-Archive -Path (Join-Path $payload '*') -DestinationPath 'Kassa_Portable_0.7.15_Windows_x64_UNSIGNED_TEST.zip'
+
+      - name: Build unsigned EXE installer
+        shell: pwsh
+        run: |
+          choco install nsis --no-progress -y
+          $payload = (Resolve-Path 'src/desktop/source/bin/Release/net48').Path
+          $setup = Join-Path $PWD 'KassaSetup_0.7.15_UNSIGNED_TEST.exe'
+          & "$env:ProgramFiles(x86)\NSIS\makensis.exe" "/DPAYLOAD=$payload" "/DOUTPUT=$setup" 'src/desktop/source/installer/Kassa.nsi'
+          if ($LASTEXITCODE -ne 0) { throw "makensis failed with $LASTEXITCODE" }
+          if ((Get-AuthenticodeSignature $setup).Status -ne 'NotSigned') {
+            throw 'Unexpected signature on the unsigned pilot artifact.'
+          }
+
+      - name: Write SHA-256 checksums
+        shell: pwsh
+        run: |
+          $files = @(
+            'KassaSetup_0.7.15_UNSIGNED_TEST.exe',
+            'Kassa_Portable_0.7.15_Windows_x64_UNSIGNED_TEST.zip'
+          )
+          $lines = foreach ($file in $files) {
+            $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $file"
+          }
+          $lines | Set-Content 'Kassa_0.7.15_SHA256SUMS.txt' -Encoding ascii
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kassa-Windows-0.7.15-UNSIGNED-TEST
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            KassaSetup_0.7.15_UNSIGNED_TEST.exe
+            Kassa_Portable_0.7.15_Windows_x64_UNSIGNED_TEST.zip
+            Kassa_0.7.15_SHA256SUMS.txt
