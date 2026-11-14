@@ -84,7 +84,7 @@ jobs:
           choco install nsis --no-progress -y
           $payload = (Resolve-Path 'src/desktop/source/bin/Release/net48').Path
           $setup = Join-Path $PWD 'KassaSetup_0.7.15_UNSIGNED_TEST.exe'
-          & "$env:ProgramFiles(x86)\NSIS\makensis.exe" "/DPAYLOAD=$payload" "/DOUTPUT=$setup" 'src/desktop/source/installer/Kassa.nsi'
+          & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" "/DPAYLOAD=$payload" "/DOUTPUT=$setup" 'src/desktop/source/installer/Kassa.nsi'
           if ($LASTEXITCODE -ne 0) { throw "makensis failed with $LASTEXITCODE" }
           if ((Get-AuthenticodeSignature $setup).Status -ne 'NotSigned') {
             throw 'Unexpected signature on the unsigned pilot artifact.'
