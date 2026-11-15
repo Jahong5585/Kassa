@@ -48,6 +48,7 @@ export Sales__MaxManualDiscountPercent=10
 export Purchasing__ReplenishmentRefreshSeconds=1
 export Ai__ProcurementEnabled=true
 export GROQ_API_KEY=test-groq-key
+export RateLimiting__PermitLimit=2000
 export ASPNETCORE_ENVIRONMENT=Development
 export ASPNETCORE_URLS="http://127.0.0.1:$api_port"
 export POS_TEST_LOCAL_PASSWORD="A7!$(hex | cut -c1-24)"

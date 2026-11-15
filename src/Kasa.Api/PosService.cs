@@ -59,6 +59,73 @@ internal sealed partial class PosService(NpgsqlDataSource source, IConfiguration
         return shift;
     }
 
+    public async Task<ShiftSummary> RecoverCloseShift(HttpContext context, Guid store, Guid register, Guid id,
+        RecoverCloseShift request, CancellationToken ct)
+    {
+        if (!IsMoney(request.CountedCash) || !IsText(request.Reason, 500))
+            throw new PosError(400, "invalid_shift_recovery");
+
+        await using var db = await source.OpenConnectionAsync(ct);
+        await using var tx = await db.BeginTransactionAsync(ct);
+        var scope = await Access.RequireStore(db, tx, context, configuration, store, true, ct, "shift_not_found");
+        await Access.LockRegister(db, tx, register, ct);
+        var current = await ReadShift(db, tx, scope.Organization, store, register, id, null, ct)
+            ?? throw new PosError(404, "shift_not_found");
+        await using var priorRecovery = db.Sql(tx, """
+            SELECT recovered_by IS NOT NULL FROM shifts
+            WHERE (org_id, store_id, register_id, id) = ($1, $2, $3, $4)
+            """, scope.Organization, store, register, id);
+        var recovered = await priorRecovery.ExecuteScalarAsync(ct) is true;
+        if (current.ClosedAt is not null)
+        {
+            if (recovered && current.CountedCash == request.CountedCash)
+                return current;
+            throw new PosError(409, "shift_recovery_conflict");
+        }
+
+        await using var recoverable = db.Sql(tx, """
+            SELECT NOT r.active OR NOT (s.active AND a.active AND EXISTS (
+                SELECT 1 FROM cashier_registers cr
+                WHERE (cr.org_id, cr.store_id, cr.register_id, cr.staff_id) =
+                      (sh.org_id, sh.store_id, sh.register_id, sh.cashier_id)))
+            FROM shifts sh
+            JOIN registers r ON (r.org_id, r.store_id, r.id) = (sh.org_id, sh.store_id, sh.register_id)
+            JOIN staff s ON (s.org_id, s.id) = (sh.org_id, sh.cashier_id)
+            JOIN staff_stores a ON (a.org_id, a.store_id, a.staff_id) = (sh.org_id, sh.store_id, sh.cashier_id)
+            WHERE (sh.org_id, sh.store_id, sh.register_id, sh.id) = ($1, $2, $3, $4)
+            """, scope.Organization, store, register, id);
+        if (await recoverable.ExecuteScalarAsync(ct) is not true)
+            throw new PosError(409, "shift_recovery_not_required");
+
+        var reason = request.Reason.Trim();
+        List<Guid> cancelledCarts = [];
+        await using (var carts = db.Sql(tx, """
+            UPDATE parked_carts SET status = 'cancelled', cancel_reason = $5, version = version + 1
+            WHERE (org_id, store_id, register_id, shift_id) = ($1, $2, $3, $4) AND status = 'parked'
+            RETURNING id
+            """, scope.Organization, store, register, id, reason))
+        await using (var rows = await carts.ExecuteReaderAsync(ct))
+        {
+            while (await rows.ReadAsync(ct))
+                cancelledCarts.Add(rows.GetGuid(0));
+        }
+        foreach (var cart in cancelledCarts)
+            await Audit(db, tx, context, scope.Organization, store, register, scope.Staff, "cart.cancelled", cart, ct);
+
+        var updated = await db.Run(tx, ct, """
+            UPDATE shifts SET closed_at = statement_timestamp(), counted_cash = $5,
+                recovered_by = $6, recovery_reason = $7
+            WHERE (org_id, store_id, register_id, id) = ($1, $2, $3, $4) AND closed_at IS NULL
+            """, scope.Organization, store, register, id, request.CountedCash, scope.Staff, reason);
+        if (updated != 1)
+            throw new PosError(409, "shift_recovery_conflict");
+        await Audit(db, tx, context, scope.Organization, store, register, scope.Staff, "shift.recovered", id, ct);
+        var result = await ReadShift(db, tx, scope.Organization, store, register, id, null, ct)
+            ?? throw new InvalidOperationException("Recovered shift missing.");
+        await tx.CommitAsync(ct);
+        return result;
+    }
+
     public async Task<ShiftSummary> GetShift(HttpContext context, Guid id, CancellationToken ct)
     {
         await using var db = await source.OpenConnectionAsync(ct);

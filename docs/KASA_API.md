@@ -1,6 +1,6 @@
 # Касса Минимаркет. Справочник HTTPS API
 
-Срез сохранённого бэкенда `kasa-backend.zip` версии 28 от 8 ноября 2026 года. Справочник содержит 136 бизнес-операций и два служебных маршрута. Состав маршрутов и типы запросов сверены с `src/Kasa.Api/Program.cs` и `src/Kasa.Api/Contracts.cs` из архива.
+Текущий контракт после исправлений аудита от 8 ноября 2026 года. Справочник содержит 137 бизнес-операций и два служебных маршрута. Состав маршрутов и типы запросов сверены с `src/Kasa.Api/Program.cs` и `src/Kasa.Api/Contracts.cs`.
 
 ## Подключение
 
@@ -11,7 +11,7 @@
 | `Content-Type: application/json` | Для JSON-тел. Поля именуются в `camelCase`. Сервер отклоняет неизвестные поля. |
 | `X-File-Name` и фактический `Content-Type` | Для бинарного `PUT` вложения накладной. Допустимы PDF, JPEG и PNG до 2 МиБ, максимум три вложения на накладную. |
 
-Базовый адрес задаётся при развёртывании. Пример ниже использует переменную `KASA_BASE` с HTTPS-адресом вашего стенда и токен из переменной окружения `KASA_TOKEN`.
+Рабочий базовый адрес — `https://kassa.qr-space.uz`. Пример ниже использует переменную `KASA_BASE` с HTTPS-адресом стенда и токен из переменной окружения `KASA_TOKEN`.
 
 ```bash
 curl --fail-with-body \
@@ -90,7 +90,7 @@ UUID в путях передаются без фигурных скобок. К
 3. Передайте документ на проверку через `POST …/submit` с `expectedVersion`. Админ может проверить закупочную стоимость через `GET` и `PUT …/costs`, вернуть в черновик с причиной или провести через `POST …/post` с актуальной версией.
 4. `POST …/cancel` отменяет непроведённую приёмку с указанием версии и причины. Приёмщик может отменить свой черновик. Для отправленного документа нужен админ.
 
-В версии 28 обязательность вложения включается параметром `Purchasing__RequireReceiptAttachment=true`. Прикладное исправление из документа передачи включает этот режим по умолчанию.
+Проверенное вложение обязательно по умолчанию. Для временной совместимости со старым клиентом требование можно явно отключить через `Purchasing__RequireReceiptAttachment=false`.
 
 ### Длинная выгрузка складских движений
 
@@ -100,17 +100,17 @@ UUID в путях передаются без фигурных скобок. К
 
 `POST /v1/register/diagnostics` принимает `eventId`, `shiftId`, `code` и `operationId`. Допустимы `saleOutcomeUnknown`, `printFailed`, `syncFailed`. Для `syncFailed` ID операции можно пропустить. При ошибке печати нужна сохранённая продажа этой смены. Одинаковый повтор события безопасен. Админ видит события в `GET /v1/reports/stores/{storeId}/exceptions`.
 
-## Изменения API после переноса исправлений
+## Изменения API после аудита
 
-Следующие изменения входят в план продолжения и относятся к версии после 28.
+Следующие изменения реализованы в текущей ветке.
 
 - Новый административный `POST /v1/stores/{storeId}/registers/{registerId}/shifts/{id}/recover-close` с `countedCash` и `reason`. Цель — закрыть смену при отозванном доступе кассира или устройства.
 - Наличный возврат при недостатке денег в выдающей смене возвращает `409 insufficient_cash_balance`.
-- `PUT` карточки товара сохраняет действующий `requiresExpiry`, если поле пропущено или равно `null`. В версии 28 передавайте текущее значение явно.
+- `PUT` карточки товара сохраняет действующий `requiresExpiry`, если поле пропущено или равно `null`. При создании пропущенное поле означает `false`; явные `true` и `false` меняют признак.
 - Отправка и проведение приёмки требуют проверенное вложение по умолчанию. Точный повтор уже сохранённого файла должен возвращать его метаданные после отправки документа.
 - Токен с временем действия свыше 10 минут, без `iat` или с недопустимым будущим временем выдачи должен возвращать `401`. Интеграционную проверку сессий выполняют с рабочим OIDC.
 
-## Каталог маршрутов версии 28
+## Каталог маршрутов
 
 В столбце «Вход» перечислены параметры запроса, кроме параметров пути. Звёздочка означает обязательный параметр запроса на уровне привязки. Валидация на уровне бизнес-логики может добавлять условия. Имена типов в этом столбце соответствуют JSON-телам из следующего раздела. Для схем ответов и примеров фильтров используйте `/openapi/v1.json` и `README.md` из архива.
 
@@ -129,6 +129,7 @@ UUID в путях передаются без фигурных скобок. К
 | --- | --- | --- | --- |
 | `POST /v1/shifts` | `OpenShift` | `OpenShift` | 200 JSON |
 | `POST /v1/shifts/{id}/close` | `CloseShift` | `CloseShift` | 200 JSON |
+| `POST /v1/stores/{storeId}/registers/{registerId}/shifts/{id}/recover-close` | `RecoverCloseShift` | `RecoverCloseShift` | 200 JSON |
 | `GET /v1/shifts/{id}` | `ReadCashierShift` | — | 200 JSON |
 | `GET /v1/catalog/barcodes/{barcode}` | `FindProductByBarcode` | — | 200 JSON |
 | `GET /v1/catalog/search` | `SearchCashierProducts` | `q` *, `offset` | 200 JSON |
@@ -358,6 +359,7 @@ UUID в путях передаются без фигурных скобок. К
 | `ReceiptItem` | `productId` — `Guid`, `lotId` — `Guid`, `expiryDate` — `DateOnly?`, `quantity` — `decimal` |
 | `ReceiptTransition` | `expectedVersion` — `int` |
 | `RecordSupplierPayment` | `operationId` — `Guid`, `amount` — `decimal`, `paymentDate` — `DateOnly`, `reference` — `string` |
+| `RecoverCloseShift` | `countedCash` * — `decimal`, `reason` — `string` |
 | `RefundItem` | `productId` — `Guid`, `lotId` — `Guid`, `quantity` — `decimal`, `destination` — `string` |
 | `RegisterNewDevice` | `registerId` — `Guid`, `name` — `string`, `cashierId` — `Guid`, `registerKey` — `string` |
 | `ReplenishmentRequest` | `historyDays` — `int`, по умолчанию `28`, `minimumHistoryDays` — `int`, по умолчанию `7`, `coverageDays` — `int`, по умолчанию `5`, `safetyStock` — `decimal`, по умолчанию `0`, `minimumPackages` — `int`, по умолчанию `1`, `leadTimeDays` — `int?`, по умолчанию `null`, `orderWeekdays` — `int[]?`, по умолчанию `null`, `manualDailyDemand` — `decimal?`, по умолчанию `null`, `orderCutoffTime` — `TimeOnly?`, по умолчанию `null` |
@@ -377,7 +379,7 @@ UUID в путях передаются без фигурных скобок. К
 | `SupplierPaymentAllocationLine` | `receiptId` — `Guid`, `amount` — `decimal` |
 | `SupplierReturnItem` | `productId` — `Guid`, `lotId` — `Guid`, `quantity` — `decimal`, `bucket` — `string` |
 | `TransferSupplierCredit` | `operationId` — `Guid`, `sourceReceiptId` — `Guid`, `targetReceiptId` — `Guid`, `amount` — `decimal`, `reason` — `string` |
-| `WriteProductCard` | `expectedVersion` * — `int`, `name` — `string`, `unit` — `string`, `requiresExpiry` — `bool`, `sku` — `string?`, `category` — `string?`, `brand` — `string?`, `supplierRef` — `string?`, `taxProfile` — `string?`, `barcodes` — `ProductBarcode[]` |
+| `WriteProductCard` | `expectedVersion` * — `int`, `name` — `string`, `unit` — `string`, `requiresExpiry` — `bool?`, `sku` — `string?`, `category` — `string?`, `brand` — `string?`, `supplierRef` — `string?`, `taxProfile` — `string?`, `barcodes` — `ProductBarcode[]` |
 | `WriteProductPrice` | `expectedVersion` — `int`, `unitPrice` * — `decimal?`, `active` * — `bool`, `reason` — `string` |
 | `WriteReceiptCosts` | `expectedVersion` — `int`, `items` — `ReceiptCostItem[]` |
 | `WriteReplenishmentPolicy` | `expectedVersion` * — `int`, `settings` — `ReplenishmentRequest` |

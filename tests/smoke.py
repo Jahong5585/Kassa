@@ -36,15 +36,16 @@ def fixture_id(n):
     return f"00000000-0000-0000-0000-{n:012d}"
 
 
-def token(subject, mfa):
+def token(subject, mfa, issued_at=None, expires_at=None, include_iat=True):
     def encode(data):
         return base64.urlsafe_b64encode(data).rstrip(b"=")
 
     header = encode(b'{"alg":"HS256","typ":"JWT"}')
-    claims = {
-        "iss": "kasa-local", "aud": AUDIENCE, "sub": subject, "iat": int(time.time()),
-        "exp": int(time.time()) + 300,
-    }
+    issued_at = int(time.time()) if issued_at is None else issued_at
+    claims = {"iss": "kasa-local", "aud": AUDIENCE, "sub": subject,
+              "exp": issued_at + 300 if expires_at is None else expires_at}
+    if include_iat:
+        claims["iat"] = issued_at
     if mfa and subject.startswith("admin-"):
         claims["acr"] = os.environ["Auth__AdminAcr"]
     payload = encode(json.dumps(claims).encode())
@@ -92,6 +93,14 @@ def json_with_headers(path, **kwargs):
     return (json.loads(payload) if payload else None), headers
 
 
+def submit_receipt_with_clean_file(path, expected_version=1, staff="receiver"):
+    file_id = str(uuid.uuid5(uuid.NAMESPACE_URL, path + ":clean-invoice"))
+    contents = b"%PDF-1.4\n% clean smoke receipt\n%%EOF\n"
+    request(path + "/files/" + file_id, staff=staff, method="PUT", raw_body=contents,
+            extra_headers={"Content-Type": "application/pdf", "X-File-Name": "invoice.pdf"})
+    return request(path + "/submit", {"expectedVersion": expected_version}, staff=staff)
+
+
 def sale(shift, *items, method="manualCashless", tendered=None):
     return {
         "operationId": str(uuid.uuid4()), "shiftId": shift, "method": method, "tendered": tendered,
@@ -108,6 +117,16 @@ def main():
     request("/v1/shifts", opens, key="0" * 64, expected=403)
     request("/v1/shifts", opens, register=22, expected=403)
     request("/v1/shifts", {"shiftId": shift_a}, expected=400)
+
+    now = int(time.time())
+    invalid_tokens = (
+        token("cashier-a", False, issued_at=now, expires_at=now + 7200),
+        token("cashier-a", False, issued_at=now, include_iat=False),
+        token("cashier-a", False, issued_at=now + 120),
+    )
+    for invalid_token in invalid_tokens:
+        request("/openapi/v1.json", expected=401,
+                extra_headers={"Authorization": "Bearer " + invalid_token})
 
     spec = request("/openapi/v1.json")
     assert "get" in spec["paths"]["/v1/shifts/{id}"]
@@ -318,9 +337,9 @@ def check_receiving():
     request(row, staff="admin-foreign", expected=404)
     assert request("/v1/catalog/barcodes/001")["lots"] == []
 
-    submitted = request(row + "/submit", {"expectedVersion": 1}, staff="receiver")
+    submitted = submit_receipt_with_clean_file(row)
     assert submitted["status"] == "submitted" and submitted["version"] == 2
-    assert request(row + "/submit", {"expectedVersion": 1}, staff="receiver") == submitted
+    assert submit_receipt_with_clean_file(row) == submitted
     assert request(path + "?status=submitted", staff="admin-a") == [submitted]
     request(row + "/post", {"expectedVersion": 2}, staff="receiver", expected=403)
     request(row + "/post", {"expectedVersion": 2}, expected=403)
@@ -334,7 +353,7 @@ def check_receiving():
     assert edited["version"] == 4 and edited["items"][1]["quantity"] == 5
     assert request(row, edit, staff="receiver", method="PUT") == edited
     request(row, {**edit, "expectedVersion": 2}, staff="receiver", method="PUT", expected=409)
-    request(row + "/submit", {"expectedVersion": 4}, staff="receiver")
+    submit_receipt_with_clean_file(row, 4)
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _: request(row + "/post", {"expectedVersion": 5}, staff="admin-a"), range(2)))
     assert results[0] == results[1]
@@ -348,7 +367,7 @@ def check_receiving():
            "items": [receipt_item(70, 2, future), receipt_item(71, 3, future)]}
     request(path, bad, staff="receiver")
     bad_row = path + "/" + bad["receiptId"]
-    request(bad_row + "/submit", {"expectedVersion": 1}, staff="receiver")
+    submit_receipt_with_clean_file(bad_row)
     error = request(bad_row + "/post", {"expectedVersion": 2}, staff="admin-a", expected=409)
     assert error["code"] == "receipt_lot_conflict"
     assert request("/v1/catalog/barcodes/001")["lots"] == lots
@@ -358,7 +377,7 @@ def check_receiving():
                "items": [receipt_item(72, 1, (today - datetime.timedelta(days=2)).isoformat())]}
     request(path, expired, staff="receiver")
     expired_row = path + "/" + expired["receiptId"]
-    request(expired_row + "/submit", {"expectedVersion": 1}, staff="receiver")
+    submit_receipt_with_clean_file(expired_row)
     error = request(expired_row + "/post", {"expectedVersion": 2}, staff="admin-a", expected=409)
     assert error["code"] == "receipt_expiry_invalid"
     print("PASS: receiving permissions, draft review, versions, invoice duplication, expiry, concurrent posting and rollback")
@@ -368,6 +387,7 @@ def check_refunds(shift_b):
     shift_a = str(uuid.uuid4())
     request("/v1/shifts", {"shiftId": shift_a, "openingCash": 100000})
     original = request("/v1/sales", sale(shift_a, (41, 70, 2), method="cash", tendered=40000))
+    cross_register_sale = request("/v1/sales", sale(shift_a, (41, 70, 1), method="cash", tendered=20000))
 
     def make_refund(sold, shift, product, lot, quantity, destination="stock"):
         return {"operationId": str(uuid.uuid4()), "shiftId": shift, "sourceRegisterId": fixture_id(21),
@@ -375,6 +395,35 @@ def check_refunds(shift_b):
                     "productId": fixture_id(product), "lotId": fixture_id(lot),
                     "quantity": quantity, "destination": destination,
                 }]}
+
+    cross_register_refund = make_refund(cross_register_sale, shift_b, 41, 70, 1)
+    insufficient = request("/v1/refunds", cross_register_refund, staff="cashier-b", register=22, expected=409)
+    assert insufficient["code"] == "insufficient_cash_balance"
+    movements = f"/v1/shifts/{shift_b}/cash-movements"
+    deposit = {"operationId": str(uuid.uuid4()), "direction": "in", "amount": 17500,
+               "reason": "Деньги для возврата"}
+    request(movements, deposit, staff="cashier-b", register=22)
+    withdrawal = {"operationId": str(uuid.uuid4()), "direction": "out", "amount": 17500,
+                  "reason": "Параллельное изъятие"}
+
+    def cash_race(kind):
+        try:
+            if kind == "refund":
+                request("/v1/refunds", cross_register_refund, staff="cashier-b", register=22)
+            else:
+                request(movements, withdrawal, staff="cashier-b", register=22)
+            return 200
+        except AssertionError as error:
+            assert error.args[0][2] == 409 and b"insufficient_cash_balance" in error.args[0][3], error
+            return 409
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        race = dict(zip(("refund", "withdraw"), pool.map(cash_race, ("refund", "withdraw"))))
+    assert sorted(race.values()) == [200, 409]
+    if race["refund"] == 409:
+        request(movements, {**deposit, "operationId": str(uuid.uuid4())}, staff="cashier-b", register=22)
+    cross_result = request("/v1/refunds", cross_register_refund, staff="cashier-b", register=22)
+    assert cross_result["total"] == 17500 and cross_result["method"] == "cash"
 
     get_original = f"/v1/sales/{fixture_id(21)}/{original['operationId']}/refund-options"
     assert request(get_original, staff="cashier-b", register=22)["lines"][0]["soldQuantity"] == 2
@@ -435,11 +484,11 @@ def check_refunds(shift_b):
     parts = [request("/v1/refunds", make_refund(weighted, shift_a, 43, 51, 0.001))["total"] for _ in range(3)]
     assert parts == [0.01, 0.02, 0.01]
     summary = request(f"/v1/reports/stores/{fixture_id(11)}/registers/{fixture_id(21)}/shifts/{shift_a}", staff="admin-a")
-    assert summary["cashSales"] == 35000 and summary["cashRefunds"] == 35000
-    assert summary["expectedCash"] == 100000
+    assert summary["cashSales"] == 52500 and summary["cashRefunds"] == 35000
+    assert summary["expectedCash"] == 117500
     assert summary["manualCashlessRefunds"] in (0.04, 17500.04)
     assert request("/v1/shifts/" + shift_a)["cashRefunds"] is None
-    closed = request("/v1/shifts/" + shift_a + "/close", {"countedCash": 100000})
+    closed = request("/v1/shifts/" + shift_a + "/close", {"countedCash": 117500})
     assert closed["cashDifference"] == 0 and closed["cashRefunds"] == 35000
     assert request("/v1/refunds", first) == first_result
     print("PASS: partial refunds, rounding, approval binding, quarantine, retry, two registers and shift reconciliation")
@@ -471,7 +520,7 @@ def check_partial_order():
     request(receipt_path, {**first, "supplierRef": "Другой поставщик"}, staff="receiver", expected=409)
     assert request(receipt_path, first, staff="receiver")["purchaseOrderId"] == order["orderId"]
     first_path = receipt_path + "/" + first["receiptId"]
-    request(first_path + "/submit", {"expectedVersion": 1}, staff="receiver")
+    submit_receipt_with_clean_file(first_path)
     assert request(single_order, staff="receiver")["lines"][0]["remaining"] == 24
     request(first_path + "/post", {"expectedVersion": 2}, staff="admin-a")
     partial = request(single_order, staff="receiver")
@@ -480,7 +529,7 @@ def check_partial_order():
     excess = make_delivery("ORDER-EXCESS", 5, 81)
     request(receipt_path, excess, staff="receiver")
     excess_path = receipt_path + "/" + excess["receiptId"]
-    request(excess_path + "/submit", {"expectedVersion": 1}, staff="receiver")
+    submit_receipt_with_clean_file(excess_path)
     error = request(excess_path + "/post", {"expectedVersion": 2}, staff="admin-a", expected=409)
     assert error["code"] == "receipt_order_quantity_exceeded"
     assert request(single_order, staff="receiver") == partial
@@ -491,7 +540,7 @@ def check_partial_order():
     competing = make_delivery("ORDER-03", 4, 83)
     for doc in (second, competing):
         request(receipt_path, doc, staff="receiver")
-        request(receipt_path + "/" + doc["receiptId"] + "/submit", {"expectedVersion": 1}, staff="receiver")
+        submit_receipt_with_clean_file(receipt_path + "/" + doc["receiptId"])
 
     def post(doc):
         try:
@@ -537,6 +586,8 @@ def check_supplier_invoice_costs():
     assert request(files, staff="receiver") == []
     request(path + "/costs", staff="receiver", expected=403)
     request(foreign + "/receipts/" + draft["receiptId"] + "/files", staff="admin-foreign", expected=404)
+    missing_file = request(path + "/submit", {"expectedVersion": 1}, staff="receiver", expected=409)
+    assert missing_file["code"] == "invoice_file_required"
 
     def put_file(file_id, data, name="накладная.pdf", media="application/pdf", staff="receiver", expected=200):
         return request(files + "/" + file_id, staff=staff, method="PUT", raw_body=data, expected=expected,
@@ -582,6 +633,8 @@ def check_supplier_invoice_costs():
 
     submit = request(path + "/submit", {"expectedVersion": 1}, staff="receiver")
     assert submit["version"] == 2 and request(files, staff="receiver") == [clean]
+    assert put_file(good, original) == clean
+    put_file(good, original + b"changed", expected=409)
     put_file(str(uuid.uuid4()), original, expected=409)
     cost_lines = [{"productId": fixture_id(41), "lotId": fixture_id(90), "unitPrice": 12000,
                    "discount": 1000, "includedTax": 200, "allocatedCharges": 300},
@@ -638,7 +691,7 @@ def check_stock_and_inventory():
                "invoiceDate": today.isoformat(), "items": [receipt_item(94, 5, soon), receipt_item(95, 5, later)]}
     request(root + "/receipts", receipt, staff="receiver")
     receipt_path = root + "/receipts/" + doc
-    request(receipt_path + "/submit", {"expectedVersion": 1}, staff="receiver")
+    submit_receipt_with_clean_file(receipt_path)
     request(receipt_path + "/post", {"expectedVersion": 2}, staff=admin)
 
     assert {row["lotId"] for row in request("/v1/expiry/cashier?filter=within3")} == {fixture_id(94), fixture_id(155)}
@@ -761,7 +814,20 @@ def check_catalog(shift):
     request(card_path, card, staff="receiver", method="PUT", expected=403)
     created = request(card_path, card, staff=admin, method="PUT")
     assert created["version"] == 1 and created["priceVersion"] == 1 and created["unitPrice"] is None
+    assert created["requiresExpiry"] is False
     assert request(card_path, card, staff=admin, method="PUT") == created
+
+    expiry_path = products + "/" + fixture_id(904)
+    expiry_card = {"expectedVersion": 0, "name": "Товар со сроком", "unit": "piece",
+                   "requiresExpiry": True, "barcodes": []}
+    assert request(expiry_path, expiry_card, staff=admin, method="PUT")["requiresExpiry"] is True
+    renamed = {"expectedVersion": 1, "name": "Товар со сроком новый", "unit": "piece", "barcodes": []}
+    preserved = request(expiry_path, renamed, staff=admin, method="PUT")
+    assert preserved["requiresExpiry"] is True and request(expiry_path, renamed, staff=admin, method="PUT") == preserved
+    nullable = {**renamed, "expectedVersion": 2, "name": "Товар со сроком nullable", "requiresExpiry": None}
+    assert request(expiry_path, nullable, staff=admin, method="PUT")["requiresExpiry"] is True
+    explicit_false = {**nullable, "expectedVersion": 3, "requiresExpiry": False}
+    assert request(expiry_path, explicit_false, staff=admin, method="PUT")["requiresExpiry"] is False
     request(foreign + "/catalog/products/" + product, staff="admin-foreign", expected=404)
     assert request("/v1/catalog/barcodes/000200", expected=409)["code"] == "sale_price_not_set"
     assert request(root + "/receiving/catalog/barcodes/000201", staff="receiver")["quantityFactor"] == 12
@@ -792,7 +858,7 @@ def check_catalog(shift):
                "items": [{"productId": product, "lotId": lot, "quantity": 24}]}
     request(root + "/receipts", receipt, staff="receiver")
     rp = root + "/receipts/" + invoice_id
-    request(rp + "/submit", {"expectedVersion": 1}, staff="receiver")
+    submit_receipt_with_clean_file(rp)
     request(rp + "/post", {"expectedVersion": 2}, staff=admin)
     by_unit = request("/v1/catalog/barcodes/000200")
     by_pack = request("/v1/catalog/barcodes/000201")
@@ -823,7 +889,7 @@ def check_catalog(shift):
     request(card_path + "/price", {**reprice, "expectedVersion": 3, "active": False, "reason": "Снято с продажи"},
             staff=admin, method="PUT")
     archived_rp = root + "/receipts/" + before_archive
-    request(archived_rp + "/submit", {"expectedVersion": 1}, staff="receiver")
+    submit_receipt_with_clean_file(archived_rp)
     assert request(archived_rp + "/post", {"expectedVersion": 2}, staff=admin)["status"] == "posted"
     request(root + "/receipts", {**receipt, "receiptId": str(uuid.uuid4()), "invoiceNumber": "CATALOG-NEW"},
             staff="receiver", expected=409)
@@ -1065,7 +1131,7 @@ def check_procurement():
         receipts = store + "/receipts"
         request(receipts, doc, staff="receiver")
         path = receipts + "/" + doc["receiptId"]
-        request(path + "/submit", {"expectedVersion": 1}, staff="receiver")
+        submit_receipt_with_clean_file(path)
         version = 2
         if unit_price is not None:
             reviewed = request(path + "/costs", {"expectedVersion": version, "items": [
@@ -1378,7 +1444,7 @@ def check_replenishment():
              "invoiceDate": today.isoformat(), "items": [
                  receipt_item(159, 20, (today + datetime.timedelta(days=20)).isoformat(), product=144)]}
     request(receipts, extra, staff="receiver")
-    request(receipts + "/" + extra_id + "/submit", {"expectedVersion": 1}, staff="receiver")
+    submit_receipt_with_clean_file(receipts + "/" + extra_id)
     request(receipts + "/" + extra_id + "/post", {"expectedVersion": 2}, staff=admin)
     assert request(forecast, staff=admin)["suggestedQuantity"] == 80
     after_stock = wait_snapshot(snapshot, lambda value: value["status"] == "ready"
@@ -1422,7 +1488,7 @@ def check_replenishment():
                "invoiceNumber": "REPL-PARTIAL", "invoiceDate": today.isoformat(),
                "items": [receipt_item(158, 10, (today + datetime.timedelta(days=20)).isoformat(), product=144)]}
     request(receipts, receipt, staff="receiver")
-    request(receipts + "/" + receipt_id + "/submit", {"expectedVersion": 1}, staff="receiver")
+    submit_receipt_with_clean_file(receipts + "/" + receipt_id)
     request(receipts + "/" + receipt_id + "/post", {"expectedVersion": 2}, staff=admin)
     after_receipt = calculate()
     assert after_receipt["sellableStock"] == 35 and after_receipt["deliveries"][0]["remainingQuantity"] == 90
@@ -1789,7 +1855,7 @@ def check_supplier_invoice_settlements():
                 "invoiceDate": str(invoice_day), "items": [receipt_item(lot, quantity, expiry)]}
         path = store + "/receipts/" + receipt_id
         request(store + "/receipts", body, staff="receiver")
-        request(path + "/submit", {"expectedVersion": 1}, staff="receiver")
+        submit_receipt_with_clean_file(path)
         if priced:
             request(path + "/costs", {"expectedVersion": 2, "items": [
                 {"productId": product, "lotId": fixture_id(lot), "unitPrice": 10}]}, staff=admin, method="PUT")
@@ -2155,7 +2221,7 @@ def check_opening_stock():
         request(store + "/receipts", {"receiptId": receipt, "supplierRef": "Проверка остатков",
                 "invoiceNumber": number, "invoiceDate": str(today),
                 "items": [receipt_item(lid, 2, future, product=pid)]}, staff="receiver")
-        request(store + f"/receipts/{receipt}/submit", {"expectedVersion": 1}, staff="receiver")
+        submit_receipt_with_clean_file(store + f"/receipts/{receipt}")
         return receipt
 
     def post_receipt(receipt):
@@ -2204,7 +2270,7 @@ def check_scoped_inventory():
         request(store + "/receipts", {"receiptId": receipt, "supplierRef": "Инвентаризация",
                 "invoiceNumber": number, "invoiceDate": str(today), "items": [
                     receipt_item(lid, 2, str(today + datetime.timedelta(days=3)), product=2501)]}, staff="receiver")
-        request(receipt_path + "/submit", {"expectedVersion": 1}, staff="receiver")
+        submit_receipt_with_clean_file(receipt_path)
         return receipt_path
 
     spec = request("/openapi/v1.json")["paths"]
@@ -2335,7 +2401,7 @@ def check_inventory_cost():
     request(store + "/receipts", {"receiptId": receipt, "supplierRef": "PROC-01",
             "invoiceNumber": "VALUE-01", "invoiceDate": str(today),
             "items": [receipt_item(2811, 4, None, product=2801)]}, staff="receiver")
-    request(receipt_path + "/submit", {"expectedVersion": 1}, staff="receiver")
+    submit_receipt_with_clean_file(receipt_path)
     request(receipt_path + "/costs", {"expectedVersion": 2,
             "items": [{"productId": product, "lotId": lot, "unitPrice": 0.25, "discount": 0.18}]},
             staff=admin, method="PUT")
@@ -2552,6 +2618,14 @@ def check_register_devices():
     request("/v1/shifts", {"shiftId": shift, "openingCash": 0}, register=register, key=key)
     order = sale(shift, (42, 51, 0.001))
     sold = request("/v1/sales", order, register=register, key=key)
+    cart_path = f"/v1/shifts/{shift}/carts/{uuid.uuid4()}"
+    request(cart_path, {"expectedVersion": 0, "items": order["items"]}, register=register, key=key, method="PUT")
+    recover_path = f"/v1/stores/{store}/registers/{fixture_id(register)}/shifts/{shift}/recover-close"
+    recover = {"countedCash": 0, "reason": "Устройство отозвано"}
+    assert request(recover_path, recover, staff=admin, expected=409)["code"] == "shift_recovery_not_required"
+    request(recover_path, recover, staff="receiver", expected=403)
+    request(recover_path, recover, staff=admin, mfa=False, expected=403)
+    request(recover_path.replace(store, fixture_id(12)), recover, staff="admin-foreign", expected=404)
     request(path + "/rotate-key", {**rotate, "registerKey": key}, staff=admin, expected=409)
     request(path + "/rotate-key", rotate, staff=admin, mfa=False, expected=403)
     rotated = request(path + "/rotate-key", rotate, staff=admin)
@@ -2559,7 +2633,6 @@ def check_register_devices():
     assert request(path + "/rotate-key", rotate, staff=admin) == rotated
     request("/v1/sales", order, register=register, key=key, expected=403)
     assert request("/v1/sales", order, register=register, key=new_key) == sold
-    request("/v1/shifts/" + shift + "/close", {"countedCash": 0}, register=register, key=new_key)
 
     request(path + "/revoke", revoke, staff=admin, mfa=False, expected=403)
     removed = request(path + "/revoke", revoke, staff=admin)
@@ -2570,11 +2643,18 @@ def check_register_devices():
     request("/v1/shifts", {"shiftId": str(uuid.uuid4()), "openingCash": 0},
             register=register, key=new_key, expected=403)
     request("/v1/sales/" + sold["operationId"], register=register, key=new_key, expected=403)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        recovered = list(pool.map(lambda _: request(recover_path, recover, staff=admin), range(2)))
+    assert recovered[0] == recovered[1] and recovered[0]["closedAt"] and recovered[0]["countedCash"] == 0
+    assert request(recover_path, {**recover, "countedCash": 1}, staff=admin, expected=409)["code"] == "shift_recovery_conflict"
+    today = datetime.datetime.now(ZoneInfo("Asia/Tashkent")).date()
+    audit = request(f"/v1/stores/{store}/audit?from={today}&to={today}&action=shift.recovered", staff=admin)
+    assert [event["objectId"] for event in audit["items"]].count(shift) == 1
     receipt = request(f"/v1/stores/{store}/sales/{fixture_id(register)}/{sold['operationId']}", staff=admin)
     assert receipt == sold
     history = request(f"/v1/reports/stores/{store}/registers/{fixture_id(register)}/shifts/{shift}", staff=admin)
     assert history["closedAt"] and history["salesCount"] == 1
-    print("PASS: register enrolment, cashier scope, atomic retries, key rotation, revocation and preserved history")
+    print("PASS: register enrolment, key rotation, revocation, recover-close retries, cart cancellation and audit")
 
 
 def check_store_staff():
@@ -2606,13 +2686,20 @@ def check_store_staff():
     request("/v1/shifts", {"shiftId": shift, "openingCash": 0}, extra_headers=cashier_headers)
     order = sale(shift, (42, 51, 0.001))
     sold = request("/v1/sales", order, extra_headers=cashier_headers)
-    request("/v1/shifts/" + shift + "/close", {"countedCash": 0}, extra_headers=cashier_headers)
+    recover_path = f"/v1/stores/{store}/registers/{fixture_id(21)}/shifts/{shift}/recover-close"
+    recover = {"countedCash": 0, "reason": "Назначение кассира отозвано"}
+    assert request(recover_path, recover, staff=admin, expected=409)["code"] == "shift_recovery_not_required"
     revoke = root + "/" + assigned["staffId"] + "/revoke"
     request(revoke, method="POST", staff="receiver", expected=403)
     removed = request(revoke, method="POST", staff=admin)
     assert removed == {**assigned, "active": False} and request(revoke, method="POST", staff=admin) == removed
     request(root, employee, staff=admin, expected=409)
     request("/v1/sales", order, extra_headers=cashier_headers, expected=403)
+    recovered = request(recover_path, recover, staff=admin)
+    assert recovered["closedAt"] and recovered["cashDifference"] == 0
+    next_shift = str(uuid.uuid4())
+    request("/v1/shifts", {"shiftId": next_shift, "openingCash": 0})
+    request("/v1/shifts/" + next_shift + "/close", {"countedCash": 0})
     assert request(f"/v1/stores/{store}/sales/{fixture_id(21)}/{sold['operationId']}", staff=admin) == sold
 
     first = request(root, delegate, staff=admin)
@@ -2626,7 +2713,7 @@ def check_store_staff():
     today = datetime.datetime.now(ZoneInfo("Asia/Tashkent")).date()
     request(f"/v1/stores/{store}/audit?from={today}&to={today}", extra_headers=headers, expected=404)
     assert request(other, extra_headers=headers)
-    print("PASS: staff enrolment, historical records, scoped token revocation and unaffected second store")
+    print("PASS: staff enrolment, revoked-shift recovery, next cashier, scoped access and unaffected second store")
 
 
 def check_store_audit():
@@ -2723,7 +2810,7 @@ def check_receipt_cancellation():
     request(replacement + "/cancel", command, staff=admin)
 
     racing, _ = receipt("CANCEL-RACE", 2921)
-    request(racing + "/submit", {"expectedVersion": 1}, staff="receiver")
+    submit_receipt_with_clean_file(racing)
     request(racing + "/cancel", {**command, "expectedVersion": 2}, staff="receiver", expected=403)
     request(racing + "/costs", {"expectedVersion": 2, "items": [
         {"productId": product, "lotId": fixture_id(2921), "unitPrice": 10}]}, staff=admin, method="PUT")

@@ -4,6 +4,7 @@ using System.Threading.RateLimiting;
 using Kasa.Api;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Http.HttpResults;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.IdentityModel.Tokens;
@@ -61,13 +62,16 @@ builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.NumberHandling = JsonNumberHandling.Strict;
 });
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 64 * 1024);
+var rateLimitPermitCount = configuration.GetValue("RateLimiting:PermitLimit", 180);
+if (rateLimitPermitCount is < 1 or > 10_000)
+    throw new InvalidOperationException("RateLimiting:PermitLimit must be between 1 and 10000.");
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
     options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
         RateLimitPartition.GetFixedWindowLimiter(
             context.User.FindFirst("sub")?.Value ?? context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
-            _ => new FixedWindowRateLimiterOptions { PermitLimit = 180, Window = TimeSpan.FromMinutes(1) }));
+            _ => new FixedWindowRateLimiterOptions { PermitLimit = rateLimitPermitCount, Window = TimeSpan.FromMinutes(1) }));
     options.AddPolicy("procurement-ai", context => RateLimitPartition.GetFixedWindowLimiter(
         context.User.FindFirst("sub")?.Value ?? "unknown",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 3, Window = TimeSpan.FromMinutes(1) }));
@@ -160,28 +164,54 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJw
             signingKeys.Add(new SymmetricSecurityKey(localTestMode.SigningKey) { KeyId = "local-test-developer" });
         options.TokenValidationParameters.IssuerSigningKeys = signingKeys;
         options.TokenValidationParameters.ValidAlgorithms = [SecurityAlgorithms.HmacSha256];
-        options.Events = new JwtBearerEvents
+    }
+    options.Events = new JwtBearerEvents
+    {
+        OnTokenValidated = context =>
         {
-            OnTokenValidated = context =>
+            var localDeveloperToken = context.Principal?.FindFirst(LocalTestDeveloperMode.Claim)?.Value == "true";
+            if (localDeveloperToken)
             {
-                if (context.Principal?.FindFirst(LocalTestDeveloperMode.Claim)?.Value == "true")
+                var key = context.SecurityToken.SigningKey as SymmetricSecurityKey;
+                if (!localTestMode.Enabled || localTestMode.SigningKey is null || key is null ||
+                    !System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(key.Key, localTestMode.SigningKey))
                 {
-                    var key = context.SecurityToken.SigningKey as SymmetricSecurityKey;
-                    if (!localTestMode.Enabled || localTestMode.SigningKey is null || key is null ||
-                        !System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(key.Key, localTestMode.SigningKey))
-                        context.Fail("Local test developer tokens require the dedicated local signing key.");
+                    context.Fail("Local test developer tokens require the dedicated local signing key.");
+                    return Task.CompletedTask;
                 }
+            }
+
+            var issuedClaims = context.Principal?.FindAll("iat").Select(claim => claim.Value).ToArray() ?? [];
+            var expiryClaims = context.Principal?.FindAll("exp").Select(claim => claim.Value).ToArray() ?? [];
+            if (issuedClaims.Length != 1 || expiryClaims.Length != 1 ||
+                !long.TryParse(issuedClaims[0], out var issuedAt) || !long.TryParse(expiryClaims[0], out var expiresAt))
+            {
+                context.Fail("Tokens must contain one numeric iat and exp claim.");
                 return Task.CompletedTask;
             }
-        };
-    }
+
+            var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var maximumLifetimeSeconds = localDeveloperToken ? 3600 : 600;
+            if (issuedAt > now + 30 || expiresAt < issuedAt || expiresAt - issuedAt > maximumLifetimeSeconds)
+                context.Fail("Token lifetime exceeds the allowed session window.");
+            return Task.CompletedTask;
+        }
+    };
 });
 builder.Services.AddAuthorizationBuilder().SetFallbackPolicy(
     new Microsoft.AspNetCore.Authorization.AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build());
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    options.ForwardLimit = 1;
+    options.KnownIPNetworks.Clear();
+    options.KnownProxies.Clear();
+});
 
 var app = builder.Build();
 app.UseExceptionHandler();
 app.UseStatusCodePages();
+app.UseForwardedHeaders();
 if (!development)
 {
     app.Use(async (context, next) =>
@@ -253,6 +283,11 @@ api.MapPost("/shifts", async (OpenShift request, PosService pos, HttpContext con
     TypedResults.Ok(await pos.OpenShift(context, request, ct))).WithName("OpenShift");
 api.MapPost("/shifts/{id:guid}/close", async (Guid id, CloseShift request, PosService pos, HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await pos.CloseShift(context, id, request, ct))).WithName("CloseShift");
+api.MapPost("/stores/{storeId:guid}/registers/{registerId:guid}/shifts/{id:guid}/recover-close",
+    async (Guid storeId, Guid registerId, Guid id, RecoverCloseShift request, PosService pos, HttpContext context,
+        CancellationToken ct) =>
+        TypedResults.Ok(await pos.RecoverCloseShift(context, storeId, registerId, id, request, ct)))
+    .WithName("RecoverCloseShift");
 api.MapGet("/shifts/{id:guid}", async (Guid id, PosService pos, HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await pos.GetShift(context, id, ct))).WithName("ReadCashierShift");
 api.MapGet("/shifts/active", async Task<Results<Ok<ShiftSummary>, NoContent>> (PosService pos, HttpContext context,

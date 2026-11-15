@@ -24,6 +24,7 @@ public sealed record StoreAuditPage(Guid StoreId, string TimeZone, DateOnly From
 
 public sealed record OpenShift(Guid ShiftId, [property: JsonRequired] decimal OpeningCash);
 public sealed record CloseShift([property: JsonRequired] decimal CountedCash);
+public sealed record RecoverCloseShift([property: JsonRequired] decimal CountedCash, string Reason);
 public sealed record SaleItem(Guid ProductId, Guid LotId, int PriceVersion, decimal Quantity,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? PromotionVersion = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? LotPriceVersion = null,
@@ -217,7 +218,7 @@ public sealed record InventorySummary(Guid InventoryId, string Reason, string St
 
 public sealed record ProductBarcode(string Code, decimal QuantityFactor);
 public sealed record WriteProductCard([property: JsonRequired] int ExpectedVersion, string Name, string Unit,
-    bool RequiresExpiry, string? Sku, string? Category, string? Brand, string? SupplierRef, string? TaxProfile,
+    bool? RequiresExpiry, string? Sku, string? Category, string? Brand, string? SupplierRef, string? TaxProfile,
     ProductBarcode[] Barcodes);
 public sealed record ProductCard(Guid ProductId, string Name, string Unit, bool RequiresExpiry, string Sku,
     string Category, string Brand, string SupplierRef, string TaxProfile, int Version,
