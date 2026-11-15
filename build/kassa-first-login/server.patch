@@ -1,0 +1,597 @@
+--- a/compose.yaml
++++ b/compose.yaml
+@@ -45,6 +45,7 @@
+       - ./db/033_shared_product_lookup.sql:/docker-entrypoint-initdb.d/033_shared_product_lookup.sql:ro
+       - ./db/034_finance_reports.sql:/docker-entrypoint-initdb.d/034_finance_reports.sql:ro
+       - ./db/035_platform_provisioning_and_support.sql:/docker-entrypoint-initdb.d/035_platform_provisioning_and_support.sql:ro
++      - ./db/039_mobile_invitation_auth.sql:/docker-entrypoint-initdb.d/039_mobile_invitation_auth.sql:ro
+     healthcheck:
+       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U kasa_owner -d kasa"]
+       interval: 2s
+--- /dev/null
++++ b/db/039_mobile_invitation_auth.sql
+@@ -0,0 +1,39 @@
++BEGIN;
++
++CREATE TABLE mobile_invitations (
++    digest bytea PRIMARY KEY CHECK (octet_length(digest) = 32),
++    org_id uuid NOT NULL,
++    staff_id uuid NOT NULL,
++    issuer_id uuid NOT NULL REFERENCES platform_staff,
++    created_at timestamptz NOT NULL DEFAULT now(),
++    expires_at timestamptz NOT NULL DEFAULT (now() + interval '15 minutes'),
++    used_at timestamptz,
++    revoked_at timestamptz,
++    FOREIGN KEY (org_id, staff_id) REFERENCES staff
++);
++CREATE INDEX mobile_invitations_staff ON mobile_invitations (org_id, staff_id)
++    WHERE used_at IS NULL AND revoked_at IS NULL;
++
++CREATE TABLE mobile_devices (
++    credential_digest bytea PRIMARY KEY CHECK (octet_length(credential_digest) = 32),
++    invitation_digest bytea NOT NULL UNIQUE REFERENCES mobile_invitations,
++    org_id uuid NOT NULL,
++    staff_id uuid NOT NULL,
++    created_at timestamptz NOT NULL DEFAULT now(),
++    expires_at timestamptz NOT NULL DEFAULT (now() + interval '30 days'),
++    revoked_at timestamptz,
++    FOREIGN KEY (org_id, staff_id) REFERENCES staff
++);
++CREATE INDEX mobile_devices_staff ON mobile_devices (org_id, staff_id) WHERE revoked_at IS NULL;
++
++CREATE TABLE mobile_access_tokens (
++    digest bytea PRIMARY KEY CHECK (octet_length(digest) = 32),
++    credential_digest bytea NOT NULL UNIQUE REFERENCES mobile_devices,
++    expires_at timestamptz NOT NULL
++);
++
++GRANT SELECT, INSERT, UPDATE (used_at, revoked_at) ON mobile_invitations TO kasa_api;
++GRANT SELECT, INSERT, UPDATE (revoked_at) ON mobile_devices TO kasa_api;
++GRANT SELECT, INSERT, UPDATE (digest, expires_at) ON mobile_access_tokens TO kasa_api;
++
++COMMIT;
+--- a/src/Kasa.Api/Access.cs
++++ b/src/Kasa.Api/Access.cs
+@@ -68,6 +68,8 @@
+     {
+         var principal = await ReadPrincipal(db, tx, context, ct);
+         var activeRole = ResolveActiveRole(context, principal.Roles);
++        if (activeRole == "admin" && context.User.Identity?.AuthenticationType == MobileInvitationAuth.Scheme)
++            throw new PosError(403, "admin_mfa_required");
+         if (activeRole != role && activeRole != alternateRole)
+             throw new PosError(403, "staff_access_denied");
+         return new Staff(principal.Organization, principal.Id, activeRole);
+@@ -88,6 +90,8 @@
+         var roles = owner
+             ? OperationalRoles
+             : OperationalRoles.Where(principal.Roles.Contains).Order(StringComparer.Ordinal).ToArray();
++        if (context.User.Identity?.AuthenticationType == MobileInvitationAuth.Scheme)
++            roles = roles.Where(role => role != "admin").ToArray();
+         return new StaffRoleSelection(principal.Organization, principal.Id, store, zone, roles, owner);
+     }
+ 
+@@ -140,7 +144,7 @@
+         return new RegisterScope(staff.Organization, rows.GetGuid(0), register, staff.Id, rows.GetString(1));
+     }
+ 
+-    private static async Task<(Guid Organization, Guid Id, string[] Roles)> ReadPrincipal(NpgsqlConnection db,
++    internal static async Task<(Guid Organization, Guid Id, string[] Roles)> ReadPrincipal(NpgsqlConnection db,
+         NpgsqlTransaction tx, HttpContext context, CancellationToken ct)
+     {
+         var supportHeader = context.Request.Headers["X-Support-Session"].ToString();
+--- /dev/null
++++ b/src/Kasa.Api/MobileInvitationAuth.cs
+@@ -0,0 +1,238 @@
++using System.Security.Claims;
++using System.Security.Cryptography;
++using System.Text.Encodings.Web;
++using System.Threading.RateLimiting;
++using Microsoft.AspNetCore.Authentication;
++using Microsoft.AspNetCore.Authentication.JwtBearer;
++using Microsoft.AspNetCore.RateLimiting;
++using Microsoft.Extensions.Options;
++using Npgsql;
++
++namespace Kasa.Api;
++
++internal sealed record MobileTicketRequest(string? Code, string? DeviceCredential);
++internal sealed record MobileDeviceRequest(string? DeviceCredential);
++internal sealed record MobileInvitation(string Code, DateTime ExpiresAt);
++internal sealed record MobileSession(string AccessToken, string Subject, int ExpiresIn);
++
++internal sealed class MobileInvitationAuth(NpgsqlDataSource source, IConfiguration configuration)
++{
++    internal const string Scheme = "KassaMobile";
++    internal const string Selector = "KassaBearer";
++    private const string Prefix = "ksm_";
++    private const int AccessSeconds = 600;
++
++    internal static string SelectScheme(HttpContext context)
++    {
++        var header = context.Request.Headers.Authorization.ToString();
++        return header.StartsWith("Bearer " + Prefix, StringComparison.OrdinalIgnoreCase)
++            ? Scheme : JwtBearerDefaults.AuthenticationScheme;
++    }
++
++    internal static void AddLimiter(RateLimiterOptions options) =>
++        options.AddPolicy("mobile-invitation", context => RateLimitPartition.GetFixedWindowLimiter(
++            context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
++            _ => new FixedWindowRateLimiterOptions { PermitLimit = 20, Window = TimeSpan.FromMinutes(1) }));
++
++    internal static void Map(WebApplication app, RouteGroupBuilder platform)
++    {
++        var mobile = app.MapGroup("/v1/mobile/auth")
++            .AllowAnonymous().RequireRateLimiting("mobile-invitation");
++        mobile.MapPost("/redeem", async (MobileTicketRequest body, MobileInvitationAuth auth, CancellationToken ct) =>
++            TypedResults.Ok(await auth.Redeem(body, ct))).WithName("RedeemMobileInvitation");
++        mobile.MapPost("/renew", async (MobileDeviceRequest body, MobileInvitationAuth auth, CancellationToken ct) =>
++            TypedResults.Ok(await auth.Renew(body, ct))).WithName("RenewMobileAccess");
++        mobile.MapPost("/revoke", async (MobileDeviceRequest body, MobileInvitationAuth auth, CancellationToken ct) =>
++        {
++            await auth.Revoke(body, ct);
++            return TypedResults.NoContent();
++        }).WithName("RevokeMobileDevice");
++
++        var staff = platform.MapGroup("/organizations/{orgId:guid}/staff/{staffId:guid}/mobile");
++        staff.MapPost("/invitation", async (Guid orgId, Guid staffId, MobileInvitationAuth auth,
++            HttpContext context, CancellationToken ct) =>
++            TypedResults.Ok(await auth.Issue(orgId, staffId, context, ct))).WithName("IssueMobileInvitation");
++        staff.MapDelete("/devices", async (Guid orgId, Guid staffId, MobileInvitationAuth auth,
++            HttpContext context, CancellationToken ct) =>
++        {
++            await auth.RevokeAll(orgId, staffId, context, ct);
++            return TypedResults.NoContent();
++        }).WithName("RevokeStaffMobileDevices");
++    }
++
++    internal async Task<MobileInvitation> Issue(Guid org, Guid staff, HttpContext context, CancellationToken ct)
++    {
++        await using var db = await source.OpenConnectionAsync(ct);
++        await using var tx = await db.BeginTransactionAsync(ct);
++        var actor = await Access.RequirePlatform(db, tx, context, configuration, true, ct, hardware: true);
++        await using (var target = db.Sql(tx, """
++            SELECT 1 FROM staff u
++            WHERE (u.org_id, u.id) = ($1, $2) AND u.active AND u.subject IS NOT NULL
++              AND EXISTS (
++                  SELECT 1 FROM staff_roles r WHERE (r.org_id, r.staff_id) = (u.org_id, u.id)
++                  AND r.role IN ('owner', 'cashier', 'receiver'))
++              AND EXISTS (
++                  SELECT 1 FROM staff_stores s WHERE (s.org_id, s.staff_id) = (u.org_id, u.id) AND s.active)
++            FOR UPDATE
++            """, org, staff))
++        {
++            if (await target.ExecuteScalarAsync(ct) is null)
++                throw new PosError(404, "mobile_account_unavailable");
++        }
++        await db.Run(tx, ct, """
++            UPDATE mobile_invitations SET revoked_at = now()
++            WHERE (org_id, staff_id) = ($1, $2) AND used_at IS NULL AND revoked_at IS NULL
++            """, org, staff);
++        var code = Convert.ToHexString(RandomNumberGenerator.GetBytes(12));
++        await using var create = db.Sql(tx, """
++            INSERT INTO mobile_invitations (digest, org_id, staff_id, issuer_id)
++            VALUES ($1, $2, $3, $4) RETURNING expires_at
++            """, Digest(code, 24), org, staff, actor.Id);
++        var expires = (DateTime)(await create.ExecuteScalarAsync(ct))!;
++        await tx.CommitAsync(ct);
++        return new MobileInvitation(code, expires);
++    }
++
++    private async Task RevokeAll(Guid org, Guid staff, HttpContext context, CancellationToken ct)
++    {
++        await using var db = await source.OpenConnectionAsync(ct);
++        await using var tx = await db.BeginTransactionAsync(ct);
++        await Access.RequirePlatform(db, tx, context, configuration, true, ct, hardware: true);
++        await using (var target = db.Sql(tx, "SELECT 1 FROM staff WHERE (org_id, id) = ($1, $2) FOR UPDATE", org, staff))
++        {
++            if (await target.ExecuteScalarAsync(ct) is null)
++                throw new PosError(404, "mobile_account_unavailable");
++        }
++        await db.Run(tx, ct, """
++            UPDATE mobile_invitations SET revoked_at = now()
++            WHERE (org_id, staff_id) = ($1, $2) AND revoked_at IS NULL
++            """, org, staff);
++        await db.Run(tx, ct, """
++            UPDATE mobile_devices SET revoked_at = now()
++            WHERE (org_id, staff_id) = ($1, $2) AND revoked_at IS NULL
++            """, org, staff);
++        await tx.CommitAsync(ct);
++    }
++
++    internal async Task<MobileSession> Redeem(MobileTicketRequest request, CancellationToken ct)
++    {
++        var code = request.Code?.Trim();
++        var invitation = Digest(code, 24);
++        var credential = Digest(request.DeviceCredential, 64);
++        if (invitation is null || credential is null) throw new PosError(401, "mobile_code_invalid");
++        await using var db = await source.OpenConnectionAsync(ct);
++        await using var tx = await db.BeginTransactionAsync(ct);
++        // Keep the same lock order as issuance and account-wide revocation.
++        await using (var target = db.Sql(tx, """
++            SELECT 1 FROM staff u JOIN mobile_invitations i
++            ON (i.org_id, i.staff_id) = (u.org_id, u.id)
++            WHERE i.digest = $1 FOR KEY SHARE OF u
++            """, invitation))
++        {
++            if (await target.ExecuteScalarAsync(ct) is null)
++                throw new PosError(401, "mobile_code_invalid");
++        }
++        await using (var consume = db.Sql(tx, """
++            UPDATE mobile_invitations SET used_at = now()
++            WHERE digest = $1 AND used_at IS NULL AND revoked_at IS NULL AND expires_at > now()
++            RETURNING digest
++            """, invitation))
++        {
++            if (await consume.ExecuteScalarAsync(ct) is not null)
++            {
++                var inserted = await db.Run(tx, ct, """
++                    INSERT INTO mobile_devices (credential_digest, invitation_digest, org_id, staff_id)
++                    SELECT $1, i.digest, i.org_id, i.staff_id FROM mobile_invitations i WHERE i.digest = $2
++                    ON CONFLICT (credential_digest) DO NOTHING
++                    """, credential, invitation);
++                if (inserted != 1) throw new PosError(401, "mobile_code_invalid");
++            }
++        }
++
++        // The same phone can retry a lost response. A different credential cannot redeem a used code.
++        var session = await CreateAccess(db, tx, credential, invitation, ct);
++        if (session is null) throw new PosError(401, "mobile_code_invalid");
++        await tx.CommitAsync(ct);
++        return session;
++    }
++
++    internal async Task<MobileSession> Renew(MobileDeviceRequest request, CancellationToken ct)
++    {
++        var credential = Digest(request.DeviceCredential, 64);
++        if (credential is null) throw new PosError(401, "sign_in_required");
++        await using var db = await source.OpenConnectionAsync(ct);
++        await using var tx = await db.BeginTransactionAsync(ct);
++        var session = await CreateAccess(db, tx, credential, null, ct);
++        if (session is null) throw new PosError(401, "sign_in_required");
++        await tx.CommitAsync(ct);
++        return session;
++    }
++
++    private async Task Revoke(MobileDeviceRequest request, CancellationToken ct)
++    {
++        var credential = Digest(request.DeviceCredential, 64);
++        if (credential is null) return;
++        await using var db = await source.OpenConnectionAsync(ct);
++        await using var tx = await db.BeginTransactionAsync(ct);
++        await db.Run(tx, ct, """
++            UPDATE mobile_devices SET revoked_at = now()
++            WHERE credential_digest = $1 AND revoked_at IS NULL
++            """, credential);
++        await tx.CommitAsync(ct);
++    }
++
++    private static async Task<MobileSession?> CreateAccess(NpgsqlConnection db, NpgsqlTransaction tx,
++        byte[] credential, byte[]? invitation, CancellationToken ct)
++    {
++        var sql = """
++            SELECT u.subject FROM mobile_devices d
++            JOIN staff u ON (u.org_id, u.id) = (d.org_id, d.staff_id)
++            JOIN mobile_invitations i ON i.digest = d.invitation_digest
++            WHERE d.credential_digest = $1 AND d.revoked_at IS NULL AND d.expires_at > now()
++              AND u.active AND u.subject IS NOT NULL AND i.revoked_at IS NULL
++            """ + (invitation is null ? "" : " AND i.digest = $2 AND i.expires_at > now()") + " FOR UPDATE OF d";
++        await using var lookup = invitation is null ? db.Sql(tx, sql, credential) : db.Sql(tx, sql, credential, invitation);
++        if (await lookup.ExecuteScalarAsync(ct) is not string subject) return null;
++        var secret = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
++        await db.Run(tx, ct, """
++            INSERT INTO mobile_access_tokens (digest, credential_digest, expires_at)
++            VALUES ($1, $2, now() + make_interval(secs => $3))
++            ON CONFLICT (credential_digest) DO UPDATE SET digest = EXCLUDED.digest, expires_at = EXCLUDED.expires_at
++            """, Digest(secret, 64), credential, AccessSeconds);
++        return new MobileSession(Prefix + secret, subject, AccessSeconds);
++    }
++
++    internal async Task<string?> ReadSubject(HttpContext context, CancellationToken ct)
++    {
++        var header = context.Request.Headers.Authorization.ToString();
++        if (!header.StartsWith("Bearer " + Prefix, StringComparison.OrdinalIgnoreCase)) return null;
++        var access = Digest(header[(7 + Prefix.Length)..], 64);
++        if (access is null) return null;
++        await using var db = await source.OpenConnectionAsync(ct);
++        await using var tx = await db.BeginTransactionAsync(ct);
++        await using var lookup = db.Sql(tx, """
++            SELECT u.subject FROM mobile_access_tokens a
++            JOIN mobile_devices d ON a.credential_digest = d.credential_digest
++            JOIN staff u ON (u.org_id, u.id) = (d.org_id, d.staff_id)
++            WHERE a.digest = $1 AND a.expires_at > now() AND d.expires_at > now()
++              AND d.revoked_at IS NULL AND u.active AND u.subject IS NOT NULL
++            """, access);
++        return (await lookup.ExecuteScalarAsync(ct)) as string;
++    }
++
++    private static byte[]? Digest(string? hex, int length) =>
++        hex?.Length == length && hex.All(Uri.IsHexDigit) ? SHA256.HashData(Convert.FromHexString(hex)) : null;
++}
++
++internal sealed class MobileInvitationHandler(IOptionsMonitor<AuthenticationSchemeOptions> options,
++    ILoggerFactory logger, UrlEncoder encoder, MobileInvitationAuth auth)
++    : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
++{
++    protected override async Task<AuthenticateResult> HandleAuthenticateAsync()
++    {
++        var subject = await auth.ReadSubject(Context, Context.RequestAborted);
++        if (subject is null) return AuthenticateResult.Fail("Invalid mobile credential.");
++        var identity = new ClaimsIdentity([new Claim("sub", subject)], Scheme.Name);
++        return AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), Scheme.Name));
++    }
++}
+--- /dev/null
++++ b/src/Kasa.Api/PosService.MobileWorkplaces.cs
+@@ -0,0 +1,52 @@
++namespace Kasa.Api;
++
++internal sealed record AssignedMobileRegister(Guid RegisterId, string Name);
++internal sealed record AssignedMobileStore(Guid StoreId, string Name, string TimeZone, int UtcOffsetMinutes,
++    IReadOnlyList<AssignedMobileRegister> Registers);
++internal sealed record AssignedMobileStores(IReadOnlyList<AssignedMobileStore> Items, int? NextOffset);
++
++internal sealed partial class PosService
++{
++    internal async Task<AssignedMobileStores> ListAssignedMobileStores(HttpContext context, int? offset, CancellationToken ct)
++    {
++        var skip = offset ?? 0;
++        if (skip is < 0 or > 1_000_000) throw new PosError(400, "invalid_offset");
++
++        await using var db = await source.OpenConnectionAsync(ct);
++        await using var tx = await db.BeginTransactionAsync(ct);
++        var principal = await Access.ReadPrincipal(db, tx, context, ct);
++        await using var lookup = db.Sql(tx, """
++            WITH assigned_stores AS (
++                SELECT s.id, s.name, s.time_zone
++                FROM staff_stores a JOIN stores s ON (a.org_id, a.store_id) = (s.org_id, s.id)
++                WHERE (a.org_id, a.staff_id) = ($1, $2) AND a.active
++                ORDER BY s.name, s.id OFFSET $3 LIMIT 51
++            )
++            SELECT s.id, s.name, s.time_zone,
++                (extract(epoch FROM (now() AT TIME ZONE s.time_zone) - (now() AT TIME ZONE 'UTC')) / 60)::integer,
++                ARRAY(
++                    SELECT r.id FROM registers r JOIN cashier_registers a
++                    ON (a.org_id, a.store_id, a.register_id) = (r.org_id, r.store_id, r.id)
++                    WHERE (a.org_id, a.staff_id, a.store_id) = ($1, $2, s.id) AND r.active
++                    ORDER BY r.name, r.id),
++                ARRAY(
++                    SELECT r.name FROM registers r JOIN cashier_registers a
++                    ON (a.org_id, a.store_id, a.register_id) = (r.org_id, r.store_id, r.id)
++                    WHERE (a.org_id, a.staff_id, a.store_id) = ($1, $2, s.id) AND r.active
++                    ORDER BY r.name, r.id)
++            FROM assigned_stores s ORDER BY s.name, s.id
++            """, principal.Organization, principal.Id, skip);
++        await using var rows = await lookup.ExecuteReaderAsync(ct);
++        List<AssignedMobileStore> items = [];
++        while (await rows.ReadAsync(ct))
++        {
++            if (items.Count == 50) return new AssignedMobileStores(items, skip + 50);
++            var ids = rows.GetFieldValue<Guid[]>(4);
++            var names = rows.GetFieldValue<string[]>(5);
++            var registers = ids.Zip(names, (id, name) => new AssignedMobileRegister(id, name)).ToArray();
++            items.Add(new AssignedMobileStore(rows.GetGuid(0), rows.GetString(1), rows.GetString(2),
++                rows.GetInt32(3), registers));
++        }
++        return new AssignedMobileStores(items, null);
++    }
++}
+--- a/src/Kasa.Api/Program.cs
++++ b/src/Kasa.Api/Program.cs
+@@ -2,6 +2,7 @@
+ using System.Text.Json.Serialization;
+ using System.Threading.RateLimiting;
+ using Kasa.Api;
++using Microsoft.AspNetCore.Authentication;
+ using Microsoft.AspNetCore.Authentication.JwtBearer;
+ using Microsoft.AspNetCore.Mvc;
+ using Microsoft.AspNetCore.RateLimiting;
+@@ -15,6 +16,7 @@
+ var developmentKey = configuration["Auth:DevelopmentKey"];
+ var authority = configuration["Auth:Authority"];
+ var audience = configuration["Auth:Audience"];
++var mobileInvitations = configuration.GetValue<bool>("Auth:MobileInvitationsEnabled");
+ var adminAcr = configuration["Auth:AdminAcr"];
+ var platformHardwareAcr = configuration["Auth:PlatformHardwareAcr"];
+ var platformHardwareAmr = configuration["Auth:PlatformHardwareAmr"];
+@@ -67,6 +69,7 @@
+ builder.Services.AddRateLimiter(options =>
+ {
+     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
++    if (mobileInvitations) MobileInvitationAuth.AddLimiter(options);
+     options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
+         RateLimitPartition.GetFixedWindowLimiter(
+             context.User.FindFirst("sub")?.Value ?? context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+@@ -100,7 +103,7 @@
+     document.Components ??= new OpenApiComponents();
+     document.Components.SecuritySchemes = new Dictionary<string, IOpenApiSecurityScheme>
+     {
+-        ["Bearer"] = new OpenApiSecurityScheme { Type = SecuritySchemeType.Http, Scheme = "bearer", BearerFormat = "JWT" },
++        ["Bearer"] = new OpenApiSecurityScheme { Type = SecuritySchemeType.Http, Scheme = "bearer", BearerFormat = "JWT or opaque mobile access token" },
+         ["RegisterId"] = new OpenApiSecurityScheme
+             { Type = SecuritySchemeType.ApiKey, In = ParameterLocation.Header, Name = "X-Register-Id" },
+         ["RegisterKey"] = new OpenApiSecurityScheme
+@@ -108,7 +111,8 @@
+     };
+     foreach (var (path, pathItem) in document.Paths)
+     {
+-        if (!path.StartsWith("/v1/", StringComparison.Ordinal) || pathItem.Operations is null)
++        if (!path.StartsWith("/v1/", StringComparison.Ordinal) ||
++            path.StartsWith("/v1/mobile/auth/", StringComparison.Ordinal) || pathItem.Operations is null)
+             continue;
+         foreach (var operation in pathItem.Operations.Values)
+         {
+@@ -116,7 +120,7 @@
+             {
+                 [new OpenApiSecuritySchemeReference("Bearer", document)] = []
+             };
+-            if (path != "/v1/me/roles" &&
++            if (!path.StartsWith("/v1/me/", StringComparison.Ordinal) &&
+                 !path.StartsWith("/v1/platform", StringComparison.Ordinal) &&
+                 !path.StartsWith("/v1/reports/", StringComparison.Ordinal) &&
+                 !path.StartsWith("/v1/stores/", StringComparison.Ordinal))
+@@ -125,7 +129,7 @@
+                 security[new OpenApiSecuritySchemeReference("RegisterKey", document)] = [];
+             }
+             operation.Security = [security];
+-            if (path != "/v1/me/roles" && !path.StartsWith("/v1/platform", StringComparison.Ordinal))
++            if (!path.StartsWith("/v1/me/", StringComparison.Ordinal) && !path.StartsWith("/v1/platform", StringComparison.Ordinal))
+             {
+                 operation.Parameters ??= [];
+                 operation.Parameters.Add(new OpenApiParameter
+@@ -153,7 +157,16 @@
+     }
+     return Task.CompletedTask;
+ }));
+-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(options =>
++var authentication = builder.Services.AddAuthentication(
++    mobileInvitations ? MobileInvitationAuth.Selector : JwtBearerDefaults.AuthenticationScheme);
++if (mobileInvitations)
++{
++    builder.Services.AddSingleton<MobileInvitationAuth>();
++    authentication.AddScheme<AuthenticationSchemeOptions, MobileInvitationHandler>(MobileInvitationAuth.Scheme, _ => {});
++    authentication.AddPolicyScheme(MobileInvitationAuth.Selector, null,
++        options => options.ForwardDefaultSelector = MobileInvitationAuth.SelectScheme);
++}
++authentication.AddJwtBearer(options =>
+ {
+     options.MapInboundClaims = false;
+     options.SaveToken = false;
+@@ -250,6 +263,12 @@
+ api.MapGet("/me/roles", async (Guid storeId, PosService pos, HttpContext context, CancellationToken ct) =>
+     TypedResults.Ok(await pos.ReadMyRoles(context, storeId, ct))).WithName("ReadMyRoles");
+ var platform = api.MapGroup("/platform");
++if (mobileInvitations)
++{
++    MobileInvitationAuth.Map(app, platform);
++    api.MapGet("/me/stores", async (int? offset, PosService pos, HttpContext context, CancellationToken ct) =>
++        TypedResults.Ok(await pos.ListAssignedMobileStores(context, offset, ct))).WithName("ListAssignedMobileStores");
++}
+ platform.MapGet("/me", async (PosService pos, HttpContext context, CancellationToken ct) =>
+     TypedResults.Ok(await pos.ReadPlatformIdentity(context, ct))).WithName("ReadPlatformIdentity");
+ platform.MapGet("/stores", async (int? offset, PosService pos, HttpContext context, CancellationToken ct) =>
+--- /dev/null
++++ b/tests/mobile_invitation.py
+@@ -0,0 +1,74 @@
++"""Verify the native login API on the isolated PostgreSQL fixture."""
++from concurrent.futures import ThreadPoolExecutor
++from secrets import token_hex
++
++from smoke import fixture_id, request
++
++
++def main():
++    owner_id = fixture_id(3050)
++    issue_path = f"/v1/platform/organizations/{fixture_id(1)}/staff/{owner_id}/mobile"
++    auth = "/v1/mobile/auth"
++    operator = {"staff": "admin-platform-writer", "hardware": True}
++
++    request(issue_path + "/invitation", method="POST", expected=403)
++    request(issue_path + "/invitation", method="POST", staff="admin-platform-writer", expected=403)
++    request(issue_path + "/invitation", method="POST", **operator)
++    invite = request(issue_path + "/invitation", method="POST", **operator)
++    assert len(invite["code"]) == 24 and invite["expiresAt"]
++    print("PASS: invitation requires hardware-backed platform authorization")
++
++    # Use a distinct request for each device exactly once in the race.
++    from smoke import BASE
++    from urllib.request import Request, urlopen
++    from urllib.error import HTTPError
++    import json
++
++    def redeem_once(credential):
++        message = Request(BASE + auth + "/redeem", json.dumps({
++            "code": invite["code"], "deviceCredential": credential,
++        }).encode(), {"Content-Type": "application/json"})
++        try:
++            with urlopen(message, timeout=10) as reply:
++                return credential, reply.status, json.load(reply)
++        except HTTPError as error:
++            return credential, error.code, None
++
++    credentials = [token_hex(32), token_hex(32)]
++    with ThreadPoolExecutor(max_workers=2) as pool:
++        results = list(pool.map(redeem_once, credentials))
++    assert sorted(status for _, status, _ in results) == [200, 401], results
++    key = next(value for value, status, _ in results if status == 200)
++    _, retry_status, session = redeem_once(key)
++    assert retry_status == 200
++    assert session["subject"] == "admin-owner" and session["expiresIn"] == 600
++    mobile = {"bearer": session["accessToken"]}
++
++    stores = request("/v1/me/stores", **mobile)
++    assert [store["storeId"] for store in stores["items"]] == [fixture_id(11)], stores
++    assert stores["items"][0]["registers"] == [{"registerId": fixture_id(21), "name": "А1"}], stores
++    roles = request(f"/v1/me/roles?storeId={fixture_id(11)}", **mobile)
++    assert roles["owner"] and set(roles["roles"]) == {"cashier", "receiver"}, roles
++    request(f"/v1/me/roles?storeId={fixture_id(12)}", **mobile, expected=404)
++    request("/v1/platform/me", **mobile, expected=403)
++    request(f"/v1/stores/{fixture_id(11)}/audit", **mobile, active_role="admin", expected=403)
++    print("PASS: single use under concurrency, safe retry, matching stores and restricted roles")
++
++    renewed = request(auth + "/renew", {"deviceCredential": key}, staff=None)
++    assert renewed["accessToken"] != session["accessToken"]
++    request("/v1/me/stores", **mobile, expected=401)
++    request("/v1/me/stores", bearer=renewed["accessToken"])
++    request(auth + "/revoke", {"deviceCredential": key}, staff=None, expected=204)
++    request("/v1/me/stores", bearer=renewed["accessToken"], expected=401)
++    request(auth + "/renew", {"deviceCredential": key}, staff=None, expected=401)
++
++    fresh = request(issue_path + "/invitation", method="POST", **operator)
++    request(issue_path + "/devices", method="DELETE", expected=204, **operator)
++    request(auth + "/redeem", {"code": fresh["code"], "deviceCredential": token_hex(32)},
++            staff=None, expected=401)
++    request(f"/v1/me/roles?storeId={fixture_id(11)}", staff="cashier-a")
++    print("PASS: stored device renewal, logout, account-wide revoke, and existing OIDC")
++
++
++if __name__ == "__main__":
++    main()
+--- a/tests/run.sh
++++ b/tests/run.sh
+@@ -1,11 +1,15 @@
+ #!/usr/bin/env bash
+ set -euo pipefail
+ cd "$(dirname "$0")/.."
++mobile_invitation_check=false
+ restore_check=false
+ promotion_check=false
+ lot_retail_check=false
+ label_check=false
+-if [[ "${1:-}" == "--restore" && "$#" == 1 ]]; then
++if [[ "${1:-}" == "--mobile-invitation" && "$#" == 1 ]]; then
++    mobile_invitation_check=true
++    export Auth__MobileInvitationsEnabled=true
++elif [[ "${1:-}" == "--restore" && "$#" == 1 ]]; then
+     restore_check=true
+ elif [[ "${1:-}" == "--promotions" && "$#" == 1 ]]; then
+     promotion_check=true
+@@ -14,7 +18,7 @@
+ elif [[ "${1:-}" == "--lot-retail" && "$#" == 1 ]]; then
+     lot_retail_check=true
+ elif [[ "$#" != 0 ]]; then
+-    echo "Usage: bash tests/run.sh [--restore | --promotions | --lot-retail | --price-labels]" >&2
++    echo "Usage: bash tests/run.sh [--restore | --promotions | --lot-retail | --price-labels | --mobile-invitation]" >&2
+     exit 2
+ fi
+ command -v dotnet >/dev/null || { echo "Install the .NET 10 SDK" >&2; exit 127; }
+@@ -129,7 +133,7 @@
+     [[ "$pg_version" =~ ^17[0-9]{4}$ ]] || { echo "Expected PostgreSQL 17, found $pg_version" >&2; exit 1; }
+     printf 'PASS: PostgreSQL 17 server (%s)\n' "$pg_version"
+ fi
+-"${compose[@]}" exec -T -e POS_TEST_REGISTER_KEY db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/fixtures.sql
++"${compose[@]}" exec -T -e POS_TEST_REGISTER_KEY -e POS_TEST_PLATFORM_USB_KEY db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/fixtures.sql
+ "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/replenishment_schedule.sql
+ "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/sales_period_fixtures.sql
+ "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/stock_movement_report_fixtures.sql
+@@ -148,7 +152,10 @@
+     fi
+     sleep 1
+ done
+-if "$promotion_check"; then
++if "$mobile_invitation_check"; then
++    python3 tests/mobile_invitation.py || { cat "$logs" >&2; exit 1; }
++    exit 0
++elif "$promotion_check"; then
+     scenario=(python3 tests/quantity_promotions.py)
+ elif "$lot_retail_check"; then
+     scenario=(python3 tests/lot_retail.py)

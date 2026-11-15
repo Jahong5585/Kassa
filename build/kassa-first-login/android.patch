@@ -1,0 +1,506 @@
+--- a/apps/mobile-flutter/lib/language.dart
++++ b/apps/mobile-flutter/lib/language.dart
+@@ -72,6 +72,9 @@
+     'invalid_receipt_stock_adjustment' => 'Sabab, partiyalar va miqdorni tekshiring.',
+     'receipt_adjustment_requires_posted' => 'Faqat o‘tkazilgan yukxatni tuzatish mumkin.',
+     'stock_operation_id_reused' => 'Avval yuborilgan amalni tekshiring.',
++    'mobile_code_format' => 'Taklif kodining 24 ta belgisini kiriting.',
++    'mobile_code_invalid' => 'Kod noto‘g‘ri, eskirgan yoki ishlatilgan. Yangi taklif so‘rang.',
++    'mobile_login_unavailable' => 'Serverda taklif orqali kirish hozircha ishlamayapti.',
+     'device_login_unavailable' => 'Serverda kod orqali kirish hozircha yoqilmagan.',
+     'device_login_denied' => 'Kirish rad etildi. Yangi kod so‘rang.',
+     'device_login_expired' => 'Kod muddati tugadi. Yangi kod so‘rang.',
+--- a/apps/mobile-flutter/lib/main.dart
++++ b/apps/mobile-flutter/lib/main.dart
+@@ -15,6 +15,7 @@
+ part 'receipt_quantity_calculator.dart';
+ part 'language.dart';
+ part 'device_login_view.dart';
++part 'mobile_invitation_view.dart';
+ part 'receipt_print.dart';
+ part 'sales_history.dart';
+ part 'checkout_controls.dart';
+@@ -226,7 +227,11 @@
+     _session.demo = false;
+     _session.api.origin;
+     if (!mounted) return;
+-    await _signInInsideApp(navigator.currentContext!, _session.login, navigator: navigator.currentState);
++    if (_session.login.useNativeInvitation) {
++      if (!await _showMobileInvitation(navigator.currentContext!, _session.login)) return;
++    } else {
++      await _signInInsideApp(navigator.currentContext!, _session.login, navigator: navigator.currentState);
++    }
+     await _enterAccount(openPicker: true);
+   });
+ 
+--- /dev/null
++++ b/apps/mobile-flutter/lib/mobile_invitation.dart
+@@ -0,0 +1,114 @@
++part of 'pos.dart';
++
++typedef _InvitationSession = ({String token, String subject, DateTime expiresAt});
++
++extension MobileInvitationLogin on Login {
++  Future<void> signInWithInvitation(String input) async {
++    final code = input.trim().replaceAll(RegExp(r'[\s-]'), '').toUpperCase();
++    if (!RegExp(r'^[A-F0-9]{24}$').hasMatch(code)) {
++      throw ApiFailure(400, 'mobile_code_format');
++    }
++    if (_invitationBusy) throw ApiFailure(409, 'device_login_in_progress');
++    if (_invitationCode != code) {
++      final random = Random.secure();
++      _invitationCredential = List.generate(
++        32, (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'),
++      ).join();
++      _invitationCode = code;
++    }
++    final credential = _invitationCredential!;
++    final generation = _generation;
++    _invitationBusy = true;
++    try {
++      final session = await _invitationRequest('redeem', credential, code: code);
++      if (generation != _generation) throw const DeviceLoginCancelled();
++      await _saveSession(session.subject, credential, native: true);
++      if (generation != _generation) throw const DeviceLoginCancelled();
++      _generation++;
++      _persistent = true;
++      _native = true;
++      _subject = session.subject;
++      _refreshToken = credential;
++      _accessToken = session.token;
++      _expiresAt = session.expiresAt;
++      _clearInvitation();
++    } finally {
++      _invitationBusy = false;
++    }
++  }
++
++  void _clearInvitation() {
++    _invitationCredential = null;
++    _invitationCode = null;
++  }
++
++  Future<String> _refreshInvitation(String credential, String current, int generation) async {
++    final session = await _invitationRequest('renew', credential);
++    if (generation != _generation || session.subject != current || !_native) {
++      throw ApiFailure(401, 'sign_in_required');
++    }
++    _accessToken = session.token;
++    _expiresAt = session.expiresAt;
++    return session.token;
++  }
++
++  Future<_InvitationSession> _invitationRequest(
++    String action, String credential, {String? code}
++  ) async {
++    final response = await _postInvitation(action, credential, code: code);
++    if (response.statusCode == 401) {
++      throw ApiFailure(401, code == null ? 'sign_in_required' : 'mobile_code_invalid');
++    }
++    if (response.statusCode == 429) {
++      throw ApiFailure(429, 'device_login_rate_limited');
++    }
++    if (response.statusCode != 200) {
++      throw ApiFailure(response.statusCode, 'mobile_login_unavailable');
++    }
++    try {
++      final data = jsonDecode(utf8.decode(response.bodyBytes));
++      if (data is Json &&
++          data['accessToken'] is String &&
++          RegExp(r'^ksm_[A-Fa-f0-9]{64}$').hasMatch(data['accessToken'] as String) &&
++          data['subject'] is String &&
++          (data['subject'] as String).isNotEmpty &&
++          (data['subject'] as String).length <= 256 &&
++          data['expiresIn'] is int &&
++          (data['expiresIn'] as int) > 20 &&
++          (data['expiresIn'] as int) <= 600) {
++        return (
++          token: data['accessToken'] as String,
++          subject: data['subject'] as String,
++          expiresAt: DateTime.now().add(Duration(seconds: data['expiresIn'] as int)),
++        );
++      }
++    } on FormatException {
++      // A response without a valid session cannot authorize the client.
++    }
++    throw ApiFailure(0, 'invalid_server_response');
++  }
++
++  Future<http.Response> _postInvitation(
++    String action, String credential, {String? code}
++  ) async {
++    final origin = validateKassaOrigin(apiOrigin, debug: kDebugMode);
++    final request = http.Request('POST', origin.replace(path: '/v1/mobile/auth/$action'))
++      ..followRedirects = false
++      ..headers['content-type'] = 'application/json'
++      ..headers['accept'] = 'application/json'
++      ..body = jsonEncode({
++        if (code != null) 'code': code,
++        'deviceCredential': credential,
++      });
++    final client = _invitationClient ?? http.Client();
++    try {
++      return await client.send(request)
++          .then(http.Response.fromStream)
++          .timeout(const Duration(seconds: 10));
++    } on Exception {
++      throw ApiFailure(0, 'network');
++    } finally {
++      if (_invitationClient == null) client.close();
++    }
++  }
++}
+--- /dev/null
++++ b/apps/mobile-flutter/lib/mobile_invitation_view.dart
+@@ -0,0 +1,96 @@
++part of 'main.dart';
++
++Future<bool> _showMobileInvitation(BuildContext context, Login login) async =>
++    await showDialog<bool>(
++      context: context,
++      barrierDismissible: false,
++      builder: (context) => _MobileInvitationDialog(login: login),
++    ) ?? false;
++
++class _MobileInvitationDialog extends StatefulWidget {
++  const _MobileInvitationDialog({required this.login});
++
++  final Login login;
++
++  @override
++  State<_MobileInvitationDialog> createState() => _MobileInvitationDialogState();
++}
++
++class _MobileInvitationDialogState extends State<_MobileInvitationDialog> {
++  final _code = TextEditingController();
++  bool _busy = false;
++  String? _error;
++
++  Future<void> _submit() async {
++    if (_busy) return;
++    setState(() {
++      _busy = true;
++      _error = null;
++    });
++    try {
++      await widget.login.signInWithInvitation(_code.text);
++      if (mounted) Navigator.of(context).pop(true);
++    } on ApiFailure catch (failure) {
++      if (mounted) setState(() => _error = _apiMessage(context, failure));
++    } on Exception {
++      if (mounted) {
++        setState(() => _error = _tr(context, 'Вход не завершён. Повторите попытку.',
++            'Kirish yakunlanmadi. Qayta urinib ko‘ring.'));
++      }
++    } finally {
++      if (mounted) setState(() => _busy = false);
++    }
++  }
++
++  @override
++  void dispose() {
++    _code.dispose();
++    super.dispose();
++  }
++
++  @override
++  Widget build(BuildContext context) => PopScope(
++    canPop: !_busy,
++    child: AlertDialog(
++      title: const _UiText('Вход по приглашению', 'Taklif orqali kirish'),
++      content: SingleChildScrollView(
++        child: Column(
++          mainAxisSize: MainAxisSize.min,
++          crossAxisAlignment: CrossAxisAlignment.start,
++          children: [
++            const _UiText('Введите код, выданный администратором.',
++                'Administrator bergan kodni kiriting.'),
++            const SizedBox(height: 12),
++            TextField(
++              controller: _code,
++              autofocus: true,
++              enabled: !_busy,
++              obscureText: true,
++              enableSuggestions: false,
++              autocorrect: false,
++              maxLength: 40,
++              textInputAction: TextInputAction.done,
++              onSubmitted: (_) => _submit(),
++              decoration: InputDecoration(
++                labelText: _tr(context, 'Код приглашения', 'Taklif kodi'),
++                errorText: _error,
++                errorMaxLines: 3,
++              ),
++            ),
++            if (_busy) const LinearProgressIndicator(),
++          ],
++        ),
++      ),
++      actions: [
++        TextButton(
++          onPressed: _busy ? null : () => Navigator.of(context).pop(false),
++          child: const _UiText('Отмена', 'Bekor qilish'),
++        ),
++        FilledButton(
++          onPressed: _busy ? null : _submit,
++          child: const _UiText('Подтвердить', 'Tasdiqlash'),
++        ),
++      ],
++    ),
++  );
++}
+--- a/apps/mobile-flutter/lib/pos.dart
++++ b/apps/mobile-flutter/lib/pos.dart
+@@ -19,6 +19,7 @@
+ part 'procurement_api.dart';
+ part 'api_location.dart';
+ part 'device_login.dart';
++part 'mobile_invitation.dart';
+ part 'production_api.dart';
+ part 'receiving_catalog_api.dart';
+ part 'shift_reports_api.dart';
+@@ -166,6 +167,9 @@
+         'Проверьте адрес единого API в конфигурации приложения.',
+       'invalid_api_path' =>
+         'Запрос выходит за пределы единого API или выбранного магазина.',
++      'mobile_code_format' => 'Введите 24 символа кода приглашения.',
++      'mobile_code_invalid' => 'Код неверный, истёк или уже использован. Запросите новое приглашение.',
++      'mobile_login_unavailable' => 'Вход по приглашению пока недоступен на сервере.',
+       'device_login_unavailable' => 'Сервер пока не разрешает вход по коду.',
+       'device_login_denied' => 'Вход отклонён. Запросите новый код.',
+       'device_login_expired' => 'Код истёк. Запросите новый код.',
+@@ -421,14 +425,23 @@
+     this._storage, {
+     FlutterAppAuth appAuth = const FlutterAppAuth(),
+     http.Client? deviceLoginClient,
++    http.Client? invitationClient,
++    this.useNativeInvitation = const bool.fromEnvironment('KASSA_NATIVE_INVITATION'),
+     Future<void> Function(Duration)? deviceWait,
+   }) : _appAuth = appAuth,
+        _deviceLoginClient = deviceLoginClient,
++       _invitationClient = invitationClient,
+        _deviceWait = deviceWait;
+ 
+   final FlutterSecureStorage _storage;
+   final FlutterAppAuth _appAuth;
+   final http.Client? _deviceLoginClient;
++  final http.Client? _invitationClient;
++  final bool useNativeInvitation;
++  bool _native = false;
++  bool _invitationBusy = false;
++  String? _invitationCode;
++  String? _invitationCredential;
+   final Future<void> Function(Duration)? _deviceWait;
+   void Function(DeviceLoginPrompt)? onDeviceLoginPrompt;
+   Completer<void>? _deviceCancellation;
+@@ -513,6 +526,7 @@
+       checkCancelled();
+       _generation++;
+       _persistent = persist;
++      _native = false;
+       _subject = sub;
+       _accessToken = access;
+       _refreshToken = refresh;
+@@ -543,10 +557,10 @@
+     return null;
+   }
+ 
+-  Future<void> _saveSession(String subject, String refresh) async {
++  Future<void> _saveSession(String subject, String refresh, {bool native = false}) async {
+     final write = _storage.write(
+       key: _sessionKey,
+-      value: jsonEncode({'sub': subject, 'refresh': refresh}),
++      value: jsonEncode({'sub': subject, 'refresh': refresh, if (native) 'native': true}),
+     );
+     _savingSession = write;
+     try {
+@@ -561,6 +575,7 @@
+     if (saved == null) return false;
+     _generation++;
+     _persistent = true;
++    _native = saved['native'] == true;
+     _subject = saved['sub'] as String;
+     _refreshToken = saved['refresh'] as String;
+     try {
+@@ -603,6 +618,7 @@
+     if (refresh == null || current == null) {
+       throw ApiFailure(401, 'sign_in_required');
+     }
++    if (_native) return _refreshInvitation(refresh, current, generation);
+     final exchange = _appAuth.token(
+       TokenRequest(
+         clientId,
+@@ -650,6 +666,8 @@
+ 
+   void signOut() {
+     cancelDeviceLogin();
++    _clearInvitation();
++    _native = false;
+     _generation++;
+     _refreshing = null;
+     _refreshExchange = null;
+@@ -675,16 +693,28 @@
+     final exchange = _refreshExchange;
+     final saving = _savingSession;
+     var refresh = _refreshToken;
++    var native = _native;
+     signOut();
+     try {
+       await saving;
+     } on Exception {
+       // Delete the old credential even if rotation could not be saved.
+     }
+-    refresh ??= (await _readSavedSession())?['refresh'] as String?;
++    if (refresh == null) {
++      final saved = await _readSavedSession();
++      refresh = saved?['refresh'] as String?;
++      native = saved?['native'] == true;
++    }
+     await _storage.delete(key: _sessionKey);
+     final savedRefresh = refresh;
+     if (savedRefresh == null) return true;
++    if (native) {
++      try {
++        return (await _postInvitation('revoke', savedRefresh)).statusCode == 204;
++      } on Exception {
++        return false;
++      }
++    }
+     var tokenToRevoke = savedRefresh;
+ 
+     // If logout raced with rotation, revoke the newest issued credential.
+@@ -928,7 +958,9 @@
+       throw ApiFailure(0, 'invalid_api_path');
+     }
+     final url = _uri(path, query);
+-    if (productionContract && !_supportsProductionRequest(method, url)) {
++    if (productionContract &&
++        !(discovery && login._native) &&
++        !_supportsProductionRequest(method, url)) {
+       throw ApiFailure(405, 'operation_unavailable_on_server');
+     }
+     final active = cashier ? Desk.cashier : desk;
+--- a/apps/mobile-flutter/pubspec.yaml
++++ b/apps/mobile-flutter/pubspec.yaml
+@@ -1,7 +1,7 @@
+ name: kassa_mobile
+ description: Android POS pilot for Kassa.
+ publish_to: none
+-version: 0.2.72+2092
++version: 0.2.73+2093
+ environment:
+   sdk: ">=3.10.0 <4.0.0"
+ dependencies:
+--- /dev/null
++++ b/apps/mobile-flutter/test/mobile_invitation_test.dart
+@@ -0,0 +1,110 @@
++import 'dart:convert';
++
++import 'package:flutter/material.dart';
++import 'package:flutter_secure_storage/flutter_secure_storage.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:http/http.dart' as http;
++import 'package:http/testing.dart';
++import 'package:kassa_mobile/main.dart';
++import 'package:kassa_mobile/pos.dart';
++
++const storage = FlutterSecureStorage();
++const code = 'ABCDEF0123456789ABCDEF01';
++final opaque = 'ksm_${'A' * 64}';
++
++http.Response response(Object body, {int status = 200}) =>
++    http.Response(jsonEncode(body), status);
++
++http.Response tokens([String subject = 'existing-cashier']) =>
++    response({'accessToken': opaque, 'subject': subject, 'expiresIn': 600});
++
++void main() {
++  setUp(() => FlutterSecureStorage.setMockInitialValues({}));
++
++  test('first login stays on the Kassa API and reuses enrollment proof after a timeout', () async {
++    final proofs = <String>[];
++    final client = MockClient((request) async {
++      expect(request.method, 'POST');
++      expect(request.followRedirects, isFalse);
++      expect(request.url.host, Uri.parse(apiOrigin).host);
++      expect(request.url.path, '/v1/mobile/auth/redeem');
++      final json = jsonDecode(request.body) as Map<String, dynamic>;
++      expect(json['code'], code);
++      final proof = json['deviceCredential'] as String;
++      expect(proof, matches('^[a-f0-9]{64}$'));
++      proofs.add(proof);
++      return proofs.length == 1 ? response({}, status: 503) : tokens();
++    });
++    final login = Login(storage, invitationClient: client, useNativeInvitation: true);
++    await expectLater(login.signInWithInvitation(code), throwsA(isA<ApiFailure>()));
++    expect(await storage.readAll(), isEmpty);
++    await login.signInWithInvitation('abcdef-0123456789-abcdef01');
++    expect(proofs.last, proofs.first);
++    expect(login.subject, 'existing-cashier');
++    expect(await login.accessToken(), opaque);
++    expect((await storage.readAll()).values.single, isNot(contains(code)));
++  });
++
++  test('new instance restores mobile credentials and log out revokes the device', () async {
++    final paths = <String>[];
++    String? proof;
++    final client = MockClient((request) async {
++      paths.add(request.url.pathSegments.last);
++      final current = (jsonDecode(request.body) as Map)['deviceCredential'];
++      proof ??= current as String;
++      expect(current, proof);
++      return paths.last == 'revoke' ? http.Response('', 204) : tokens();
++    });
++    await Login(storage, invitationClient: client).signInWithInvitation(code);
++    final restarted = Login(storage, invitationClient: client);
++    expect(await restarted.restore(), isTrue);
++    expect(restarted.subject, 'existing-cashier');
++    expect(await restarted.signOutAndRevoke(), isTrue);
++    expect(paths, ['redeem', 'renew', 'revoke']);
++    expect(await storage.readAll(), isEmpty);
++  });
++
++  test('redirects and an invalid code cannot save a session', () async {
++    final login = Login(storage, invitationClient: MockClient((request) async {
++      expect(request.followRedirects, isFalse);
++      return http.Response('', 302, headers: {'location': 'https://example.com'});
++    }));
++    await expectLater(login.signInWithInvitation(code), throwsA(isA<ApiFailure>()));
++    expect(await storage.readAll(), isEmpty);
++  });
++
++  testWidgets('enter invitation in app, retry bad code, then see assigned stores', (tester) async {
++    var requests = 0;
++    final login = Login(storage, useNativeInvitation: true, invitationClient: MockClient((request) async {
++      expect(request.url.path, '/v1/mobile/auth/redeem');
++      return ++requests == 1 ? response({}, status: 401) : tokens();
++    }));
++    final app = Pos(storage, login: login, productionContract: true, client: MockClient((request) async {
++      expect(request.url.path, '/v1/me/stores');
++      expect(request.headers.entries.singleWhere((entry) => entry.key.toLowerCase() == 'authorization').value, 'Bearer $opaque');
++      return response({
++        'items': [{
++          'storeId': '30000000-0000-4000-8000-000000000001',
++          'name': 'Доступный магазин',
++          'timeZone': 'Asia/Tashkent',
++          'utcOffsetMinutes': 300,
++          'registers': [],
++        }],
++        'nextOffset': null,
++      });
++    }));
++    await tester.pumpWidget(KassaApp(pos: app));
++    await tester.pumpAndSettle();
++    await tester.tap(find.text('Войти'));
++    await tester.pumpAndSettle();
++    expect(find.text('Вход по приглашению'), findsOneWidget);
++    await tester.enterText(find.byType(TextField), code);
++    await tester.tap(find.text('Подтвердить'));
++    await tester.pumpAndSettle();
++    expect(find.textContaining('Код неверный'), findsOneWidget);
++    await tester.tap(find.text('Подтвердить'));
++    await tester.pumpAndSettle();
++    expect(find.text('Доступный магазин'), findsOneWidget);
++    expect(find.text('Вход по приглашению'), findsNothing);
++  });
++}
