@@ -1,0 +1,84 @@
+name: Build Kassa Android 0.2.71
+
+on:
+  push:
+    branches: ['codex/android-apk-0.2.71']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.0'
+          channel: stable
+
+      - name: Restore Android source
+        shell: bash
+        run: |
+          cat build/kassa-android-0.2.71/source.zip.part.* > source.zip
+          echo '88ef14ab1aac6525e9a4aeebf3d669fc1c0cbb1123b2346e9f394bb2ad479320  source.zip' | sha256sum --check
+          unzip -q source.zip -d compiled-source
+
+      - name: Install Android build components
+        shell: bash
+        run: |
+          set +o pipefail
+          yes | sdkmanager --licenses >/dev/null
+          set -o pipefail
+          sdkmanager --install 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358'
+
+      - name: Compile and sign the test APK
+        working-directory: compiled-source/apps/mobile-flutter
+        shell: bash
+        run: |
+          flutter pub get --enforce-lockfile
+          store_password="$(openssl rand -hex 20)"
+          echo "::add-mask::$store_password"
+          keytool -genkeypair -noprompt -storetype PKCS12 \
+            -keystore "$RUNNER_TEMP/kassa-test.p12" \
+            -storepass "$store_password" -keypass "$store_password" \
+            -alias kassa-test -keyalg RSA -keysize 2048 -validity 3650 \
+            -dname 'CN=Kassa Android Test Build'
+          printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=kassa-test\nkeyPassword=%s\n' \
+            "$RUNNER_TEMP/kassa-test.p12" "$store_password" "$store_password" > android/key.properties
+          flutter build apk --release --no-pub --target-platform android-arm,android-arm64 \
+            --dart-define=KASSA_PRODUCTION_API=true
+
+      - name: Verify test APK
+        shell: bash
+        run: |
+          mkdir -p apk-delivery
+          cd apk-delivery
+          apk=Kassa_Android_0.2.71_TEST.apk
+          cp ../compiled-source/apps/mobile-flutter/build/app/outputs/flutter-apk/app-release.apk "$apk"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$apk"
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" > badging.txt
+          grep -F "package: name='uz.qrspace.kassa.mobile.multirolepilot' versionCode='2091' versionName='0.2.71'" badging.txt
+          unzip -Z1 "$apk" | grep -Fx 'lib/arm64-v8a/libapp.so'
+          unzip -Z1 "$apk" | grep -Fx 'lib/armeabi-v7a/libapp.so'
+          unzip -p "$apk" lib/arm64-v8a/libapp.so > "$RUNNER_TEMP/kassa-libapp.so"
+          grep -aFo 'https://kassa.qr-space.uz' "$RUNNER_TEMP/kassa-libapp.so" | sort -u
+          sha256sum "$apk" | tee SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kassa-Android-0.2.71-TEST
+          path: |
+            apk-delivery/Kassa_Android_0.2.71_TEST.apk
+            apk-delivery/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 7
