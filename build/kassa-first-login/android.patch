@@ -396,7 +396,7 @@
  dependencies:
 --- /dev/null
 +++ b/apps/mobile-flutter/test/mobile_invitation_test.dart
-@@ -0,0 +1,112 @@
+@@ -0,0 +1,115 @@
 +import 'dart:convert';
 +
 +import 'package:flutter/material.dart';
@@ -412,7 +412,8 @@
 +final opaque = 'ksm_${'A' * 64}';
 +
 +http.Response response(Object body, {int status = 200}) =>
-+    http.Response(jsonEncode(body), status);
++    http.Response.bytes(utf8.encode(jsonEncode(body)), status,
++        headers: {'content-type': 'application/json; charset=utf-8'});
 +
 +http.Response tokens([String subject = 'existing-cashier']) =>
 +    response({'accessToken': opaque, 'subject': subject, 'expiresIn': 600});
@@ -505,6 +506,8 @@
 +    expect(find.textContaining('Код неверный'), findsOneWidget);
 +    await tester.tap(find.text('Подтвердить'));
 +    await tester.pumpAndSettle();
++    expect(requests, 2);
++    expect(find.text('Доступные магазины'), findsOneWidget);
 +    expect(find.text('Доступный магазин'), findsOneWidget);
 +    expect(find.text('Вход по приглашению'), findsNothing);
 +  });
