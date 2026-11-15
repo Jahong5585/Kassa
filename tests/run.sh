@@ -25,6 +25,7 @@ export Auth__AdminAcr=kasa-test-webauthn
 export Refunds__CashierLimit=20000
 export Sales__MaxManualDiscountPercent=10
 export Purchasing__ReplenishmentRefreshSeconds=1
+export RateLimiting__PermitLimit=2000
 export ASPNETCORE_ENVIRONMENT=Development
 export ASPNETCORE_URLS="http://127.0.0.1:$api_port"
 export POS_TEST_URL="$ASPNETCORE_URLS"

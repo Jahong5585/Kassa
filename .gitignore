@@ -5,3 +5,4 @@
 *.pfx
 *.pem
 *.log
+.deploy/

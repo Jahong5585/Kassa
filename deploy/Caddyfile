@@ -1,0 +1,18 @@
+:8080 {
+    encode zstd gzip
+
+    @keycloak path /auth /auth/*
+    handle @keycloak {
+        reverse_proxy keycloak:8080 {
+            header_up X-Forwarded-Proto https
+            header_up X-Forwarded-Host {host}
+        }
+    }
+
+    handle {
+        reverse_proxy api:8080 {
+            header_up X-Forwarded-Proto https
+            header_up X-Forwarded-Host {host}
+        }
+    }
+}

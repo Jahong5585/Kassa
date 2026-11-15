@@ -24,11 +24,7 @@ internal sealed partial class PosService
         }
         await RequireOpenShift(db, tx, scope, shift, ct);
         if (request.Direction == "out")
-        {
-            var balance = await ReadShift(db, tx, scope.Organization, scope.Store, scope.Register, shift, null, ct);
-            if (balance?.ExpectedCash is not decimal expected || request.Amount > expected)
-                throw new PosError(409, "insufficient_cash_balance");
-        }
+            await RequireSufficientCash(db, tx, scope, shift, request.Amount, ct);
 
         await using var command = db.Sql(tx, """
             INSERT INTO cash_movements (org_id, store_id, register_id, id, shift_id, cashier_id, direction, amount, reason)
@@ -40,6 +36,14 @@ internal sealed partial class PosService
         await Audit(db, tx, context, scope, "cash." + request.Direction, request.OperationId, ct);
         await tx.CommitAsync(ct);
         return new CashMovement(request.OperationId, shift, scope.Staff, request.Direction, request.Amount, reason, created);
+    }
+
+    private static async Task RequireSufficientCash(NpgsqlConnection db, NpgsqlTransaction tx, RegisterScope scope,
+        Guid shift, decimal amount, CancellationToken ct)
+    {
+        var balance = await ReadShift(db, tx, scope.Organization, scope.Store, scope.Register, shift, null, ct);
+        if (balance?.ExpectedCash is not decimal expected || amount > expected)
+            throw new PosError(409, "insufficient_cash_balance");
     }
 
     public async Task<IReadOnlyList<CashMovement>> ListCashierMovements(HttpContext context, Guid shift, int? offset,

@@ -13,7 +13,7 @@ internal sealed partial class PosService
     {
         if (file == Guid.Empty)
             throw new PosError(400, "invalid_invoice_file_id");
-        await CheckInvoiceEditor(context, store, receipt, ct);
+        await CheckInvoiceOwner(context, store, receipt, ct);
         fileName = Uri.UnescapeDataString(fileName).Trim();
         if (fileName.Length is < 1 or > 120 || fileName[0] == '.' || fileName.Any(char.IsControl) ||
             fileName.IndexOfAny(['/', '\\', ':']) >= 0)
@@ -29,12 +29,12 @@ internal sealed partial class PosService
         return pending.ScanStatus == "pending" ? await ScanInvoiceFile(context, store, receipt, file, ct) : pending;
     }
 
-    private async Task CheckInvoiceEditor(HttpContext context, Guid store, Guid receipt, CancellationToken ct)
+    private async Task CheckInvoiceOwner(HttpContext context, Guid store, Guid receipt, CancellationToken ct)
     {
         await using var db = await source.OpenConnectionAsync(ct);
         await using var tx = await db.BeginTransactionAsync(ct);
         var scope = await Access.RequireStore(db, tx, context, configuration, store, false, ct);
-        await RequireInvoiceEditor(db, tx, scope, receipt, ct);
+        _ = await RequireInvoiceOwner(db, tx, scope, receipt, ct);
     }
 
     private async Task<InvoiceFile> SaveInvoiceFile(HttpContext context, Guid store, Guid receipt, Guid file,
@@ -44,7 +44,7 @@ internal sealed partial class PosService
         await using var tx = await db.BeginTransactionAsync(ct);
         var scope = await Access.RequireStore(db, tx, context, configuration, store, false, ct);
         await LockReceipt(db, tx, scope, receipt, ct);
-        await RequireInvoiceEditor(db, tx, scope, receipt, ct);
+        var document = await RequireInvoiceOwner(db, tx, scope, receipt, ct);
         var existing = await ReadInvoiceFile(db, tx, scope, receipt, file, withContents: false, ct);
         if (existing is { } saved)
         {
@@ -53,6 +53,8 @@ internal sealed partial class PosService
                 throw new PosError(409, "invoice_file_id_reused");
             return saved.Metadata;
         }
+        if (document.Status != "draft")
+            throw new PosError(409, "receipt_not_editable");
 
         await using var count = db.Sql(tx, """
             SELECT count(*) FROM invoice_files WHERE (org_id, store_id, receipt_id) = ($1, $2, $3)
@@ -177,17 +179,24 @@ internal sealed partial class PosService
             throw new InvalidOperationException("Invoice file count missing.");
         if (rows.GetInt64(1) != 0)
             throw new PosError(409, "invoice_files_not_verified");
-        if (rows.GetInt64(0) == 0 && configuration.GetValue<bool>("Purchasing:RequireReceiptAttachment"))
+        if (rows.GetInt64(0) == 0 && configuration.GetValue("Purchasing:RequireReceiptAttachment", true))
             throw new PosError(409, "invoice_file_required");
     }
 
     private static async Task RequireInvoiceEditor(NpgsqlConnection db, NpgsqlTransaction tx, StoreScope scope,
         Guid receipt, CancellationToken ct)
     {
-        var document = await ReadReceipt(db, tx, scope, receipt, ct) ?? throw new PosError(404, "receipt_not_found");
-        RequireReceiptEditor(scope, document);
+        var document = await RequireInvoiceOwner(db, tx, scope, receipt, ct);
         if (document.Status != "draft")
             throw new PosError(409, "receipt_not_editable");
+    }
+
+    private static async Task<ReceivingDocument> RequireInvoiceOwner(NpgsqlConnection db, NpgsqlTransaction tx,
+        StoreScope scope, Guid receipt, CancellationToken ct)
+    {
+        var document = await ReadReceipt(db, tx, scope, receipt, ct) ?? throw new PosError(404, "receipt_not_found");
+        RequireReceiptEditor(scope, document);
+        return document;
     }
 
     private static async Task<(InvoiceFile Metadata, byte[] Digest, byte[]? Contents)?> ReadInvoiceFile(

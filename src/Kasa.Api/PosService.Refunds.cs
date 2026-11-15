@@ -106,6 +106,8 @@ internal sealed partial class PosService
         var limit = configuration.GetValue<decimal>("Refunds:CashierLimit");
         if (approvedBy == Guid.Empty && (limit <= 0 || total + options.Lines.Sum(line => line.ReturnedAmount) > limit))
             throw new PosError(409, "refund_approval_required");
+        if (options.Method == "cash")
+            await RequireSufficientCash(db, tx, scope, request.ShiftId, total, ct);
 
         var created = DateTime.UtcNow;
         created = created.AddTicks(-(created.Ticks % 10));

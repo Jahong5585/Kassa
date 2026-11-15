@@ -118,17 +118,22 @@ internal sealed partial class PosService
     public async Task<ProductCard> SaveStoreProduct(HttpContext context, Guid store, Guid product, WriteProductCard request,
         CancellationToken ct)
     {
-        var card = ValidateProductCard(product, request);
         await using var db = await source.OpenConnectionAsync(ct);
         await using var tx = await db.BeginTransactionAsync(ct);
         var scope = await Access.RequireStore(db, tx, context, configuration, store, true, ct);
         await LockInventoryMembership(db, tx, scope.Organization, ct, shared: true);
+        await LockProduct(db, tx, scope.Organization, product, true, ct);
+        var current = await ReadProductCard(db, tx, scope, product, ct);
+        var card = ValidateProductCard(product, request, request.RequiresExpiry ?? current?.RequiresExpiry ?? false);
         var result = await WriteCard(db, tx, context, scope, card, request.ExpectedVersion, ct);
         await tx.CommitAsync(ct);
         return result;
     }
 
-    private static ProductCard ValidateProductCard(Guid product, WriteProductCard request)
+    private static ProductCard ValidateProductCard(Guid product, WriteProductCard request) =>
+        ValidateProductCard(product, request, request.RequiresExpiry ?? false);
+
+    private static ProductCard ValidateProductCard(Guid product, WriteProductCard request, bool requiresExpiry)
     {
         if (product == Guid.Empty || request.ExpectedVersion is < 0 or int.MaxValue ||
             request.Unit is not ("piece" or "kg") || !IsText(request.Name, 160) ||
@@ -144,7 +149,7 @@ internal sealed partial class PosService
         }
         var ordered = request.Barcodes.Take(1).Concat(request.Barcodes.Skip(1).OrderBy(code => code.Code,
             StringComparer.Ordinal)).ToArray();
-        return new ProductCard(product, request.Name.Trim(), request.Unit, request.RequiresExpiry,
+        return new ProductCard(product, request.Name.Trim(), request.Unit, requiresExpiry,
             OptionalText(request.Sku, 64), OptionalText(request.Category, 120), OptionalText(request.Brand, 120),
             OptionalText(request.SupplierRef, 160), OptionalText(request.TaxProfile, 80), request.ExpectedVersion + 1,
             ordered, null, 1, true);
