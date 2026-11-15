@@ -482,7 +482,7 @@
  platform.MapGet("/stores", async (int? offset, PosService pos, HttpContext context, CancellationToken ct) =>
 --- /dev/null
 +++ b/tests/mobile_invitation.py
-@@ -0,0 +1,74 @@
+@@ -0,0 +1,76 @@
 +"""Verify the native login API on the isolated PostgreSQL fixture."""
 +from concurrent.futures import ThreadPoolExecutor
 +from secrets import token_hex
@@ -530,8 +530,10 @@
 +    mobile = {"bearer": session["accessToken"]}
 +
 +    stores = request("/v1/me/stores", **mobile)
-+    assert [store["storeId"] for store in stores["items"]] == [fixture_id(11)], stores
-+    assert stores["items"][0]["registers"] == [{"registerId": fixture_id(21), "name": "А1"}], stores
++    assigned = {store["storeId"]: store for store in stores["items"]}
++    assert set(assigned) == {fixture_id(11), fixture_id(13)}, stores
++    assert assigned[fixture_id(11)]["registers"] == [{"registerId": fixture_id(21), "name": "А1"}], stores
++    assert assigned[fixture_id(13)]["registers"] == [], stores
 +    roles = request(f"/v1/me/roles?storeId={fixture_id(11)}", **mobile)
 +    assert roles["owner"] and set(roles["roles"]) == {"cashier", "receiver"}, roles
 +    request(f"/v1/me/roles?storeId={fixture_id(12)}", **mobile, expected=404)
