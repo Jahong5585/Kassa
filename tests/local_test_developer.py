@@ -76,6 +76,32 @@ def main():
     listed = call("/v1/platform/test-stores", token=token)
     assert any(row["storeId"] == created["storeId"] and row["isTest"] is True for row in listed)
 
+    identity = call("/v1/platform/me", token=token)
+    assert identity["canRead"] is True and identity["canWrite"] is True
+    organization_id = str(uuid.uuid4())
+    store_id = str(uuid.uuid4())
+    platform_created = call("/v1/platform/stores", {
+        "organizationId": organization_id,
+        "organizationName": "Тестовая организация",
+        "storeId": store_id,
+        "storeName": "Тестовый магазин",
+        "timeZone": "Asia/Tashkent",
+        "ownerSubject": "owner-" + uuid.uuid4().hex,
+        "reason": "Автоматическая проверка контракта Windows-клиента",
+    }, token, method="POST")
+    assert platform_created["storeId"] == store_id and platform_created["version"] == 1
+    page = call("/v1/platform/stores?offset=0", token=token)
+    row = next(item for item in page["items"] if item["storeId"] == store_id)
+    assert row["organizationName"] == "Тестовая организация" and row["isTest"] is True
+    renamed_platform = call(
+        "/v1/platform/organizations/" + organization_id + "/stores/" + store_id + "/name",
+        {"expectedVersion": 1, "name": "Тестовый магазин 2", "reason": "Проверка переименования"},
+        token, method="PUT")
+    assert renamed_platform["version"] == 2 and renamed_platform["storeName"] == "Тестовый магазин 2"
+    audit = call("/v1/platform/audit?offset=0", token=token)
+    assert any(event["storeId"] == store_id and event["reason"] == "Проверка переименования"
+               for event in audit["items"])
+
     developer = "10000000-0000-0000-0000-000000000001"
     call("/v1/platform/test-stores", token=ordinary_token(developer), expected=403)
     temporary = call("/v1/platform/test-stores", token=ordinary_token(developer, mfa=True))

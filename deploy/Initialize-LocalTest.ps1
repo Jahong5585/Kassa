@@ -91,8 +91,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Could not seed developer-test.' }
 
 $verified = & docker compose --project-name kasa-local-test --env-file $settings exec -T db `
     psql -XAt -U kasa_owner -d kasa -v ON_ERROR_STOP=1 -c `
-    "SELECT current_setting('server_version_num')::int / 10000 = 17 AND to_regclass('platform_staff') IS NOT NULL AND EXISTS (SELECT 1 FROM platform_staff WHERE issuer='kasa-local' AND subject='developer-test' AND can_read AND can_write AND active)"
-if ($LASTEXITCODE -ne 0 -or $verified.Trim() -ne 't') { throw 'Migration 035 or developer account verification failed.' }
+    "SELECT current_setting('server_version_num')::int / 10000 = 17 AND to_regclass('platform_staff') IS NOT NULL AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='stores' AND column_name='platform_version') AND EXISTS (SELECT 1 FROM platform_staff WHERE issuer='kasa-local' AND subject='developer-test' AND can_read AND can_write AND active)"
+if ($LASTEXITCODE -ne 0 -or $verified.Trim() -ne 't') { throw 'Migration 036 or developer account verification failed.' }
 
 & $dotnet restore (Join-Path $root 'src\Kasa.Api\Kasa.Api.csproj') --locked-mode
 if ($LASTEXITCODE -ne 0) { throw 'API restore failed.' }
@@ -105,5 +105,5 @@ if ($LASTEXITCODE -ne 0) { throw 'API publish failed.' }
     Login = 'developer-test'
     Address = 'http://127.0.0.1:3510/'
     Settings = $settings
-    Database = 'PostgreSQL 17 / kasa-local-test / migrations 001-035'
+    Database = 'PostgreSQL 17 / kasa-local-test / migrations 001-036'
 }

@@ -7,6 +7,16 @@ public sealed record LocalDeveloperToken(string AccessToken, string TokenType, i
 public sealed record CreatePlatformTestStore(string Name, string? TimeZone = null);
 public sealed record RenamePlatformTestStore(string Name);
 public sealed record PlatformTestStore(Guid OrganizationId, Guid StoreId, string Name, string TimeZone, bool IsTest);
+public sealed record PlatformIdentity(string Issuer, string Subject, bool CanRead, bool CanWrite);
+public sealed record PlatformStoreItem(Guid OrganizationId, string OrganizationName, Guid StoreId, string StoreName,
+    string TimeZone, int Version, bool IsTest);
+public sealed record PlatformStorePage(IReadOnlyList<PlatformStoreItem> Items, int? NextOffset);
+public sealed record CreatePlatformStore(Guid OrganizationId, string OrganizationName, Guid StoreId, string StoreName,
+    string TimeZone, string OwnerSubject, string Reason);
+public sealed record RenamePlatformStore(int ExpectedVersion, string Name, string Reason);
+public sealed record PlatformAuditEvent(long Id, DateTime OccurredAt, string Action, Guid OrganizationId, Guid StoreId,
+    string? PreviousName, string? NewName, string Reason);
+public sealed record PlatformAuditPage(IReadOnlyList<PlatformAuditEvent> Items, int? NextOffset);
 
 public sealed record RegisterDevice(Guid RegisterId, string Name, bool Active, int Version, IReadOnlyList<Guid> CashierIds);
 public sealed record RegisterNewDevice(Guid RegisterId, string Name, Guid CashierId, string RegisterKey);

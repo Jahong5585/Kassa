@@ -51,6 +51,7 @@ services:
       - ../db/033_test_store_isolation.sql:/docker-entrypoint-initdb.d/033_test_store_isolation.sql:ro
       - ../db/034_platform_login_audit.sql:/docker-entrypoint-initdb.d/034_platform_login_audit.sql:ro
       - ../db/035_platform_runtime_grants.sql:/docker-entrypoint-initdb.d/035_platform_runtime_grants.sql:ro
+      - ../db/036_platform_desktop_contract.sql:/docker-entrypoint-initdb.d/036_platform_desktop_contract.sql:ro
       - ./init-keycloak-db.sh:/docker-entrypoint-initdb.d/100_init_keycloak.sh:ro
       - ./init-kasa-bootstrap.sh:/docker-entrypoint-initdb.d/900_init_kasa_bootstrap.sh:ro
     healthcheck:

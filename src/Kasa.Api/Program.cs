@@ -271,6 +271,20 @@ var api = app.MapGroup("/v1").RequireAuthorization()
     .ProducesProblem(400).ProducesProblem(401).ProducesProblem(403).ProducesProblem(404)
     .ProducesProblem(409).ProducesProblem(429).ProducesProblem(503);
 var platformApi = api.MapGroup("/platform");
+platformApi.MapGet("/me", async (PlatformService platform, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await platform.Identity(context, ct))).WithName("ReadPlatformIdentity");
+platformApi.MapGet("/stores", async (int offset, PlatformService platform, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await platform.ListStores(context, offset, ct))).WithName("ListPlatformStores");
+platformApi.MapPost("/stores", async (CreatePlatformStore request, PlatformService platform,
+    HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await platform.CreateStore(context, request, ct))).WithName("CreatePlatformStore");
+platformApi.MapPut("/organizations/{organizationId:guid}/stores/{storeId:guid}/name",
+    async (Guid organizationId, Guid storeId, RenamePlatformStore request, PlatformService platform,
+        HttpContext context, CancellationToken ct) =>
+        TypedResults.Ok(await platform.RenameStore(context, organizationId, storeId, request, ct)))
+    .WithName("RenamePlatformStore");
+platformApi.MapGet("/audit", async (int offset, PlatformService platform, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await platform.AuditEvents(context, offset, ct))).WithName("ListPlatformAudit");
 platformApi.MapGet("/test-stores", async (PlatformService platform, HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await platform.List(context, ct))).WithName("ListPlatformTestStores");
 platformApi.MapPost("/test-stores", async (CreatePlatformTestStore request, PlatformService platform,
