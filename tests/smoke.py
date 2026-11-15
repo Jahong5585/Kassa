@@ -130,7 +130,8 @@ def main():
 
     missing_role = request("/v1/catalog/barcodes/001", staff=multi_subject, expected=403)
     assert missing_role["code"] == "active_role_required"
-    assert request("/v1/catalog/barcodes/001", staff=multi_subject, active_role="cashier")["barcode"] == "001"
+    role_catalog = request("/v1/catalog/barcodes/001", staff=multi_subject, active_role="cashier")
+    assert role_catalog["barcode"] == "001"
     denied_admin = request(f"/v1/stores/{role_store}/staff", staff=multi_subject,
                            active_role="cashier", expected=403)
     assert denied_admin["code"] == "staff_access_denied"
@@ -152,13 +153,25 @@ def main():
                    expected=400)["code"] == "active_role_invalid"
 
     role_shift = str(uuid.uuid4())
+    active_shift = "/v1/shifts/active"
+    request(active_shift, staff=None, expected=401)
+    request(active_shift, staff=multi_subject, active_role="cashier", expected=204)
     request("/v1/shifts", {"shiftId": role_shift, "openingCash": 0},
             staff=multi_subject, active_role="cashier")
     request(f"/v1/stores/{role_store}/staff", staff=multi_subject, active_role="admin")
-    assert request("/v1/shifts/" + role_shift, staff=multi_subject,
-                   active_role="cashier")["shiftId"] == role_shift
+    request(active_shift, staff=multi_subject, active_role="receiver", expected=403)
+    active = request(active_shift, staff=multi_subject, active_role="cashier")
+    assert active["shiftId"] == role_shift and active["closedAt"] is None
+    quote_path = f"/v1/shifts/{role_shift}/quote"
+    basket = {"items": [{"productId": role_catalog["productId"],
+                         "lotId": role_catalog["lots"][0]["lotId"],
+                         "priceVersion": role_catalog["priceVersion"], "quantity": 1}]}
+    request(quote_path, basket, staff=multi_subject, active_role="admin", expected=403)
+    assert request(quote_path, basket, staff=multi_subject,
+                   active_role="cashier")["total"] == role_catalog["unitPrice"]
     request("/v1/shifts/" + role_shift + "/close", {"countedCash": 0},
             staff=multi_subject, active_role="cashier")
+    request(active_shift, staff=multi_subject, active_role="cashier", expected=204)
     print("PASS: multi-role selection, owner inheritance, MFA, store scope and shift continuity")
 
     request("/v1/shifts", opens)

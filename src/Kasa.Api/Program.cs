@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
 using Kasa.Api;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.IdentityModel.Tokens;
@@ -198,6 +199,9 @@ api.MapPost("/shifts/{id:guid}/close", async (Guid id, CloseShift request, PosSe
     TypedResults.Ok(await pos.CloseShift(context, id, request, ct))).WithName("CloseShift");
 api.MapGet("/shifts/{id:guid}", async (Guid id, PosService pos, HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await pos.GetShift(context, id, ct))).WithName("ReadCashierShift");
+api.MapGet("/shifts/active", async Task<Results<Ok<ShiftSummary>, NoContent>> (PosService pos, HttpContext context,
+    CancellationToken ct) => await pos.GetActiveShift(context, ct) is { } shift
+    ? TypedResults.Ok(shift) : TypedResults.NoContent()).WithName("ReadActiveCashierShift");
 api.MapGet("/reports/stores/{storeId:guid}/registers/{registerId:guid}/shifts/{id:guid}",
     async (Guid storeId, Guid registerId, Guid id, PosService pos, HttpContext context, CancellationToken ct) =>
         TypedResults.Ok(await pos.GetAdminShift(context, storeId, registerId, id, ct))).WithName("ReadAdminShift");
@@ -317,6 +321,9 @@ api.MapGet("/catalog/search", async (string q, int? offset, PosService pos, Http
 api.MapGet("/catalog/products/{id:guid}", async (Guid id, PosService pos, HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await pos.GetProductById(context, id, ct))).WithName("ReadCashierProduct");
 var checkoutShifts = api.MapGroup("/shifts/{shiftId:guid}");
+checkoutShifts.MapPost("/quote", async (Guid shiftId, QuoteSale request, PosService pos, HttpContext context,
+    CancellationToken ct) => TypedResults.Ok(await pos.QuoteCheckout(context, shiftId, request, ct)))
+    .WithName("QuoteCashierSale");
 checkoutShifts.MapPost("/cash-movements", async (Guid shiftId, CreateCashMovement request, PosService pos,
     HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await pos.SaveCashMovement(context, shiftId, request, ct))).WithName("SaveCashMovement");
@@ -610,6 +617,12 @@ catalogApi.MapGet("/products/{id:guid}/price-history", async (Guid storeId, Guid
 catalogApi.MapPost("/import", async (Guid storeId, ImportCatalog request, PosService pos, HttpContext context,
     CancellationToken ct) => TypedResults.Ok(await pos.ImportStoreCatalog(context, storeId, request, ct)))
     .WithName("ImportStoreCatalog");
+catalogApi.MapGet("/products/{id:guid}/promotion", async (Guid storeId, Guid id, PosService pos,
+    HttpContext context, CancellationToken ct) => TypedResults.Ok(await pos.GetQuantityPromotion(context, storeId, id, ct)))
+    .WithName("ReadQuantityPromotion");
+catalogApi.MapPut("/products/{id:guid}/promotion", async (Guid storeId, Guid id, ChangeQuantityPromotion request,
+    PosService pos, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await pos.SaveQuantityPromotion(context, storeId, id, request, ct))).WithName("SaveQuantityPromotion");
 
 storeApi.MapPost("/receiving/catalog/proposals", async (Guid storeId, ProposeProduct request, PosService pos,
     HttpContext context, CancellationToken ct) =>
@@ -646,6 +659,15 @@ stockApi.MapGet("/opening-balances/{id:guid}/csv", async (Guid storeId, Guid id,
 stockApi.MapGet("/lots", async (Guid storeId, Guid? productId, int? offset, PosService pos,
     HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await pos.ListStockLots(context, storeId, productId, offset, ct))).WithName("ListStockLots");
+stockApi.MapGet("/lots/{productId:guid}/{lotId:guid}/retail", async (Guid storeId, Guid productId, Guid lotId,
+    PosService pos, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await pos.GetLotRetailSettings(context, storeId, productId, lotId, ct))).WithName("ReadLotRetailSettings");
+stockApi.MapPut("/lots/{productId:guid}/{lotId:guid}/retail", async (Guid storeId, Guid productId, Guid lotId,
+    ChangeLotRetailSettings request, PosService pos, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await pos.SaveLotRetailSettings(context, storeId, productId, lotId, request, ct))).WithName("SaveLotRetailSettings");
+stockApi.MapPost("/lots/{productId:guid}/{lotId:guid}/weighed-price-labels", async (Guid storeId, Guid productId,
+    Guid lotId, IssueWeighedPriceLabel request, PosService pos, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await pos.IssuePriceLabel(context, storeId, productId, lotId, request, ct))).WithName("IssueWeighedPriceLabel");
 stockApi.MapGet("/expiry", async (Guid storeId, string? filter, int? offset, PosService pos,
     HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await pos.GetStoreExpiry(context, storeId, filter, offset, ct))).WithName("ListStoreExpiry");

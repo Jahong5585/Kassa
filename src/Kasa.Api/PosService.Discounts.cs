@@ -1,3 +1,5 @@
+using System.Numerics;
+
 namespace Kasa.Api;
 
 internal sealed partial class PosService
@@ -28,16 +30,31 @@ internal sealed partial class PosService
         if (totalDiscount <= 0 || totalDiscount >= gross || totalDiscount > gross * limit / 100m)
             throw new PosError(409, "manual_discount_outside_limit");
 
+        AllocateDiscount(lines, Enumerable.Range(0, lines.Count), totalDiscount, gross);
+    }
+
+    private static void AllocateDiscount(List<SaleLine> lines, IEnumerable<int> indexes, decimal totalDiscount, decimal gross)
+    {
         decimal grossToLine = 0;
         decimal allocated = 0;
-        for (var i = 0; i < lines.Count; i++)
+        foreach (var i in indexes)
         {
             var line = lines[i];
             grossToLine += line.LineTotal;
-            var cumulative = decimal.Round(totalDiscount * (grossToLine / gross), 2, MidpointRounding.AwayFromZero);
+            var cumulative = RoundedShare(totalDiscount, grossToLine, gross);
             var amount = cumulative - allocated;
             allocated = cumulative;
             lines[i] = line with { LineTotal = line.LineTotal - amount, DiscountAmount = amount };
         }
+    }
+
+    // Amounts have two decimal places; quantities and monetary weights have at most three.
+    // Divide only after forming the exact numerator to retain half-cent ties.
+    private static decimal RoundedShare(decimal amount, decimal share, decimal whole)
+    {
+        var minor = new BigInteger(amount * 100);
+        var part = new BigInteger(share * 1000);
+        var divisor = new BigInteger(whole * 1000);
+        return (decimal)((minor * part * 2 + divisor) / (divisor * 2)) / 100;
     }
 }

@@ -65,29 +65,42 @@ internal sealed partial class PosService
             return new ParkedCartReview(cart, []);
 
         await using var command = db.Sql(tx, """
-            SELECT i.product_id, i.lot_id, i.price_version, sp.version, sp.unit_price, coalesce(l.quantity, 0),
+            SELECT i.product_id, i.lot_id, i.price_version, sp.version, coalesce(markdown.unit_price, sp.unit_price),
+                   coalesce(l.quantity, 0),
                    CASE WHEN NOT coalesce(sp.active, false) THEN 'productUnavailable'
                         WHEN sp.unit_price IS NULL THEN 'priceNotSet'
                         WHEN l.id IS NULL THEN 'lotUnavailable'
                         WHEN l.quantity < i.quantity THEN 'insufficientStock'
-                        WHEN sp.version <> i.price_version THEN 'priceChanged' ELSE 'ready' END
-            FROM unnest($3::uuid[], $4::uuid[], $5::integer[], $6::numeric[])
-                WITH ORDINALITY i(product_id, lot_id, price_version, quantity, position)
+                        WHEN sp.version <> i.price_version OR coalesce(markdown.version, 0) <> i.lot_price_version
+                             THEN 'priceChanged' ELSE 'ready' END,
+                   CASE WHEN markdown.version IS NULL AND promo.enabled AND p.unit = 'piece' THEN promo.version END,
+                   markdown.version
+            FROM unnest($3::uuid[], $4::uuid[], $5::integer[], $6::numeric[], $8::integer[])
+                WITH ORDINALITY i(product_id, lot_id, price_version, quantity, lot_price_version, position)
             LEFT JOIN store_prices sp ON (sp.org_id, sp.store_id, sp.product_id) = ($1, $2, i.product_id)
             LEFT JOIN products p ON (p.org_id, p.id) = (sp.org_id, sp.product_id)
+            LEFT JOIN store_quantity_promotions promo ON (promo.org_id, promo.store_id, promo.product_id) =
+                                                        (sp.org_id, sp.store_id, sp.product_id)
             LEFT JOIN stock_lots l ON (l.org_id, l.store_id, l.product_id, l.id) =
                   (sp.org_id, sp.store_id, sp.product_id, i.lot_id) AND sp.active AND NOT l.quarantined
                   AND (NOT p.requires_expiry OR l.expiry_date IS NOT NULL)
                   AND (l.expiry_date IS NULL OR l.expiry_date >= (statement_timestamp() AT TIME ZONE $7)::date)
+            LEFT JOIN active_lot_markdowns markdown ON (markdown.org_id, markdown.store_id, markdown.product_id, markdown.lot_id) =
+                                                       (sp.org_id, sp.store_id, sp.product_id, i.lot_id)
             ORDER BY i.position
             """, scope.Organization, scope.Store, cart.Items.Select(item => item.ProductId).ToArray(),
             cart.Items.Select(item => item.LotId).ToArray(), cart.Items.Select(item => item.PriceVersion).ToArray(),
-            cart.Items.Select(item => item.Quantity).ToArray(), scope.TimeZone);
+            cart.Items.Select(item => item.Quantity).ToArray(), scope.TimeZone,
+            cart.Items.Select(item => item.LotPriceVersion ?? 0).ToArray());
         await using var rows = await command.ExecuteReaderAsync(ct);
         List<ParkedCartLineReview> lines = [];
         while (await rows.ReadAsync(ct))
             lines.Add(new ParkedCartLineReview(rows.GetGuid(0), rows.GetGuid(1), rows.GetInt32(2),
-                rows.IsDBNull(3) ? null : rows.GetInt32(3), rows.DecimalOrNull(4), rows.GetDecimal(5), rows.GetString(6)));
+                rows.IsDBNull(3) ? null : rows.GetInt32(3), rows.DecimalOrNull(4), rows.GetDecimal(5), rows.GetString(6))
+                {
+                    CurrentPromotionVersion = rows.IsDBNull(7) ? null : rows.GetInt32(7),
+                    CurrentLotPriceVersion = rows.IsDBNull(8) ? null : rows.GetInt32(8)
+                });
         return new ParkedCartReview(cart, lines);
     }
 
@@ -121,8 +134,8 @@ internal sealed partial class PosService
         var cart = await FindCart(db, tx, scope, shift, id, ct) ?? throw new PosError(404, "parked_cart_not_found");
         if (cart.Status != "parked" || cart.Version != version)
             throw new PosError(409, "parked_cart_version_conflict");
-        if (!cart.Items.Select(item => (item.ProductId, item.LotId, item.Quantity))
-            .SequenceEqual(items.Select(item => (item.ProductId, item.LotId, item.Quantity))))
+        if (!cart.Items.Select(item => (item.ProductId, item.LotId, item.Quantity, item.PriceLabelId))
+            .SequenceEqual(items.Select(item => (item.ProductId, item.LotId, item.Quantity, item.PriceLabelId))))
             throw new PosError(409, "parked_cart_items_changed");
     }
 
