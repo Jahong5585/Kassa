@@ -31,7 +31,7 @@ jobs:
             $output.Dispose()
           }
           $actual = (Get-FileHash 'source.zip' -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actual -ne '5c66071dd71bb0f84059eddbdb3dd97675a3622992844014ff6ed3bda0fb89c4') {
+          if ($actual -ne '544516895433ca0ae22d7bd13ce1d091dd501c52bdba7931a6ce41c5e2e45892') {
             throw "Source snapshot checksum mismatch: $actual"
           }
           Expand-Archive 'source.zip' -DestinationPath 'src'
