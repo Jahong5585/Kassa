@@ -31,7 +31,7 @@ jobs:
             $output.Dispose()
           }
           $actual = (Get-FileHash 'source.zip' -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actual -ne '3236f29a2594edcca198badd7e6a72b93cad978c3e472bd8efea3fff407d1270') {
+          if ($actual -ne 'b4ad866120bbf7873b520cbfe9bcf2371806477f524e1d5bae4b6c0b94a709dd') {
             throw "Source snapshot checksum mismatch: $actual"
           }
           Expand-Archive 'source.zip' -DestinationPath 'src'
@@ -78,14 +78,14 @@ jobs:
           "@ | Set-Content (Join-Path $payload 'UNSIGNED-TEST-BUILD.txt') -Encoding UTF8
           New-Item -ItemType Directory -Force (Join-Path $payload 'licenses') | Out-Null
           Copy-Item 'src/desktop/package/licenses/*' (Join-Path $payload 'licenses')
-          Compress-Archive -Path (Join-Path $payload '*') -DestinationPath 'Kassa_Portable_0.8.1_Windows_x64_REAL_TEST_UNSIGNED.zip'
+          Compress-Archive -Path (Join-Path $payload '*') -DestinationPath 'Kassa_Portable_0.8.2_Windows_x64_REAL_TEST_UNSIGNED.zip'
 
       - name: Build unsigned EXE installer
         shell: pwsh
         run: |
           choco install nsis --no-progress -y
           $payload = (Resolve-Path 'src/desktop/source/bin/Release/net48').Path
-          $setup = Join-Path $PWD 'KassaSetup_0.8.1_REAL_TEST_UNSIGNED.exe'
+          $setup = Join-Path $PWD 'KassaSetup_0.8.2_REAL_TEST_UNSIGNED.exe'
           & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" "/DPAYLOAD=$payload" "/DOUTPUT=$setup" 'src/desktop/source/installer/Kassa.nsi'
           if ($LASTEXITCODE -ne 0) { throw "makensis failed with $LASTEXITCODE" }
           if ((Get-AuthenticodeSignature $setup).Status -ne 'NotSigned') {
@@ -96,21 +96,21 @@ jobs:
         shell: pwsh
         run: |
           $files = @(
-            'KassaSetup_0.8.1_REAL_TEST_UNSIGNED.exe',
-            'Kassa_Portable_0.8.1_Windows_x64_REAL_TEST_UNSIGNED.zip'
+            'KassaSetup_0.8.2_REAL_TEST_UNSIGNED.exe',
+            'Kassa_Portable_0.8.2_Windows_x64_REAL_TEST_UNSIGNED.zip'
           )
           $lines = foreach ($file in $files) {
             $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
             "$hash  $file"
           }
-          $lines | Set-Content 'Kassa_0.8.1_SHA256SUMS.txt' -Encoding ascii
+          $lines | Set-Content 'Kassa_0.8.2_SHA256SUMS.txt' -Encoding ascii
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Kassa-Windows-0.8.1-REAL-TEST-UNSIGNED
+          name: Kassa-Windows-0.8.2-REAL-TEST-UNSIGNED
           if-no-files-found: error
           retention-days: 7
           path: |
-            KassaSetup_0.8.1_REAL_TEST_UNSIGNED.exe
-            Kassa_Portable_0.8.1_Windows_x64_REAL_TEST_UNSIGNED.zip
-            Kassa_0.8.1_SHA256SUMS.txt
+            KassaSetup_0.8.2_REAL_TEST_UNSIGNED.exe
+            Kassa_Portable_0.8.2_Windows_x64_REAL_TEST_UNSIGNED.zip
+            Kassa_0.8.2_SHA256SUMS.txt
