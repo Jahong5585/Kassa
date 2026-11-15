@@ -1,6 +1,9 @@
 param(
     [string]$EnvFile = 'D:\KassaSecrets\.env',
-    [string]$KeycloakUrl = 'http://127.0.0.1:3500/auth'
+    [string]$KeycloakUrl = 'http://127.0.0.1:3500/auth',
+    [string]$BootstrapClientId = '',
+    [string]$BootstrapClientSecret = '',
+    [switch]$DeleteBootstrapClient
 )
 
 $ErrorActionPreference = 'Stop'
@@ -46,11 +49,16 @@ if (-not $settings.ContainsKey('KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD')) {
     throw 'KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD is missing.'
 }
 
-$token = Invoke-RestMethod -Method Post -Uri "$KeycloakUrl/realms/master/protocol/openid-connect/token" `
-    -ContentType 'application/x-www-form-urlencoded' -Body @{
+$tokenBody = if ($BootstrapClientId -and $BootstrapClientSecret) {
+    @{ grant_type = 'client_credentials'; client_id = $BootstrapClientId; client_secret = $BootstrapClientSecret }
+} else {
+    @{
         grant_type = 'password'; client_id = 'admin-cli'; username = 'master-admin'
         password = $settings.KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD
     }
+}
+$token = Invoke-RestMethod -Method Post -Uri "$KeycloakUrl/realms/master/protocol/openid-connect/token" `
+    -ContentType 'application/x-www-form-urlencoded' -Body $tokenBody
 $headers = @{ Authorization = 'Bearer ' + $token.access_token }
 $realm = 'kasa'
 $clientId = 'kasa-platform-provisioner'
@@ -102,6 +110,15 @@ Set-Env $EnvFile @{
 }
 & icacls.exe $EnvFile /inheritance:r /grant:r "$env:USERNAME`:(F)" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Could not restrict the secret environment file ACL.' }
+
+if ($DeleteBootstrapClient -and $BootstrapClientId) {
+    $temporary = @(Invoke-RestMethod -Headers $headers `
+        -Uri "$KeycloakUrl/admin/realms/master/clients?clientId=$BootstrapClientId")
+    foreach ($client in $temporary) {
+        Invoke-WebRequest -Method Delete -Headers $headers `
+            -Uri "$KeycloakUrl/admin/realms/master/clients/$($client.id)" | Out-Null
+    }
+}
 
 [pscustomobject]@{
     ClientId = $clientId
