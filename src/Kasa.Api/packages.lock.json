@@ -2,6 +2,15 @@
   "version": 1,
   "dependencies": {
     "net10.0": {
+      "Konscious.Security.Cryptography.Argon2": {
+        "type": "Direct",
+        "requested": "[1.3.1, )",
+        "resolved": "1.3.1",
+        "contentHash": "T+OAGwzYYXftahpOxO7J4xA5K6urxwGnWQf3M+Jpi+76Azv/0T3M5SuN+h7/QvXuiqNw3ZEZ5QqVLI5ygDAylw==",
+        "dependencies": {
+          "Konscious.Security.Cryptography.Blake2": "1.1.1"
+        }
+      },
       "Microsoft.AspNetCore.Authentication.JwtBearer": {
         "type": "Direct",
         "requested": "[10.0.10, )",
@@ -31,6 +40,11 @@
         "requested": "[10.0.2, )",
         "resolved": "10.0.2",
         "contentHash": "q5RfBI+wywJSFUNDE1L4ZbHEHCFTblo8Uf6A6oe4feOUFYiUQXyAf9GBh5qEZpvJaHiEbpBPkQumjEhXCJxdrg=="
+      },
+      "Konscious.Security.Cryptography.Blake2": {
+        "type": "Transitive",
+        "resolved": "1.1.1",
+        "contentHash": "odwOyzj/J/lHJZNwFWJGU/LRecBShupAJ2S8TQqZfhUe9niHzu/voBYK5wuVKsvSpzbfupKQYZguVyIk1sgOkQ=="
       },
       "Microsoft.Bcl.Cryptography": {
         "type": "Transitive",

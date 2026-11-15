@@ -49,7 +49,9 @@ internal sealed partial class PosService
 
         await using var cashier = db.Sql(tx, """
             SELECT 1 FROM staff_stores a JOIN staff s ON (s.org_id, s.id) = (a.org_id, a.staff_id)
-            WHERE (a.org_id, a.store_id, a.staff_id) = ($1, $2, $3) AND a.active AND s.active AND s.role = 'cashier'
+            JOIN staff_store_roles r ON (r.org_id, r.store_id, r.staff_id) = (a.org_id, a.store_id, a.staff_id)
+            WHERE (a.org_id, a.store_id, a.staff_id) = ($1, $2, $3) AND a.active AND s.active
+              AND r.role IN ('cashier', 'owner')
             """, scope.Organization, store, request.CashierId);
         if (await cashier.ExecuteScalarAsync(ct) is null)
             throw new PosError(404, "cashier_not_found");
@@ -112,6 +114,10 @@ internal sealed partial class PosService
             await db.Run(tx, ct, """
                 UPDATE registers SET active = false, version = version + 1
                 WHERE (org_id, store_id, id) = ($1, $2, $3)
+                """, scope.Organization, store, id);
+            await db.Run(tx, ct, """
+                UPDATE operator_sessions SET revoked_at = now(), revoked_reason = 'register_revoked'
+                WHERE (org_id, store_id, register_id) = ($1, $2, $3) AND revoked_at IS NULL
                 """, scope.Organization, store, id);
         }
         await Audit(db, tx, context, scope.Organization, store, id, scope.Staff,

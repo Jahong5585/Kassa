@@ -131,20 +131,20 @@ def main():
     spec = request("/openapi/v1.json")
     assert "get" in spec["paths"]["/v1/shifts/{id}"]
     checkout = spec["paths"]["/v1/sales"]["post"]
-    assert set(checkout["security"][0]) == {"Bearer", "RegisterId", "RegisterKey"}
+    assert set(checkout["security"][0]) == {"Bearer", "OperatorSession", "RegisterId", "RegisterKey"}
     assert {"200", "409"}.issubset(checkout["responses"])
-    assert set(spec["paths"]["/v1/refunds"]["post"]["security"][0]) == {"Bearer", "RegisterId", "RegisterKey"}
-    assert set(spec["paths"]["/v1/stores/{storeId}/receipts/{id}/post"]["post"]["security"][0]) == {"Bearer"}
+    assert set(spec["paths"]["/v1/refunds"]["post"]["security"][0]) == {"Bearer", "OperatorSession", "RegisterId", "RegisterKey"}
+    assert set(spec["paths"]["/v1/stores/{storeId}/receipts/{id}/post"]["post"]["security"][0]) == {"Bearer", "OperatorSession"}
     upload = spec["paths"]["/v1/stores/{storeId}/receipts/{id}/files/{fileId}"]["put"]
     assert set(upload["requestBody"]["content"]) == {"application/pdf", "image/jpeg", "image/png"}
     assert "X-File-Name" in [parameter["name"] for parameter in upload["parameters"]]
-    assert set(spec["paths"]["/v1/expiry/cashier"]["get"]["security"][0]) == {"Bearer", "RegisterId", "RegisterKey"}
-    assert set(spec["paths"]["/v1/stores/{storeId}/stock/operations"]["post"]["security"][0]) == {"Bearer"}
+    assert set(spec["paths"]["/v1/expiry/cashier"]["get"]["security"][0]) == {"Bearer", "OperatorSession", "RegisterId", "RegisterKey"}
+    assert set(spec["paths"]["/v1/stores/{storeId}/stock/operations"]["post"]["security"][0]) == {"Bearer", "OperatorSession"}
     procurement = spec["paths"]["/v1/stores/{storeId}/procurement/orders/{id}/approve"]["post"]
-    assert set(procurement["security"][0]) == {"Bearer"}
+    assert set(procurement["security"][0]) == {"Bearer", "OperatorSession"}
     assert {"200", "409"}.issubset(procurement["responses"])
     role_route = spec["paths"]["/v1/me/roles"]["get"]
-    assert set(role_route["security"][0]) == {"Bearer"}
+    assert set(role_route["security"][0]) == {"Bearer", "OperatorSession"}
     assert "X-Active-Role" not in [parameter["name"] for parameter in role_route.get("parameters", [])]
     assert "X-Active-Role" in [parameter["name"] for parameter in checkout["parameters"]]
 
@@ -163,21 +163,19 @@ def main():
     assert role_catalog["barcode"] == "001"
     denied_admin = request(f"/v1/stores/{role_store}/staff", staff=multi_subject,
                            active_role="cashier", expected=403)
-    assert denied_admin["code"] == "staff_access_denied"
+    assert denied_admin["code"] == "active_role_denied"
     request(f"/v1/stores/{role_store}/receiving/catalog/barcodes/001",
             staff=multi_subject, active_role="receiver")
     request(f"/v1/stores/{role_store}/staff", staff=multi_subject, active_role="admin")
-    assert request(f"/v1/stores/{role_store}/staff", staff=multi_subject, active_role="admin",
-                   mfa=False, expected=403)["code"] == "admin_mfa_required"
+    request(f"/v1/stores/{role_store}/staff", staff=multi_subject, active_role="admin", mfa=False)
 
     assert request("/v1/catalog/barcodes/001", staff=owner_subject, active_role="cashier")["barcode"] == "001"
     request(f"/v1/stores/{role_store}/receiving/catalog/barcodes/001",
             staff=owner_subject, active_role="receiver")
     request(f"/v1/stores/{role_store}/staff", staff=owner_subject, active_role="admin")
     assert request(f"/v1/stores/{role_store}/staff", staff=owner_subject, active_role="cashier",
-                   expected=403)["code"] == "staff_access_denied"
-    assert request(f"/v1/stores/{role_store}/staff", staff=owner_subject, active_role="admin",
-                   mfa=False, expected=403)["code"] == "admin_mfa_required"
+                   expected=403)["code"] == "active_role_denied"
+    request(f"/v1/stores/{role_store}/staff", staff=owner_subject, active_role="admin", mfa=False)
     assert request("/v1/catalog/barcodes/001", staff=owner_subject, active_role="owner",
                    expected=400)["code"] == "active_role_invalid"
 
@@ -1244,10 +1242,10 @@ def check_replenishment():
     request(forecast, {"orderWeekdays": []}, staff=admin, expected=400)
     spec = request("/openapi/v1.json")
     route = spec["paths"]["/v1/stores/{storeId}/procurement/recommendations/{code}/{sku}"]["post"]
-    assert set(route["security"][0]) == {"Bearer"}
+    assert set(route["security"][0]) == {"Bearer", "OperatorSession"}
     assert "200" in route["responses"]
     snapshot_route = spec["paths"]["/v1/stores/{storeId}/procurement/recommendations/{code}/{sku}/snapshot"]["get"]
-    assert set(snapshot_route["security"][0]) == {"Bearer"}
+    assert set(snapshot_route["security"][0]) == {"Bearer", "OperatorSession"}
     request(snapshot, staff=admin, expected=404)
     request(snapshot, staff="receiver", expected=403)
     request(snapshot, staff="admin-foreign", expected=404)
@@ -1523,9 +1521,9 @@ def check_sales_period():
     spec = request("/openapi/v1.json")
     paths = spec["paths"]
     route = paths["/v1/reports/stores/{storeId}/sales"]["get"]
-    assert set(route["security"][0]) == {"Bearer"}
+    assert set(route["security"][0]) == {"Bearer", "OperatorSession"}
     csv_route = paths["/v1/reports/stores/{storeId}/sales/csv"]["get"]
-    assert set(csv_route["security"][0]) == {"Bearer"} and "text/csv" in csv_route["responses"]["200"]["content"]
+    assert set(csv_route["security"][0]) == {"Bearer", "OperatorSession"} and "text/csv" in csv_route["responses"]["200"]["content"]
 
     request(scope + period, staff=None, expected=401)
     request(scope + period, staff="receiver", expected=403)
@@ -1588,7 +1586,7 @@ def check_profit_report():
     period = f"?from={first}&to={fourth}"
     spec = request("/openapi/v1.json")["paths"]
     api_path = "/v1/reports/stores/{storeId}/profit"
-    assert set(spec[api_path]["get"]["security"][0]) == {"Bearer"}
+    assert set(spec[api_path]["get"]["security"][0]) == {"Bearer", "OperatorSession"}
     assert "text/csv" in spec[api_path + "/csv"]["get"]["responses"]["200"]["content"]
     request(route + period, staff=None, expected=401)
     request(route + period, staff="receiver", expected=403)
@@ -1691,7 +1689,7 @@ def check_stock_losses():
     product = fixture_id(41)
     api_path = "/v1/reports/stores/{storeId}/stock-losses"
     spec = request("/openapi/v1.json")["paths"]
-    assert set(spec[api_path]["get"]["security"][0]) == {"Bearer"}
+    assert set(spec[api_path]["get"]["security"][0]) == {"Bearer", "OperatorSession"}
     assert "text/csv" in spec[api_path + "/csv"]["get"]["responses"]["200"]["content"]
     request(scope + period, staff=None, expected=401)
     request(scope + period, staff="receiver", expected=403)
@@ -1746,7 +1744,7 @@ def check_stock_movement_report():
     product = fixture_id(41)
     spec = request("/openapi/v1.json")["paths"]
     api_path = "/v1/reports/stores/{storeId}/stock-movements"
-    assert set(spec[api_path]["get"]["security"][0]) == {"Bearer"}
+    assert set(spec[api_path]["get"]["security"][0]) == {"Bearer", "OperatorSession"}
     assert "text/csv" in spec[api_path + "/csv"]["get"]["responses"]["200"]["content"]
     request(scope + past, staff=None, expected=401)
     request(scope + past, staff="receiver", expected=403)
@@ -1847,7 +1845,7 @@ def check_supplier_invoice_settlements():
     product = fixture_id(41)
     spec = request("/openapi/v1.json")["paths"]
     operation = spec["/v1/stores/{storeId}/procurement/suppliers/{code}/payment-allocations"]["post"]
-    assert set(operation["security"][0]) == {"Bearer"} and "409" in operation["responses"]
+    assert set(operation["security"][0]) == {"Bearer", "OperatorSession"} and "409" in operation["responses"]
 
     def receive(number, lot, quantity, priced=True):
         receipt_id = str(uuid.uuid4())
@@ -1974,7 +1972,7 @@ def check_supplier_invoice_settlements():
 
     credit_transfers = base + "/credit-transfers"
     credit_route = spec["/v1/stores/{storeId}/procurement/suppliers/{code}/credit-transfers"]["post"]
-    assert set(credit_route["security"][0]) == {"Bearer"} and "409" in credit_route["responses"]
+    assert set(credit_route["security"][0]) == {"Bearer", "OperatorSession"} and "409" in credit_route["responses"]
     invoice_c = receive("CREDIT-C", 974, 3)
     invoice_d = receive("CREDIT-D", 975, 4)
 
@@ -2068,7 +2066,7 @@ def check_supplier_settlement_report():
     source = f"/v1/stores/{store}/procurement/suppliers/PROC-01"
     today = datetime.datetime.now(ZoneInfo("Asia/Tashkent")).date()
     spec = request("/openapi/v1.json")["paths"]
-    assert set(spec["/v1/reports/stores/{storeId}/supplier-settlements"]["get"]["security"][0]) == {"Bearer"}
+    assert set(spec["/v1/reports/stores/{storeId}/supplier-settlements"]["get"]["security"][0]) == {"Bearer", "OperatorSession"}
     for staff, status in ((None, 401), ("cashier-b", 403), ("receiver", 403), ("admin-foreign", 404)):
         request(route, staff=staff, expected=status)
     request(route, staff=admin, mfa=False, expected=403)
@@ -2128,7 +2126,7 @@ def check_opening_stock():
 
     spec = request("/openapi/v1.json")["paths"]
     api_path = "/v1/stores/{storeId}/stock/opening-balances"
-    assert set(spec[api_path + "/preview"]["post"]["security"][0]) == {"Bearer"}
+    assert set(spec[api_path + "/preview"]["post"]["security"][0]) == {"Bearer", "OperatorSession"}
     assert "text/csv" in spec[api_path + "/{id}/csv"]["get"]["responses"]["200"]["content"]
     cards = ((product, "piece"), (weighed, "kg"), (untouched, "piece"), (receiving_product, "piece"))
     for number, (pid, unit) in enumerate(cards):
@@ -2275,7 +2273,7 @@ def check_scoped_inventory():
 
     spec = request("/openapi/v1.json")["paths"]
     api_path = "/v1/stores/{storeId}/stock/inventories/{id}/refresh"
-    assert set(spec[api_path]["post"]["security"][0]) == {"Bearer"}
+    assert set(spec[api_path]["post"]["security"][0]) == {"Bearer", "OperatorSession"}
     for pid, unit, group in ((piece, "piece", category), (weighed, "kg", category), (bulk, "piece", "Другая")):
         request(store + "/catalog/products/" + pid, {"expectedVersion": 0, "name": "Ревизия " + pid[-4:],
                 "unit": unit, "category": group, "barcodes": []}, staff=admin, method="PUT")
@@ -2408,7 +2406,7 @@ def check_inventory_cost():
     request(receipt_path + "/post", {"expectedVersion": 3}, staff=admin)
 
     spec = request("/openapi/v1.json")["paths"]
-    assert set(spec["/v1/reports/stores/{storeId}/stock-valuation"]["get"]["security"][0]) == {"Bearer"}
+    assert set(spec["/v1/reports/stores/{storeId}/stock-valuation"]["get"]["security"][0]) == {"Bearer", "OperatorSession"}
     for staff, status in ((None, 401), ("cashier-a", 403), ("receiver", 403), ("admin-foreign", 404)):
         request(valuation_path, staff=staff, expected=status)
     request(valuation_path, staff=admin, mfa=False, expected=403)
@@ -2539,7 +2537,7 @@ def check_stock_valuation_csv(path, product, valuation, admin):
     filtered = csv_path + "?productId=" + product
     spec = request("/openapi/v1.json")["paths"]
     operation = spec["/v1/reports/stores/{storeId}/stock-valuation/csv"]["get"]
-    assert set(operation["security"][0]) == {"Bearer"} and "text/csv" in operation["responses"]["200"]["content"]
+    assert set(operation["security"][0]) == {"Bearer", "OperatorSession"} and "text/csv" in operation["responses"]["200"]["content"]
     request(filtered, staff=None, expected=401)
     request(filtered, staff="cashier-a", expected=403)
     request(filtered, staff="receiver", expected=403)
@@ -2594,7 +2592,7 @@ def check_register_devices():
     rotate = {"expectedVersion": 1, "registerKey": new_key}
     revoke = {"expectedVersion": 2}
     paths = request("/openapi/v1.json")["paths"]
-    assert set(paths["/v1/stores/{storeId}/registers/{id}/rotate-key"]["post"]["security"][0]) == {"Bearer"}
+    assert set(paths["/v1/stores/{storeId}/registers/{id}/rotate-key"]["post"]["security"][0]) == {"Bearer", "OperatorSession"}
     for staff, status in ((None, 401), ("cashier-a", 403), ("receiver", 403), ("admin-foreign", 404)):
         request(base, staff=staff, expected=status)
         request(base, body, staff=staff, expected=status)
@@ -2724,7 +2722,7 @@ def check_store_audit():
     admin = "admin-inventory"
     params = f"?from={day}&to={day}&action=fixture.audit_tie"
     spec = request("/openapi/v1.json", staff="cashier-b")["paths"]
-    assert set(spec["/v1/stores/{storeId}/audit"]["get"]["security"][0]) == {"Bearer"}
+    assert set(spec["/v1/stores/{storeId}/audit"]["get"]["security"][0]) == {"Bearer", "OperatorSession"}
     for staff, status in ((None, 401), ("cashier-b", 403), ("receiver", 403), ("admin-foreign", 404)):
         request(path + params, staff=staff, expected=status)
     request(path + params, staff=admin, mfa=False, expected=403)
@@ -2845,7 +2843,7 @@ def check_store_exceptions():
     store = fixture_id(11)
     path = f"/v1/reports/stores/{store}/exceptions"
     spec = request("/openapi/v1.json", staff="cashier-b")["paths"]
-    assert set(spec["/v1/reports/stores/{storeId}/exceptions"]["get"]["security"][0]) == {"Bearer"}
+    assert set(spec["/v1/reports/stores/{storeId}/exceptions"]["get"]["security"][0]) == {"Bearer", "OperatorSession"}
     for staff, status in ((None, 401), ("cashier-b", 403), (receiver, 403), ("admin-foreign", 404)):
         request(path, staff=staff, expected=status)
     request(path, staff=admin, mfa=False, expected=403)
@@ -2908,7 +2906,7 @@ def check_stock_snapshots():
     query = path + f"?date={today}&productId={product}"
     spec = request("/openapi/v1.json", staff="cashier-b")["paths"]
     for method in ("get", "post"):
-        assert set(spec["/v1/reports/stores/{storeId}/stock-valuation/snapshots"][method]["security"][0]) == {"Bearer"}
+        assert set(spec["/v1/reports/stores/{storeId}/stock-valuation/snapshots"][method]["security"][0]) == {"Bearer", "OperatorSession"}
     for staff, status in ((None, 401), ("cashier-b", 403), ("receiver-exceptions", 403), ("admin-foreign", 404)):
         request(path, command, staff=staff, expected=status)
         request(query, staff=staff, expected=status)
@@ -2958,7 +2956,7 @@ def check_background_stock_movement_exports():
     spec = request("/openapi/v1.json", staff="cashier-b")["paths"]
     spec_path = "/v1/reports/stores/{storeId}/stock-movements/exports"
     assert "202" in spec[spec_path]["post"]["responses"]
-    assert set(spec[spec_path + "/{id}"]["get"]["security"][0]) == {"Bearer"}
+    assert set(spec[spec_path + "/{id}"]["get"]["security"][0]) == {"Bearer", "OperatorSession"}
     assert "text/csv" in spec[spec_path + "/{id}/file"]["get"]["responses"]["200"]["content"]
 
     author = "admin-export-smoke"
@@ -3062,7 +3060,7 @@ def check_register_diagnostics(previous_shift_b):
     operation = purchase["operationId"]
     purchase_path = "/v1/sales/" + operation
     spec = request("/openapi/v1.json", staff=cashier)["paths"]
-    assert set(spec[route]["post"]["security"][0]) == {"Bearer", "RegisterId", "RegisterKey"}
+    assert set(spec[route]["post"]["security"][0]) == {"Bearer", "OperatorSession", "RegisterId", "RegisterKey"}
     peer_shift = str(uuid.uuid4())
     request("/v1/shifts", {"shiftId": peer_shift, "openingCash": 0}, staff=peer)
     request(f"/v1/shifts/{peer_shift}/close", {"countedCash": 0}, staff=peer)

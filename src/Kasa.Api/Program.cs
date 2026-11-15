@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
 using Kasa.Api;
@@ -54,6 +55,8 @@ builder.Services.AddHttpClient<IdentityProvisioningService>(client =>
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false })
     .RedactLoggedHeaders(_ => true);
 builder.Services.AddSingleton<InvoiceScanner>();
+builder.Services.AddSingleton<OperatorPasswordHasher>();
+builder.Services.AddScoped<OperatorService>();
 builder.Services.AddScoped<PosService>();
 builder.Services.AddHttpClient<ProcurementExplainer>(client =>
 {
@@ -80,6 +83,19 @@ if (rateLimitPermitCount is < 1 or > 10_000)
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.OnRejected = async (rejected, ct) =>
+    {
+        if (rejected.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retry))
+            rejected.HttpContext.Response.Headers.RetryAfter = Math.Max(1, (int)Math.Ceiling(retry.TotalSeconds)).ToString();
+        var code = rejected.HttpContext.Request.Path.Value?.EndsWith("/operator-sessions", StringComparison.Ordinal) == true
+            ? "operator_login_rate_limited" : "rate_limit_exceeded";
+        await Results.Problem(type: $"https://kassa.qr-space.uz/problems/{code.Replace('_', '-')}",
+            title: code, statusCode: 429, extensions: new Dictionary<string, object?>
+            {
+                ["code"] = code,
+                ["traceId"] = rejected.HttpContext.TraceIdentifier
+            }).ExecuteAsync(rejected.HttpContext);
+    };
     options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
         RateLimitPartition.GetFixedWindowLimiter(
             context.User.FindFirst("sub")?.Value ?? context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
@@ -116,7 +132,10 @@ builder.Services.AddOpenApi(options => options.AddDocumentTransformer((document,
         ["RegisterId"] = new OpenApiSecurityScheme
             { Type = SecuritySchemeType.ApiKey, In = ParameterLocation.Header, Name = "X-Register-Id" },
         ["RegisterKey"] = new OpenApiSecurityScheme
-            { Type = SecuritySchemeType.ApiKey, In = ParameterLocation.Header, Name = "X-Register-Key" }
+            { Type = SecuritySchemeType.ApiKey, In = ParameterLocation.Header, Name = "X-Register-Key" },
+        ["OperatorSession"] = new OpenApiSecurityScheme
+            { Type = SecuritySchemeType.ApiKey, In = ParameterLocation.Header, Name = "X-Operator-Session",
+                Description = "Short-lived opaque operator session token. Required after operator selection." }
     };
     foreach (var (path, pathItem) in document.Paths)
     {
@@ -128,7 +147,19 @@ builder.Services.AddOpenApi(options => options.AddDocumentTransformer((document,
             {
                 [new OpenApiSecuritySchemeReference("Bearer", document)] = []
             };
-            if (path != "/v1/me/roles" &&
+            var bootstrap = path == "/v1/me/stores" || path == "/v1/stores/{storeId}/operators" ||
+                            path == "/v1/stores/{storeId}/operator-sessions";
+            var platform = path.StartsWith("/v1/platform/", StringComparison.Ordinal);
+            operation.Description = bootstrap
+                ? "Bootstrap route: requires an OIDC bearer token and does not require X-Operator-Session."
+                : platform
+                    ? "Platform route: protected by its independent platform MFA, hardware and support-session policy."
+                    : "Business route: requires a valid OIDC bearer and X-Operator-Session.";
+            if (!bootstrap && !platform)
+                security[new OpenApiSecuritySchemeReference("OperatorSession", document)] = [];
+            if (!bootstrap && !platform &&
+                !path.StartsWith("/v1/operator-sessions/", StringComparison.Ordinal) &&
+                path != "/v1/me/roles" &&
                 !path.StartsWith("/v1/reports/", StringComparison.Ordinal) &&
                 !path.StartsWith("/v1/stores/", StringComparison.Ordinal))
             {
@@ -136,7 +167,7 @@ builder.Services.AddOpenApi(options => options.AddDocumentTransformer((document,
                 security[new OpenApiSecuritySchemeReference("RegisterKey", document)] = [];
             }
             operation.Security = [security];
-            if (path != "/v1/me/roles")
+            if (!bootstrap && !platform && path != "/v1/me/roles")
             {
                 operation.Parameters ??= [];
                 operation.Parameters.Add(new OpenApiParameter
@@ -145,8 +176,42 @@ builder.Services.AddOpenApi(options => options.AddDocumentTransformer((document,
                     In = ParameterLocation.Header,
                     Required = false,
                     Description = "Selected operational role: admin, cashier or receiver. Required for multi-role and owner accounts.",
-                    Schema = new OpenApiSchema { Type = JsonSchemaType.String }
+                    Schema = new OpenApiSchema
+                    {
+                        Type = JsonSchemaType.String,
+                        Enum = [JsonValue.Create("admin"), JsonValue.Create("cashier"), JsonValue.Create("receiver")]
+                    }
                 });
+            }
+            if (operation.OperationId == "CreateEmployee")
+            {
+                operation.Parameters ??= [];
+                operation.Parameters.Add(new OpenApiParameter
+                {
+                    Name = "Idempotency-Key", In = ParameterLocation.Header, Required = true,
+                    Description = "UUID replay key. Reusing it with another body returns idempotency_conflict.",
+                    Schema = new OpenApiSchema { Type = JsonSchemaType.String, Format = "uuid" }
+                });
+                if (operation.RequestBody?.Content is { } content &&
+                    content.TryGetValue("application/json", out var media) && media is not null)
+                    media.Example = new JsonObject
+                    {
+                        ["employeeId"] = "00000000-0000-0000-0000-000000000101",
+                        ["firstName"] = "Саида", ["lastName"] = "Каримова",
+                        ["roles"] = new JsonArray("cashier", "receiver"),
+                        ["password"] = "example-only-password", ["reason"] = "Создание сотрудника магазина"
+                    };
+            }
+            if (operation.OperationId == "CreateOperatorSession" && operation.RequestBody?.Content is { } sessionContent &&
+                sessionContent.TryGetValue("application/json", out var sessionMedia) &&
+                sessionMedia is not null)
+            {
+                sessionMedia.Example = new JsonObject
+                {
+                    ["operatorId"] = "00000000-0000-0000-0000-000000000101",
+                    ["password"] = "example-only-password",
+                    ["deviceId"] = "00000000-0000-0000-0000-000000000201"
+                };
             }
             if (operation.OperationId == "UploadInvoiceFile")
             {
@@ -159,6 +224,19 @@ builder.Services.AddOpenApi(options => options.AddDocumentTransformer((document,
                             Schema = new OpenApiSchema { Type = JsonSchemaType.String, Format = "binary" }
                         })
                 };
+            }
+        }
+    }
+    if (document.Components.Schemas is not null)
+    {
+        foreach (var schema in document.Components.Schemas.Values.OfType<OpenApiSchema>())
+        {
+            if (schema.Properties?.TryGetValue("roles", out var roles) == true && roles is OpenApiSchema rolesSchema &&
+                rolesSchema.Items is OpenApiSchema itemSchema)
+            {
+                rolesSchema.MinItems ??= 1;
+                rolesSchema.MaxItems ??= 3;
+                itemSchema.Enum = [JsonValue.Create("admin"), JsonValue.Create("cashier"), JsonValue.Create("receiver")];
             }
         }
     }
@@ -188,6 +266,12 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJw
     }
     options.Events = new JwtBearerEvents
     {
+        OnChallenge = async context =>
+        {
+            context.HandleResponse();
+            if (!context.Response.HasStarted)
+                await WriteError(context.HttpContext, StatusCodes.Status401Unauthorized, "oidc_session_expired");
+        },
         OnTokenValidated = context =>
         {
             var localDeveloperToken = context.Principal?.FindFirst(LocalTestDeveloperMode.Claim)?.Value == "true";
@@ -255,7 +339,7 @@ app.Use(async (context, next) =>
     }
     catch (BadHttpRequestException ex) when (!context.Response.HasStarted)
     {
-        await WriteError(context, ex.StatusCode, "invalid_http_request");
+        await WriteError(context, ex.StatusCode, "validation_failed");
     }
     catch (PosError ex) when (!context.Response.HasStarted)
     {
@@ -270,6 +354,19 @@ app.Use(async (context, next) =>
 app.UseAuthentication();
 app.UseRateLimiter();
 app.UseAuthorization();
+app.Use(async (context, next) =>
+{
+    if (IsOperatorProtectedRoute(context.Request) &&
+        (configuration.GetValue<bool>("Auth:RequireOperatorSession") ||
+         !string.IsNullOrEmpty(context.Request.Headers["X-Operator-Session"])))
+    {
+        await using var db = await context.RequestServices.GetRequiredService<NpgsqlDataSource>()
+            .OpenConnectionAsync(context.RequestAborted);
+        await using var tx = await db.BeginTransactionAsync(context.RequestAborted);
+        await Access.RequireOperatorSession(db, tx, context, context.RequestAborted);
+    }
+    await next(context);
+});
 app.MapGet("/health/live", () => TypedResults.Ok(new { status = "ok" })).AllowAnonymous();
 if (localTestMode.Enabled)
 {
@@ -322,6 +419,63 @@ platformApi.MapPatch("/test-stores/{id:guid}", async (Guid id, RenamePlatformTes
     TypedResults.Ok(await platform.Rename(context, id, request, ct))).WithName("RenamePlatformTestStore");
 api.MapGet("/me/roles", async (Guid storeId, PosService pos, HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await pos.ReadMyRoles(context, storeId, ct))).WithName("ReadMyRoles");
+api.MapGet("/me/stores", async (OperatorService operators, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await operators.ListMyStores(context, ct))).WithName("ListMyStores");
+api.MapGet("/stores/{storeId:guid}/operators", async (Guid storeId, OperatorService operators,
+    HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await operators.ListOperators(context, storeId, ct))).WithName("ListStoreOperators");
+api.MapPost("/stores/{storeId:guid}/operator-sessions", async (Guid storeId, CreateOperatorSession request,
+    OperatorService operators, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await operators.CreateSession(context, storeId, request, ct)))
+    .WithName("CreateOperatorSession");
+api.MapGet("/operator-sessions/current", async (OperatorService operators, HttpContext context,
+    CancellationToken ct) => TypedResults.Ok(await operators.Current(context, ct)))
+    .WithName("ReadCurrentOperatorSession");
+api.MapDelete("/operator-sessions/current", async (OperatorService operators, HttpContext context,
+    CancellationToken ct) =>
+{
+    await operators.Logout(context, ct);
+    return TypedResults.NoContent();
+}).WithName("DeleteCurrentOperatorSession");
+api.MapPost("/operator-sessions/current/change-password", async (ChangeOperatorPassword request,
+    OperatorService operators, HttpContext context, CancellationToken ct) =>
+{
+    await operators.ChangePassword(context, request, ct);
+    return TypedResults.NoContent();
+}).WithName("ChangeOperatorPassword");
+
+var employees = api.MapGroup("/stores/{storeId:guid}/employees");
+employees.MapGet("", async (Guid storeId, int? offset, int? limit, OperatorService operators,
+    HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await operators.ListEmployees(context, storeId, offset ?? 0, limit ?? 50, ct)))
+    .WithName("ListEmployees");
+employees.MapPost("", async (Guid storeId, CreateEmployee request, OperatorService operators,
+    HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await operators.CreateEmployee(context, storeId, request, ct))).WithName("CreateEmployee");
+employees.MapPut("/{employeeId:guid}", async (Guid storeId, Guid employeeId, UpdateEmployeeProfile request,
+    OperatorService operators, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await operators.UpdateProfile(context, storeId, employeeId, request, ct)))
+    .WithName("UpdateEmployeeProfile");
+employees.MapPut("/{employeeId:guid}/roles", async (Guid storeId, Guid employeeId, UpdateEmployeeRoles request,
+    OperatorService operators, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await operators.UpdateRoles(context, storeId, employeeId, request, ct)))
+    .WithName("UpdateEmployeeRoles");
+employees.MapPost("/{employeeId:guid}/reset-password", async (Guid storeId, Guid employeeId,
+    ResetEmployeePassword request, OperatorService operators, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await operators.ResetPassword(context, storeId, employeeId, request, ct)))
+    .WithName("ResetEmployeePassword");
+employees.MapPost("/{employeeId:guid}/disable", async (Guid storeId, Guid employeeId, ChangeEmployeeState request,
+    OperatorService operators, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await operators.Disable(context, storeId, employeeId, request, ct)))
+    .WithName("DisableEmployee");
+employees.MapPost("/{employeeId:guid}/enable", async (Guid storeId, Guid employeeId, ChangeEmployeeState request,
+    OperatorService operators, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await operators.Enable(context, storeId, employeeId, request, ct)))
+    .WithName("EnableEmployee");
+api.MapPut("/stores/{storeId:guid}/registers/{registerId:guid}/cashiers", async (Guid storeId, Guid registerId,
+    UpdateRegisterCashiers request, OperatorService operators, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await operators.UpdateRegisterCashiers(context, storeId, registerId, request, ct)))
+    .WithName("UpdateRegisterCashiers");
 api.MapPost("/shifts", async (OpenShift request, PosService pos, HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await pos.OpenShift(context, request, ct))).WithName("OpenShift");
 api.MapPost("/shifts/{id:guid}/close", async (Guid id, CloseShift request, PosService pos, HttpContext context, CancellationToken ct) =>
@@ -845,5 +999,26 @@ static Task WriteError(HttpContext context, int status, string code, int? import
     var details = new Dictionary<string, object?> { ["code"] = code };
     if (importRow is not null)
         details["row"] = importRow;
-    return Results.Problem(statusCode: status, title: code, extensions: details).ExecuteAsync(context);
+    var title = code == "operator_credentials_invalid" ? "Ошибка входа" : code;
+    return Results.Problem(type: $"https://kassa.qr-space.uz/problems/{code.Replace('_', '-')}",
+        statusCode: status, title: title, extensions: details).ExecuteAsync(context);
+}
+
+static bool IsOperatorProtectedRoute(HttpRequest request)
+{
+    var path = request.Path.Value ?? "";
+    if (!path.StartsWith("/v1/", StringComparison.OrdinalIgnoreCase)) return false;
+    if (path.StartsWith("/v1/platform/", StringComparison.OrdinalIgnoreCase) ||
+        path.StartsWith("/v1/platform-support/", StringComparison.OrdinalIgnoreCase) ||
+        path.StartsWith("/v1/support-sessions", StringComparison.OrdinalIgnoreCase) ||
+        path.Equals("/v1/me/stores", StringComparison.OrdinalIgnoreCase))
+        return false;
+    var parts = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+    if (parts.Length == 4 && parts[0].Equals("v1", StringComparison.OrdinalIgnoreCase) &&
+        parts[1].Equals("stores", StringComparison.OrdinalIgnoreCase) &&
+        (parts[3].Equals("operators", StringComparison.OrdinalIgnoreCase) ||
+         (parts[3].Equals("operator-sessions", StringComparison.OrdinalIgnoreCase) &&
+          HttpMethods.IsPost(request.Method))))
+        return false;
+    return true;
 }

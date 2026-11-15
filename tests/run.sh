@@ -58,6 +58,8 @@ export ASPNETCORE_ENVIRONMENT=Development
 export ASPNETCORE_URLS="http://127.0.0.1:$api_port"
 export POS_TEST_LOCAL_PASSWORD="A7!$(hex | cut -c1-24)"
 export POS_TEST_LOCAL_HASH="$("$python_command" tests/password_hash.py)"
+export POS_TEST_OPERATOR_PASSWORD="Op9!$(hex | cut -c1-24)"
+export POS_TEST_DB_CONTAINER="${COMPOSE_PROJECT_NAME}-db-1"
 export POS_TEST_URL="$ASPNETCORE_URLS"
 export ConnectionStrings__Pos="Host=127.0.0.1;Port=$POS_DB_PORT;Database=kasa;Username=kasa_api;Password=$POS_DB_APP_PASSWORD"
 api_pid=
@@ -118,11 +120,13 @@ if "$restore_check"; then
     printf 'PASS: PostgreSQL 17 server (%s)\n' "$pg_version"
 fi
 "${compose[@]}" exec -T -e POS_TEST_REGISTER_KEY db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/fixtures.sql
+"${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/operator_auth_setup.sql
 "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/replenishment_schedule.sql
 "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/sales_period_fixtures.sql
 "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/stock_movement_report_fixtures.sql
 "${compose[@]}" exec -T -e POS_TEST_LOCAL_HASH db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/local_test_developer_fixture.sql
 "$dotnet_command" build src/Kasa.Api/Kasa.Api.csproj -c Release -warnaserror -p:RestoreLockedMode=true
+"$dotnet_command" test tests/Kasa.Api.Tests/Kasa.Api.Tests.csproj -c Release -warnaserror -p:RestoreLockedMode=true
 guard_log="$(mktemp)"
 if env -u Auth__DevelopmentKey ASPNETCORE_ENVIRONMENT=Production ASPNETCORE_URLS="http://127.0.0.1:$((api_port + 1))" \
     Auth__AllowLocalTestDeveloper=true "$dotnet_command" src/Kasa.Api/bin/Release/net10.0/Kasa.Api.dll >"$guard_log" 2>&1; then
@@ -164,6 +168,15 @@ else
 fi
 if ! "$python_command" tests/local_test_developer.py; then
     cat "$logs" >&2
+    exit 1
+fi
+if ! "$python_command" tests/operator_auth.py; then
+    cat "$logs" >&2
+    exit 1
+fi
+"${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/operator_auth_security.sql
+if grep -Fq -- "$POS_TEST_OPERATOR_PASSWORD" "$logs"; then
+    echo "Operator password leaked into application logs" >&2
     exit 1
 fi
 if "$restore_check"; then

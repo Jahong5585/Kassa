@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using System.Text.Json.Serialization;
 
 namespace Kasa.Api;
@@ -31,6 +32,46 @@ public sealed record StoreStaffAccess(Guid StaffId, string Subject, string Role,
 public sealed record ConnectStoreStaff(string Subject, string Role, Guid? RegisterId = null);
 public sealed record MyRoleSelection(Guid OrganizationId, Guid StaffId, Guid StoreId, string TimeZone,
     IReadOnlyList<string> Roles, bool Owner);
+public sealed record MyStoreItem(Guid OrganizationId, string OrganizationName, Guid StoreId, string StoreName,
+    string TimeZone, bool IsOwner, bool Active);
+public sealed record MyStorePage(IReadOnlyList<MyStoreItem> Items);
+public sealed record OperatorItem(Guid OperatorId, string? FirstName, string? LastName, string DisplayName,
+    IReadOnlyList<string> Roles, bool IsOwner, bool PasswordRequired, bool Active);
+public sealed record StoreOperatorPage(Guid StoreId, IReadOnlyList<OperatorItem> Items);
+public sealed record CreateOperatorSession(Guid OperatorId,
+    [property: StringLength(128, MinimumLength = 8)] string? Password, Guid DeviceId);
+public sealed record OperatorSessionCreated(string OperatorSessionToken, Guid SessionId, Guid OrganizationId,
+    Guid StoreId, OperatorItem Operator, DateTime IdleExpiresAt, DateTime AbsoluteExpiresAt);
+public sealed record OperatorStore(Guid OrganizationId, Guid StoreId, string Name, string TimeZone);
+public sealed record CurrentOperatorSession(Guid SessionId, OperatorStore Store, OperatorItem Operator,
+    DateTime CreatedAt, DateTime IdleExpiresAt, DateTime AbsoluteExpiresAt, Guid? RegisterId);
+public sealed record ChangeOperatorPassword(
+    [property: StringLength(128, MinimumLength = 8)] string CurrentPassword,
+    [property: StringLength(128, MinimumLength = 8)] string NewPassword);
+public sealed record EmployeeItem(Guid EmployeeId, string FirstName, string LastName, string DisplayName,
+    IReadOnlyList<string> Roles, bool Active, int Version, DateTime CreatedAt, DateTime UpdatedAt);
+public sealed record EmployeePage(IReadOnlyList<EmployeeItem> Items, int? NextOffset);
+public sealed record CreateEmployee(Guid EmployeeId,
+    [property: StringLength(100, MinimumLength = 1)] string FirstName,
+    [property: StringLength(100, MinimumLength = 1)] string LastName,
+    [property: MinLength(1), MaxLength(3)] string[] Roles,
+    [property: StringLength(128, MinimumLength = 8)] string Password,
+    [property: StringLength(500, MinimumLength = 1)] string Reason);
+public sealed record UpdateEmployeeProfile(int ExpectedVersion,
+    [property: StringLength(100, MinimumLength = 1)] string FirstName,
+    [property: StringLength(100, MinimumLength = 1)] string LastName,
+    [property: StringLength(500, MinimumLength = 1)] string Reason);
+public sealed record UpdateEmployeeRoles(int ExpectedVersion,
+    [property: MinLength(1), MaxLength(3)] string[] Roles,
+    [property: StringLength(500, MinimumLength = 1)] string Reason);
+public sealed record ResetEmployeePassword(int ExpectedVersion,
+    [property: StringLength(128, MinimumLength = 8)] string NewPassword,
+    [property: StringLength(500, MinimumLength = 1)] string Reason);
+public sealed record ChangeEmployeeState(int ExpectedVersion,
+    [property: StringLength(500, MinimumLength = 1)] string Reason);
+public sealed record UpdateRegisterCashiers(int ExpectedVersion,
+    [property: MinLength(1)] Guid[] CashierIds,
+    [property: StringLength(500, MinimumLength = 1)] string Reason);
 public sealed record StoreAuditEvent(long Id, DateTime OccurredAt, string Action, Guid StaffId, Guid ObjectId,
     Guid? RegisterId, string RequestId);
 public sealed record StoreAuditPage(Guid StoreId, string TimeZone, DateOnly From, DateOnly To, string? Action,
