@@ -62,7 +62,8 @@ $token = Invoke-RestMethod -Method Post -Uri "$KeycloakUrl/realms/master/protoco
 $headers = @{ Authorization = 'Bearer ' + $token.access_token }
 $realm = 'kasa'
 $clientId = 'kasa-platform-provisioner'
-$clients = @(Invoke-RestMethod -Headers $headers -Uri "$KeycloakUrl/admin/realms/$realm/clients?clientId=$clientId")
+$clients = @((Invoke-RestMethod -Headers $headers `
+        -Uri "$KeycloakUrl/admin/realms/$realm/clients?clientId=$clientId") | ForEach-Object { $_ })
 
 if ($clients.Count -eq 0) {
     $bytes = [byte[]]::new(48)
@@ -76,7 +77,8 @@ if ($clients.Count -eq 0) {
     } | ConvertTo-Json
     Invoke-WebRequest -Method Post -Headers $headers -ContentType 'application/json' `
         -Uri "$KeycloakUrl/admin/realms/$realm/clients" -Body $body | Out-Null
-    $clients = @(Invoke-RestMethod -Headers $headers -Uri "$KeycloakUrl/admin/realms/$realm/clients?clientId=$clientId")
+    $clients = @((Invoke-RestMethod -Headers $headers `
+            -Uri "$KeycloakUrl/admin/realms/$realm/clients?clientId=$clientId") | ForEach-Object { $_ })
 } else {
     $secretResult = Invoke-RestMethod -Headers $headers `
         -Uri "$KeycloakUrl/admin/realms/$realm/clients/$($clients[0].id)/client-secret"
@@ -89,8 +91,8 @@ if ($clients.Count -ne 1 -or [string]::IsNullOrWhiteSpace($secret)) {
 
 $serviceAccount = Invoke-RestMethod -Headers $headers `
     -Uri "$KeycloakUrl/admin/realms/$realm/clients/$($clients[0].id)/service-account-user"
-$management = @(Invoke-RestMethod -Headers $headers `
-    -Uri "$KeycloakUrl/admin/realms/$realm/clients?clientId=realm-management")
+$management = @((Invoke-RestMethod -Headers $headers `
+        -Uri "$KeycloakUrl/admin/realms/$realm/clients?clientId=realm-management") | ForEach-Object { $_ })
 if ($management.Count -ne 1) { throw 'realm-management client was not found.' }
 $roles = @()
 foreach ($name in @('manage-users', 'view-users', 'query-users')) {
@@ -112,9 +114,11 @@ Set-Env $EnvFile @{
 if ($LASTEXITCODE -ne 0) { throw 'Could not restrict the secret environment file ACL.' }
 
 if ($DeleteBootstrapClient -and $BootstrapClientId) {
-    $temporary = @(Invoke-RestMethod -Headers $headers `
-        -Uri "$KeycloakUrl/admin/realms/master/clients?clientId=$BootstrapClientId")
-    foreach ($client in $temporary) {
+    $temporary = @((Invoke-RestMethod -Headers $headers `
+            -Uri "$KeycloakUrl/admin/realms/master/clients?first=0&max=1000") |
+        ForEach-Object { $_ } | Where-Object { $_.clientId -like 'kasa-bootstrap-temp-*' })
+    $ordered = $temporary | Sort-Object @{ Expression = { if ($_.clientId -eq $BootstrapClientId) { 1 } else { 0 } } }
+    foreach ($client in $ordered) {
         Invoke-WebRequest -Method Delete -Headers $headers `
             -Uri "$KeycloakUrl/admin/realms/master/clients/$($client.id)" | Out-Null
     }
