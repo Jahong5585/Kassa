@@ -29,6 +29,7 @@ if (developmentKey is not null && (!development || Encoding.UTF8.GetByteCount(de
 if (!development && string.IsNullOrWhiteSpace(adminAcr))
     throw new InvalidOperationException("Configure Auth:AdminAcr to require the provider's WebAuthn assurance level.");
 var localTestMode = LocalTestDeveloperMode.Read(builder, audience!);
+var temporaryPlatformDeveloper = TemporaryPlatformDeveloperAccess.Read(configuration);
 
 var connectionString = configuration.GetConnectionString("Pos")
     ?? throw new InvalidOperationException("Configure ConnectionStrings:Pos.");
@@ -39,6 +40,7 @@ if (!Uri.TryCreate(procurementAiEndpoint, UriKind.Absolute, out var procurementA
     throw new InvalidOperationException("Configure Ai:Endpoint as Groq HTTPS. Local HTTP is development-only.");
 builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString));
 builder.Services.AddSingleton(localTestMode);
+builder.Services.AddSingleton(temporaryPlatformDeveloper);
 builder.Services.AddScoped<LocalDeveloperLoginService>();
 builder.Services.AddScoped<PlatformService>();
 builder.Services.AddSingleton<InvoiceScanner>();

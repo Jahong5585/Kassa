@@ -4,7 +4,8 @@ using Npgsql;
 
 namespace Kasa.Api;
 
-internal sealed class PlatformService(NpgsqlDataSource source, IConfiguration configuration, LocalTestDeveloperMode mode)
+internal sealed class PlatformService(NpgsqlDataSource source, IConfiguration configuration, LocalTestDeveloperMode mode,
+    TemporaryPlatformDeveloperAccess temporaryDeveloper)
 {
     private sealed record Permission(string Issuer, string Subject, bool Write, bool Local);
 
@@ -85,7 +86,8 @@ internal sealed class PlatformService(NpgsqlDataSource source, IConfiguration co
             var acr = context.User.FindFirst("acr")?.Value;
             var hardware = context.User.FindAll("amr").Any(x => x.Value is "fido2" or "webauthn" or "hwk");
             var usb = context.User.FindFirst("usb_key_verified")?.Value == "true";
-            if (string.IsNullOrWhiteSpace(requiredAcr) || acr != requiredAcr || !hardware || !usb)
+            var temporaryMfaOnly = temporaryDeveloper.Allows(context.User, issuer, subject, requiredAcr);
+            if (!temporaryMfaOnly && (string.IsNullOrWhiteSpace(requiredAcr) || acr != requiredAcr || !hardware || !usb))
                 throw new PosError(403, "platform_hardware_auth_required");
         }
         if (issuer.Length is < 1 or > 500 || subject.Length is < 1 or > 256)

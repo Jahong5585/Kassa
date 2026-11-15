@@ -35,12 +35,15 @@ def call(path, body=None, token=None, expected=200, method=None, base=BASE):
         return json.loads(payload) if payload else None
 
 
-def ordinary_token(subject):
+def ordinary_token(subject, mfa=False, auth_time=None):
     encode = lambda value: base64.urlsafe_b64encode(value).rstrip(b"=")
     header = encode(b'{"alg":"HS256","typ":"JWT","kid":"development"}')
     now = int(time.time())
-    payload = encode(json.dumps({"iss": "kasa-local", "aud": AUDIENCE, "sub": subject,
-                                 "iat": now, "exp": now + 300}).encode())
+    claims = {"iss": "kasa-local", "aud": AUDIENCE, "sub": subject, "iat": now, "exp": now + 300}
+    if mfa:
+        claims["acr"] = os.environ["Auth__AdminAcr"]
+        claims["auth_time"] = now if auth_time is None else auth_time
+    payload = encode(json.dumps(claims).encode())
     content = header + b"." + payload
     return (content + b"." + encode(hmac.digest(DEVELOPMENT_KEY, content, hashlib.sha256))).decode()
 
@@ -73,7 +76,12 @@ def main():
     listed = call("/v1/platform/test-stores", token=token)
     assert any(row["storeId"] == created["storeId"] and row["isTest"] is True for row in listed)
 
-    call("/v1/platform/test-stores", token=ordinary_token("ordinary-platform-token"), expected=403)
+    developer = "10000000-0000-0000-0000-000000000001"
+    call("/v1/platform/test-stores", token=ordinary_token(developer), expected=403)
+    temporary = call("/v1/platform/test-stores", token=ordinary_token(developer, mfa=True))
+    assert any(row["storeId"] == created["storeId"] for row in temporary)
+    call("/v1/platform/test-stores",
+         token=ordinary_token(developer, mfa=True, auth_time=int(time.time()) - 601), expected=403)
     call("/v1/platform/test-stores", token=ordinary_token("cashier-a"), expected=403)
 
     port = BASE.rsplit(":", 1)[1]
@@ -87,7 +95,7 @@ def main():
     else:
         raise AssertionError("The Development API accepted a non-loopback connection")
 
-    print("PASS: local developer login, denial paths, short JWT, global role and test-store isolation")
+    print("PASS: local login, bounded temporary MFA-only developer, denial paths and test-store isolation")
 
 
 if __name__ == "__main__":

@@ -38,11 +38,16 @@ export POS_DB_OWNER_PASSWORD="$(hex)"
 export POS_DB_APP_PASSWORD="$(hex)"
 export POS_TEST_REGISTER_KEY="$(hex)"
 export Auth__DevelopmentKey="$(hex)"
+export Auth__Authority=kasa-local
 export Auth__AllowLocalTestDeveloper=true
 export Auth__LocalTestDeveloperSigningKey="$(hex)$(hex)"
 export Auth__LocalTestDeveloperTokenMinutes=30
 export Auth__Audience=kasa-smoke
 export Auth__AdminAcr=kasa-test-webauthn
+export Auth__AllowTemporaryPlatformDeveloperMfaOnly=true
+export Auth__TemporaryPlatformDeveloperIssuer=kasa-local
+export Auth__TemporaryPlatformDeveloperSubject=10000000-0000-0000-0000-000000000001
+export Auth__TemporaryPlatformDeveloperExpiresAt="$($python_command -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)).isoformat())')"
 export Refunds__CashierLimit=20000
 export Sales__MaxManualDiscountPercent=10
 export Purchasing__ReplenishmentRefreshSeconds=1

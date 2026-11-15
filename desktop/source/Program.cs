@@ -45,6 +45,13 @@ namespace KasaDesktop
             Text = "Платформа · Тестовый вход разработчика",
             Visible = false
         };
+        private readonly Button productionPlatform = new Button
+        {
+            Dock = DockStyle.Top,
+            Height = 38,
+            Text = "Платформа · Вход разработчика через MFA",
+            Visible = false
+        };
         private readonly System.Windows.Forms.Timer localPlatformTimer = new System.Windows.Forms.Timer { Interval = 15000 };
         private readonly Uri localPlatformApi = new Uri("http://127.0.0.1:3510/");
         private readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = 4 * 1024 * 1024 };
@@ -65,8 +72,10 @@ namespace KasaDesktop
             WindowState = FormWindowState.Maximized;
             StartPosition = FormStartPosition.CenterScreen;
             Controls.Add(view);
+            Controls.Add(productionPlatform);
             Controls.Add(localPlatform);
             localPlatform.Click += (_, __) => { using (var form = new PlatformWindow(localPlatformApi)) form.ShowDialog(this); };
+            productionPlatform.Click += async (_, __) => await OpenProductionPlatform();
             localPlatformTimer.Tick += async (_, __) => await RefreshLocalPlatformButton();
             Shown += Initialize;
         }
@@ -95,6 +104,7 @@ namespace KasaDesktop
                 core.WebMessageReceived += Receive;
                 view.Source = new Uri(Page);
                 await RefreshLocalPlatformButton();
+                RefreshProductionPlatformButton();
                 localPlatformTimer.Start();
             }
             catch
@@ -118,6 +128,32 @@ namespace KasaDesktop
                 }
             }
             catch { localPlatform.Visible = false; }
+        }
+
+        private void RefreshProductionPlatformButton()
+        {
+            try
+            {
+                var profile = ReadPilotProfile();
+                productionPlatform.Visible = profile != null && profile.Api.Scheme == Uri.UriSchemeHttps;
+            }
+            catch { productionPlatform.Visible = false; }
+        }
+
+        private async Task OpenProductionPlatform()
+        {
+            try
+            {
+                var profile = ReadPilotProfile();
+                if (profile == null || profile.Api.Scheme != Uri.UriSchemeHttps) throw new BridgeError(400, "pilot_profile_invalid");
+                var token = await BrowserToken(profile, true);
+                if (token == null) return;
+                using (var form = new PlatformWindow(profile.Api, token)) form.ShowDialog(this);
+            }
+            catch (Exception error)
+            {
+                MessageBox.Show(this, error.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
         }
 
         private async void Receive(object sender, CoreWebView2WebMessageReceivedEventArgs args)

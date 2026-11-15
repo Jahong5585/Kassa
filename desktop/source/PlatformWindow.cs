@@ -26,11 +26,21 @@ namespace KasaDesktop
         private readonly TextBox storeName = new TextBox { Dock = DockStyle.Fill, MaxLength = 120 };
         private readonly Button create = new Button { AutoSize = true, Text = "Создать тестовый магазин", Enabled = false };
         private readonly Button rename = new Button { AutoSize = true, Text = "Переименовать выбранный", Enabled = false };
+        private readonly bool production;
+        private readonly Uri productionApi;
         private string token;
 
-        internal PlatformWindow(Uri initial)
+        internal PlatformWindow(Uri initial) : this(initial, null) { }
+
+        internal PlatformWindow(Uri initial, string initialToken)
         {
-            Text = "Касса · Платформа · Локальный тест";
+            production = initialToken != null;
+            if (production && (initial.Scheme != Uri.UriSchemeHttps || initial.UserInfo.Length != 0 ||
+                               initial.Query.Length != 0 || initial.Fragment.Length != 0 || initial.AbsolutePath != "/"))
+                throw new ArgumentException("Production API address is invalid.", nameof(initial));
+            productionApi = production ? initial : null;
+            token = initialToken;
+            Text = production ? "Касса · Платформа · Временный вход по MFA" : "Касса · Платформа · Локальный тест";
             Font = new Font("Segoe UI", 10);
             StartPosition = FormStartPosition.CenterParent;
             MinimumSize = new Size(720, 520);
@@ -49,12 +59,20 @@ namespace KasaDesktop
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             Controls.Add(layout);
             address.Text = initial.AbsoluteUri;
-            Add(layout, 0, "Локальный API", address);
-            var check = new Button { AutoSize = true, Text = "Проверить Development-режим" };
+            address.ReadOnly = production;
+            Add(layout, 0, production ? "Production API" : "Локальный API", address);
+            var check = new Button { AutoSize = true, Text = production ? "Проверить сервер и доступ" : "Проверить Development-режим" };
             layout.Controls.Add(check, 1, 1);
-            Add(layout, 2, "Логин", login);
-            Add(layout, 3, "Пароль", password);
-            layout.Controls.Add(enter, 1, 4);
+            if (production)
+            {
+                Add(layout, 2, "Вход", new Label { AutoSize = true, Text = "OIDC Authorization Code + PKCE, пароль и TOTP" });
+            }
+            else
+            {
+                Add(layout, 2, "Логин", login);
+                Add(layout, 3, "Пароль", password);
+                layout.Controls.Add(enter, 1, 4);
+            }
             layout.Controls.Add(new Label { AutoSize = true, Text = "Тестовые магазины" }, 0, 5);
             layout.Controls.Add(stores, 1, 5);
             Add(layout, 6, "Название", storeName);
@@ -79,6 +97,11 @@ namespace KasaDesktop
 
         private bool TryAddress(out Uri uri)
         {
+            if (production)
+            {
+                uri = productionApi;
+                return true;
+            }
             if (Uri.TryCreate(address.Text.Trim(), UriKind.Absolute, out uri) &&
                 (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps) &&
                 uri.Host == IPAddress.Loopback.ToString() && uri.UserInfo.Length == 0 && uri.Fragment.Length == 0 &&
@@ -94,9 +117,18 @@ namespace KasaDesktop
             create.Enabled = rename.Enabled = false;
             stores.Items.Clear();
             if (!TryAddress(out var api)) return;
-            state.Text = "Проверка локального сервера…";
+            state.Text = production ? "Проверка production-сервера и прав…" : "Проверка локального сервера…";
             try
             {
+                if (production)
+                {
+                    using (var response = await http.GetAsync(new Uri(api, "health/live")))
+                        if (!response.IsSuccessStatusCode) throw new InvalidOperationException("Production API недоступен.");
+                    await RefreshStores(api);
+                    create.Enabled = rename.Enabled = true;
+                    state.Text = "MFA-вход выполнен. Временный доступ к разделу «Платформа» подтверждён.";
+                    return;
+                }
                 using (var response = await http.GetAsync(new Uri(api, "development/platform/status")))
                 {
                     var body = await response.Content.ReadAsStringAsync();
@@ -109,7 +141,9 @@ namespace KasaDesktop
             }
             catch
             {
-                state.Text = "Локальный Development-режим не подтверждён.";
+                create.Enabled = rename.Enabled = false;
+                state.Text = production ? "Production-доступ к разделу «Платформа» не подтверждён." :
+                    "Локальный Development-режим не подтверждён.";
             }
         }
 

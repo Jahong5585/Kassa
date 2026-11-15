@@ -28,6 +28,8 @@ cd D:\CodexProjects\Kassa
 - audience API: `kasa-api`
 - срок access token: 300 секунд; API отклоняет токены дольше 600 секунд
 
+Временный доступ разработчика без FIDO2/USB нельзя включать глобально. Он задаётся в локальном `.env` четырьмя переменными `KASA_TEMP_PLATFORM_MFA_ONLY`, `KASA_TEMP_PLATFORM_ISSUER`, `KASA_TEMP_PLATFORM_SUBJECT`, `KASA_TEMP_PLATFORM_EXPIRES_AT`, действует только для одного UUID subject, требует свежий OIDC MFA-вход и автоматически прекращается максимум через 24 часа. Значения не добавляются в Git.
+
 Первый вход `kasa-admin` выполняется на `https://kassa.qr-space.uz/auth/realms/kasa/account/`. Начальный пароль берётся из `KASA_ADMIN_INITIAL_PASSWORD` в `D:\KassaSecrets\.env`; при входе обязательны смена пароля и настройка TOTP. Аналогичные обязательные действия заданы для `master-admin` консоли Keycloak, пароль находится в `KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD`.
 
 ## Проверка
