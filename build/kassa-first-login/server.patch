@@ -482,7 +482,7 @@
  platform.MapGet("/stores", async (int? offset, PosService pos, HttpContext context, CancellationToken ct) =>
 --- /dev/null
 +++ b/tests/mobile_invitation.py
-@@ -0,0 +1,76 @@
+@@ -0,0 +1,77 @@
 +"""Verify the native login API on the isolated PostgreSQL fixture."""
 +from concurrent.futures import ThreadPoolExecutor
 +from secrets import token_hex
@@ -538,7 +538,8 @@
 +    assert roles["owner"] and set(roles["roles"]) == {"cashier", "receiver"}, roles
 +    request(f"/v1/me/roles?storeId={fixture_id(12)}", **mobile, expected=404)
 +    request("/v1/platform/me", **mobile, expected=403)
-+    request(f"/v1/stores/{fixture_id(11)}/audit", **mobile, active_role="admin", expected=403)
++    blocked = request(f"/v1/stores/{fixture_id(11)}/staff", **mobile, active_role="admin", expected=403)
++    assert blocked["code"] == "admin_mfa_required", blocked
 +    print("PASS: single use under concurrency, safe retry, matching stores and restricted roles")
 +
 +    renewed = request(auth + "/renew", {"deviceCredential": key}, staff=None)
