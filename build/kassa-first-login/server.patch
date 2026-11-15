@@ -305,7 +305,7 @@
 +    }
 +
 +    private static byte[]? Digest(string? hex, int length) =>
-+        hex?.Length == length && hex.All(Uri.IsHexDigit) ? SHA256.HashData(Convert.FromHexString(hex)) : null;
++        hex is not null && hex.Length == length && hex.All(Uri.IsHexDigit) ? SHA256.HashData(Convert.FromHexString(hex)) : null;
 +}
 +
 +internal sealed class MobileInvitationHandler(IOptionsMonitor<AuthenticationSchemeOptions> options,
@@ -574,16 +574,24 @@
      exit 2
  fi
  command -v dotnet >/dev/null || { echo "Install the .NET 10 SDK" >&2; exit 127; }
-@@ -129,7 +133,7 @@
+@@ -129,10 +133,12 @@
      [[ "$pg_version" =~ ^17[0-9]{4}$ ]] || { echo "Expected PostgreSQL 17, found $pg_version" >&2; exit 1; }
      printf 'PASS: PostgreSQL 17 server (%s)\n' "$pg_version"
  fi
 -"${compose[@]}" exec -T -e POS_TEST_REGISTER_KEY db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/fixtures.sql
+-"${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/replenishment_schedule.sql
+-"${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/sales_period_fixtures.sql
+-"${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/stock_movement_report_fixtures.sql
 +"${compose[@]}" exec -T -e POS_TEST_REGISTER_KEY -e POS_TEST_PLATFORM_USB_KEY db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/fixtures.sql
- "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/replenishment_schedule.sql
- "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/sales_period_fixtures.sql
- "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/stock_movement_report_fixtures.sql
-@@ -148,7 +152,10 @@
++if ! "$mobile_invitation_check"; then
++    "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/replenishment_schedule.sql
++    "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/sales_period_fixtures.sql
++    "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/stock_movement_report_fixtures.sql
++fi
+ dotnet build src/Kasa.Api/Kasa.Api.csproj -c Release -warnaserror -p:RestoreLockedMode=true
+ env 'Ai__ProcurementAccess__00000000-0000-0000-0000-000000000001__00000000-0000-0000-0000-000000000011__00000000-0000-0000-0000-000000000036=true' \
+     'Ai__ProcurementAccess__00000000-0000-0000-0000-000000000001__00000000-0000-0000-0000-000000000011__00000000-0000-0000-0000-000000003046=true' \
+@@ -148,7 +154,10 @@
      fi
      sleep 1
  done
