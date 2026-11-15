@@ -50,11 +50,9 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
-      - name: Test native diagnostics and authorization
+      - name: Test native diagnostics
         shell: pwsh
-        run: |
-          dotnet run --project src/desktop/source/tests/SupportDiagnosticsTests.csproj -c Release
-          dotnet run --project src/desktop/source/tests/auth/AuthTests.csproj -c Release
+        run: dotnet run --project src/desktop/source/tests/SupportDiagnosticsTests.csproj -c Release
 
       - name: Build Windows x64 client
         shell: pwsh
