@@ -372,7 +372,15 @@
      var tokenToRevoke = savedRefresh;
  
      // If logout raced with rotation, revoke the newest issued credential.
-@@ -928,7 +958,9 @@
+@@ -801,6 +831,7 @@
+   bool _storeOwner = false;
+ 
+   Uri get origin => validateKassaOrigin(apiOrigin, debug: kDebugMode);
++  bool get usesManualWorkplace => productionContract && !login._native;
+   bool get hasLocation => _location != null;
+   KassaLocation get location =>
+       _location ?? (throw ApiFailure(503, 'store_discovery_unavailable'));
+@@ -928,7 +959,9 @@
        throw ApiFailure(0, 'invalid_api_path');
      }
      final url = _uri(path, query);
@@ -383,6 +391,81 @@
        throw ApiFailure(405, 'operation_unavailable_on_server');
      }
      final active = cashier ? Desk.cashier : desk;
+--- a/apps/mobile-flutter/lib/workplaces.dart
++++ b/apps/mobile-flutter/lib/workplaces.dart
+@@ -25,13 +25,13 @@
+   @override
+   void initState() {
+     super.initState();
+-    if (!_production) task(_load);
+-  }
+-
+-  bool get _production => widget.session.api.productionContract;
++    if (!_usesManualSelection) task(_load);
++  }
++
++  bool get _usesManualSelection => widget.session.api.usesManualWorkplace;
+ 
+   Future<void> _load({bool more = false}) async {
+-    if (_production) {
++    if (_usesManualSelection) {
+       _stores.clear();
+       for (final store in await widget.session.api.platformTestStores()) {
+         _stores[store.id] = store;
+@@ -77,7 +77,7 @@
+     appBar: AppBar(
+       title: const _UiText('Доступные магазины', 'Mavjud do‘konlar'),
+       actions: [
+-        if (!_production || _loaded)
++        if (!_usesManualSelection || _loaded)
+           IconButton(
+             onPressed: busy ? null : () => task(_load),
+             tooltip: _tr(context, 'Обновить магазины', 'Do‘konlarni yangilash'),
+@@ -90,7 +90,7 @@
+       children: [
+         if (busy) const LinearProgressIndicator(),
+         if (status != null) StatusBox(status!, error: failed),
+-        if (_production) ...[
++        if (_usesManualSelection) ...[
+           FilledButton(
+             onPressed: busy ? null : _openById,
+             child: const _UiText('Открыть магазин по UUID', 'Do‘konni UUID orqali ochish'),
+@@ -101,7 +101,7 @@
+           ),
+         ],
+         if (_loaded && !failed && _stores.isEmpty)
+-          if (_production)
++          if (_usesManualSelection)
+             const _UiStatus('В списке нет тестовых магазинов.', 'Ro‘yxatda sinov do‘konlari yo‘q.')
+           else
+             const _UiStatus('К аккаунту пока не подключён ни один магазин.', 'Hisobga hali hech bir do‘kon biriktirilmagan.'),
+@@ -110,7 +110,7 @@
+             contentPadding: EdgeInsets.zero,
+             leading: const Icon(Icons.store_outlined),
+             title: Text(store.name),
+-            subtitle: Text(_production ? store.id : store.timeZone),
++            subtitle: Text(_usesManualSelection ? store.id : store.timeZone),
+             trailing: const Icon(Icons.chevron_right),
+             onTap: busy ? null : () => _open(store),
+           ),
+@@ -185,7 +185,7 @@
+   }
+ 
+   Future<void> _connect(AssignedRegister register) async {
+-    final location = widget.session.api.productionContract
++    final location = widget.session.api.usesManualWorkplace
+         ? KassaLocation(widget.store.id, register.id)
+         : widget.store.location(register);
+     final selected = widget.session.forWorkplace(location);
+@@ -255,7 +255,7 @@
+                 _tr(context, 'Назначенные кассы', 'Biriktirilgan kassalar'),
+                 style: Theme.of(context).textTheme.titleMedium,
+               ),
+-              if (widget.session.api.productionContract)
++              if (widget.session.api.usesManualWorkplace)
+                 OutlinedButton(
+                   onPressed: busy ? null : _connectById,
+                   child: const _UiText('Подключить кассу по UUID', 'Kassani UUID orqali ulash'),
 --- a/apps/mobile-flutter/pubspec.yaml
 +++ b/apps/mobile-flutter/pubspec.yaml
 @@ -1,7 +1,7 @@
