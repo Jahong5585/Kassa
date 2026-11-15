@@ -396,7 +396,7 @@
  dependencies:
 --- /dev/null
 +++ b/apps/mobile-flutter/test/mobile_invitation_test.dart
-@@ -0,0 +1,110 @@
+@@ -0,0 +1,112 @@
 +import 'dart:convert';
 +
 +import 'package:flutter/material.dart';
@@ -495,11 +495,13 @@
 +    await tester.pumpWidget(KassaApp(pos: app));
 +    await tester.pumpAndSettle();
 +    await tester.tap(find.text('Войти'));
-+    await tester.pumpAndSettle();
++    await tester.pump();
++    await tester.pump(const Duration(milliseconds: 500));
 +    expect(find.text('Вход по приглашению'), findsOneWidget);
 +    await tester.enterText(find.byType(TextField), code);
 +    await tester.tap(find.text('Подтвердить'));
-+    await tester.pumpAndSettle();
++    await tester.pump();
++    await tester.pump(const Duration(milliseconds: 500));
 +    expect(find.textContaining('Код неверный'), findsOneWidget);
 +    await tester.tap(find.text('Подтвердить'));
 +    await tester.pumpAndSettle();
