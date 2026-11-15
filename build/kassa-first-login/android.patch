@@ -69,13 +69,13 @@
 +      _refreshToken = credential;
 +      _accessToken = session.token;
 +      _expiresAt = session.expiresAt;
-+      _clearInvitation();
++      discardInvitationAttempt();
 +    } finally {
 +      _invitationBusy = false;
 +    }
 +  }
 +
-+  void _clearInvitation() {
++  void discardInvitationAttempt() {
 +    _invitationCredential = null;
 +    _invitationCode = null;
 +  }
@@ -152,15 +152,18 @@
 +}
 --- /dev/null
 +++ b/apps/mobile-flutter/lib/mobile_invitation_view.dart
-@@ -0,0 +1,96 @@
+@@ -0,0 +1,99 @@
 +part of 'main.dart';
 +
-+Future<bool> _showMobileInvitation(BuildContext context, Login login) async =>
-+    await showDialog<bool>(
++Future<bool> _showMobileInvitation(BuildContext context, Login login) async {
++  final signedIn = await showDialog<bool>(
 +      context: context,
 +      barrierDismissible: false,
 +      builder: (context) => _MobileInvitationDialog(login: login),
 +    ) ?? false;
++  if (!signedIn) login.discardInvitationAttempt();
++  return signedIn;
++}
 +
 +class _MobileInvitationDialog extends StatefulWidget {
 +  const _MobileInvitationDialog({required this.login});
@@ -334,7 +337,7 @@
  
    void signOut() {
      cancelDeviceLogin();
-+    _clearInvitation();
++    discardInvitationAttempt();
 +    _native = false;
      _generation++;
      _refreshing = null;
@@ -427,7 +430,7 @@
 +      final json = jsonDecode(request.body) as Map<String, dynamic>;
 +      expect(json['code'], code);
 +      final proof = json['deviceCredential'] as String;
-+      expect(proof, matches('^[a-f0-9]{64}$'));
++      expect(proof, matches(r'^[a-f0-9]{64}$'));
 +      proofs.add(proof);
 +      return proofs.length == 1 ? response({}, status: 503) : tokens();
 +    });

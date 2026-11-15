@@ -375,6 +375,17 @@
 +        return new AssignedMobileStores(items, null);
 +    }
 +}
+--- a/src/Kasa.Api/PrinterDriverRepository.cs
++++ b/src/Kasa.Api/PrinterDriverRepository.cs
+@@ -63,7 +63,7 @@
+         foreach (var item in manifest.Packages)
+         {
+             if (item is null || !Models.Contains(item.Model) || !modelIds.Add(item.Model) ||
+-                !FileName.IsMatch(item.File ?? "") || ReservedFileName.IsMatch(item.File ?? "") ||
++                item.File is null || !FileName.IsMatch(item.File) || ReservedFileName.IsMatch(item.File) ||
+                 item.Sha256 is null || item.Sha256.Length != 64 ||
+                 !item.Sha256.All(Uri.IsHexDigit) || item.Bytes is < 2 or > MaximumBytes || !item.LicenseConfirmed ||
+                 !Uri.TryCreate(item.LicenseReference, UriKind.Absolute, out var license) || license.Scheme != "https" ||
 --- a/src/Kasa.Api/Program.cs
 +++ b/src/Kasa.Api/Program.cs
 @@ -2,6 +2,7 @@
