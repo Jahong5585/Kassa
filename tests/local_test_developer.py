@@ -111,7 +111,7 @@ def main():
     assert len(password) >= 16 and any(c.isupper() for c in password) and any(c.islower() for c in password)
     assert any(c.isdigit() for c in password) and any(not c.isalnum() for c in password)
     assert owner["passwordTemporary"] is True
-    assert owner["requiredActions"] == ["UPDATE_PASSWORD", "CONFIGURE_TOTP"]
+    assert owner["requiredActions"] == ["UPDATE_PASSWORD"]
     assert "no-store" in owner_headers.get("Cache-Control", "")
     owner_roles = call("/v1/me/roles?storeId=" + store_id, token=ordinary_token(owner["subject"]))
     assert owner_roles["owner"] is True

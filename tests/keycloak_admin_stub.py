@@ -22,7 +22,7 @@ class Handler(BaseHTTPRequestHandler):
             credential = (body.get("credentials") or [{}])[0]
             checks = {
                 "username": bool(username),
-                "actions": body.get("requiredActions") == ["UPDATE_PASSWORD", "CONFIGURE_TOTP"],
+                "actions": body.get("requiredActions") == ["UPDATE_PASSWORD"],
                 "credential_type": credential.get("type") == "password",
                 "temporary": credential.get("temporary") is True,
                 "password_length": len(credential.get("value", "")) >= 16,

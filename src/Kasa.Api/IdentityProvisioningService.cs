@@ -60,7 +60,7 @@ internal sealed partial class IdentityProvisioningService(HttpClient client, Ide
             firstName,
             lastName,
             email,
-            requiredActions = new[] { "UPDATE_PASSWORD", "CONFIGURE_TOTP" },
+            requiredActions = new[] { "UPDATE_PASSWORD" },
             credentials = new[] { new { type = "password", value = temporaryPassword, temporary = true } }
         });
         using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);

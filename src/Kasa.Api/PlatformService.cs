@@ -185,7 +185,7 @@ internal sealed class PlatformService(NpgsqlDataSource source, IConfiguration co
                 null, null, ct);
             await tx.CommitAsync(ct);
             return new(organizationId, storeId, provisioned.Subject, provisioned.Username,
-                provisioned.TemporaryPassword, true, ["UPDATE_PASSWORD", "CONFIGURE_TOTP"]);
+                provisioned.TemporaryPassword, true, ["UPDATE_PASSWORD"]);
         }
         catch
         {
