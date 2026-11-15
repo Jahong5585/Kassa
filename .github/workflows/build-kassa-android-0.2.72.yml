@@ -1,0 +1,135 @@
+name: Build Kassa Android 0.2.72
+
+on:
+  push:
+    branches: ['codex/android-device-login-0.2.72']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.0'
+          channel: stable
+
+      - name: Restore Android source
+        shell: bash
+        run: |
+          cat build/kassa-android-0.2.72/source.zip.part.* > source.zip
+          echo 'e5cd036e3eae92aa1b3b2c8424220b9b685c26e3324c4c28ba29551ea162f522  source.zip' | sha256sum --check
+          unzip -q source.zip -d compiled-source
+
+      - name: Install Android build components
+        shell: bash
+        run: |
+          sdk="$RUNNER_TEMP/kassa-android-sdk"
+          tools="$RUNNER_TEMP/kassa-android-tools.zip"
+          curl --fail --location --silent --show-error --retry 3 \
+            https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip -o "$tools"
+          echo "4e4c464f145a7512b57d088ac6c278c03c9eea610886b35a5e0804e74eedf583  $tools" | sha256sum --check
+          mkdir -p "$sdk/cmdline-tools"
+          unzip -q "$tools" -d "$sdk/cmdline-tools"
+          mv "$sdk/cmdline-tools/cmdline-tools" "$sdk/cmdline-tools/latest"
+          manager="$sdk/cmdline-tools/latest/bin/sdkmanager"
+          set +o pipefail
+          yes | "$manager" --sdk_root="$sdk" --licenses >/dev/null
+          set -o pipefail
+          "$manager" --sdk_root="$sdk" --install 'platform-tools' 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358'
+          printf 'ANDROID_HOME=%s\nANDROID_SDK_ROOT=%s\n' "$sdk" "$sdk" >> "$GITHUB_ENV"
+          echo "$sdk/platform-tools" >> "$GITHUB_PATH"
+
+      - name: Check production Device Grant availability
+        shell: bash
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          import urllib.parse
+          import urllib.request
+          import urllib.error
+
+          issuer = 'https://kassa.qr-space.uz/auth/realms/kasa'
+          try:
+              with urllib.request.urlopen(issuer + '/.well-known/openid-configuration', timeout=10) as response:
+                  discovery = json.load(response)
+              endpoint = discovery.get('device_authorization_endpoint')
+              if discovery.get('issuer') != issuer or not isinstance(endpoint, str) or not endpoint.startswith(issuer + '/'):
+                  print('PRODUCTION_DEVICE_GRANT=endpoint_not_advertised')
+              else:
+                  data = urllib.parse.urlencode({'client_id': 'kasa-flutter', 'scope': 'openid profile', 'acr_values': '1'}).encode()
+                  req = urllib.request.Request(endpoint, data=data)
+                  with urllib.request.urlopen(req, timeout=10) as response:
+                      payload = json.load(response)
+                  print('PRODUCTION_DEVICE_GRANT=' + ('issued_challenge' if all(k in payload for k in ('device_code', 'user_code', 'verification_uri')) else 'unexpected_response'))
+          except urllib.error.HTTPError as error:
+              try:
+                  code = json.load(error).get('error')
+              except (ValueError, OSError):
+                  code = None
+              known = {'unauthorized_client', 'invalid_client', 'unsupported_grant_type', 'invalid_scope'}
+              print(f'PRODUCTION_DEVICE_GRANT=http_{error.code}' + (f' {code}' if code in known else ''))
+          except (OSError, ValueError):
+              print('PRODUCTION_DEVICE_GRANT=network_or_metadata_error')
+          PYTHON
+
+      - name: Test Android client
+        working-directory: compiled-source/apps/mobile-flutter
+        shell: bash
+        run: |
+          flutter pub get --enforce-lockfile
+          flutter test --no-pub --reporter expanded
+
+      - name: Compile and sign the test APK
+        working-directory: compiled-source/apps/mobile-flutter
+        shell: bash
+        run: |
+          sed -i 's/applicationId = "uz.qrspace.kassa.mobile.multirolepilot"/applicationId = "uz.qrspace.kassa.mobile.multirolepilot.codepreview"/' android/app/build.gradle.kts
+          store_password="$(openssl rand -hex 20)"
+          echo "::add-mask::$store_password"
+          keytool -genkeypair -noprompt -storetype PKCS12 \
+            -keystore "$RUNNER_TEMP/kassa-test.p12" \
+            -storepass "$store_password" -keypass "$store_password" \
+            -alias kassa-test -keyalg RSA -keysize 2048 -validity 3650 \
+            -dname 'CN=Kassa Android Test Build'
+          printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=kassa-test\nkeyPassword=%s\n' \
+            "$RUNNER_TEMP/kassa-test.p12" "$store_password" "$store_password" > android/key.properties
+          flutter build apk --release --no-pub --target-platform android-arm,android-arm64 \
+            --dart-define=KASSA_PRODUCTION_API=true
+
+      - name: Verify test APK
+        shell: bash
+        run: |
+          mkdir -p apk-delivery
+          cd apk-delivery
+          apk=Kassa_Android_0.2.72_TEST.apk
+          cp ../compiled-source/apps/mobile-flutter/build/app/outputs/flutter-apk/app-release.apk "$apk"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$apk"
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" > badging.txt
+          grep -F "package: name='uz.qrspace.kassa.mobile.multirolepilot.codepreview' versionCode='2092' versionName='0.2.72'" badging.txt
+          unzip -Z1 "$apk" | grep -Fx 'lib/arm64-v8a/libapp.so'
+          unzip -Z1 "$apk" | grep -Fx 'lib/armeabi-v7a/libapp.so'
+          unzip -p "$apk" lib/arm64-v8a/libapp.so > "$RUNNER_TEMP/kassa-libapp.so"
+          grep -aFo 'https://kassa.qr-space.uz' "$RUNNER_TEMP/kassa-libapp.so" | sort -u
+          sha256sum "$apk" | tee SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kassa-Android-0.2.72-TEST
+          path: |
+            apk-delivery/Kassa_Android_0.2.72_TEST.apk
+            apk-delivery/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 7
