@@ -6,7 +6,7 @@
     <AssemblyName>KasaDesktop</AssemblyName>
     <LangVersion>latest</LangVersion>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>0.5.9</Version>
+    <Version>0.8.1</Version>
   </PropertyGroup>
   <ItemGroup>
     <Compile Remove="tests/**/*.cs" />

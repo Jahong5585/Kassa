@@ -1,7 +1,12 @@
 **/bin/
 **/obj/
 **/__pycache__/
+**/node_modules/
 .env
+.env.local-test
+local-test.settings.json
+local-test.settings.*.json
+artifacts/local-test/
 *.pfx
 *.pem
 *.log

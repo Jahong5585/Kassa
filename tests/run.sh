@@ -17,18 +17,30 @@ elif [[ "$#" != 0 ]]; then
     echo "Usage: bash tests/run.sh [--restore | --promotions | --lot-retail | --price-labels]" >&2
     exit 2
 fi
-command -v dotnet >/dev/null || { echo "Install the .NET 10 SDK" >&2; exit 127; }
+dotnet_command=dotnet
+if [[ -x /d/CodexTools/dotnet/dotnet.exe ]]; then
+    dotnet_command=/d/CodexTools/dotnet/dotnet.exe
+fi
+command -v "$dotnet_command" >/dev/null || { echo "Install the .NET 10 SDK" >&2; exit 127; }
+"$dotnet_command" --list-sdks | grep -q '^10\.' || { echo "Install the .NET 10 SDK" >&2; exit 127; }
 command -v docker >/dev/null || { echo "Install Docker with the Compose plugin" >&2; exit 127; }
+if command -v python3 >/dev/null; then python_command=python3
+elif command -v python >/dev/null; then python_command=python
+else echo "Install Python 3" >&2; exit 127
+fi
 docker compose version >/dev/null
 export COMPOSE_PROJECT_NAME="kasa-test-$$-${RANDOM}"
 compose=(docker compose --file compose.yaml --project-name "$COMPOSE_PROJECT_NAME")
 export POS_DB_PORT="${POS_TEST_DB_PORT:-55432}"
 api_port="${POS_TEST_API_PORT:-5189}"
-hex() { python3 -c 'import secrets; print(secrets.token_hex(32))'; }
+hex() { "$python_command" -c 'import secrets; print(secrets.token_hex(32))'; }
 export POS_DB_OWNER_PASSWORD="$(hex)"
 export POS_DB_APP_PASSWORD="$(hex)"
 export POS_TEST_REGISTER_KEY="$(hex)"
 export Auth__DevelopmentKey="$(hex)"
+export Auth__AllowLocalTestDeveloper=true
+export Auth__LocalTestDeveloperSigningKey="$(hex)$(hex)"
+export Auth__LocalTestDeveloperTokenMinutes=30
 export Auth__Audience=kasa-smoke
 export Auth__AdminAcr=kasa-test-webauthn
 export Refunds__CashierLimit=20000
@@ -38,6 +50,8 @@ export Ai__ProcurementEnabled=true
 export GROQ_API_KEY=test-groq-key
 export ASPNETCORE_ENVIRONMENT=Development
 export ASPNETCORE_URLS="http://127.0.0.1:$api_port"
+export POS_TEST_LOCAL_PASSWORD="A7!$(hex | cut -c1-24)"
+export POS_TEST_LOCAL_HASH="$("$python_command" tests/password_hash.py)"
 export POS_TEST_URL="$ASPNETCORE_URLS"
 export ConnectionStrings__Pos="Host=127.0.0.1;Port=$POS_DB_PORT;Database=kasa;Username=kasa_api;Password=$POS_DB_APP_PASSWORD"
 api_pid=
@@ -56,7 +70,7 @@ cleanup() {
     if [[ -n "$restore_dir" ]]; then rm -rf "$restore_dir"; fi
 }
 trap cleanup EXIT
-python3 tests/clamd_stub.py "$scanner_port_file" &
+"$python_command" tests/clamd_stub.py "$scanner_port_file" &
 scanner_pid=$!
 for ((i=0; i<100; i++)); do
     if [[ -s "$scanner_port_file" ]]; then break; fi
@@ -65,7 +79,7 @@ done
 export InvoiceScanner__Host=127.0.0.1
 export InvoiceScanner__Port="$(cat "$scanner_port_file")"
 [[ "$InvoiceScanner__Port" =~ ^[0-9]+$ ]] || { echo "Scanner fixture failed to start" >&2; exit 1; }
-python3 tests/groq_stub.py "$groq_port_file" &
+"$python_command" tests/groq_stub.py "$groq_port_file" &
 groq_pid=$!
 for ((i=0; i<100; i++)); do
     if [[ -s "$groq_port_file" ]]; then break; fi
@@ -85,12 +99,25 @@ fi
 "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/replenishment_schedule.sql
 "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/sales_period_fixtures.sql
 "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/stock_movement_report_fixtures.sql
-dotnet build src/Kasa.Api/Kasa.Api.csproj -c Release -warnaserror -p:RestoreLockedMode=true
+"${compose[@]}" exec -T -e POS_TEST_LOCAL_HASH db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/local_test_developer_fixture.sql
+"$dotnet_command" build src/Kasa.Api/Kasa.Api.csproj -c Release -warnaserror -p:RestoreLockedMode=true
+guard_log="$(mktemp)"
+if env -u Auth__DevelopmentKey ASPNETCORE_ENVIRONMENT=Production ASPNETCORE_URLS="http://127.0.0.1:$((api_port + 1))" \
+    Auth__AllowLocalTestDeveloper=true "$dotnet_command" src/Kasa.Api/bin/Release/net10.0/Kasa.Api.dll >"$guard_log" 2>&1; then
+    echo "Local test mode unexpectedly started outside Development" >&2; exit 1
+fi
+grep -q "permitted only in Development" "$guard_log" || { cat "$guard_log" >&2; exit 1; }
+if env ASPNETCORE_ENVIRONMENT=Development ASPNETCORE_URLS="http://0.0.0.0:$((api_port + 1))" \
+    Auth__AllowLocalTestDeveloper=true "$dotnet_command" src/Kasa.Api/bin/Release/net10.0/Kasa.Api.dll >"$guard_log" 2>&1; then
+    echo "Local test mode unexpectedly started on a non-loopback address" >&2; exit 1
+fi
+grep -q "only on an explicit 127.0.0.1" "$guard_log" || { cat "$guard_log" >&2; exit 1; }
+rm -f "$guard_log"
 env 'Ai__ProcurementAccess__00000000-0000-0000-0000-000000000001__00000000-0000-0000-0000-000000000011__00000000-0000-0000-0000-000000000036=true' \
     'Ai__ProcurementAccess__00000000-0000-0000-0000-000000000001__00000000-0000-0000-0000-000000000011__00000000-0000-0000-0000-000000003046=true' \
     'Ai__ProcurementAccess__00000000-0000-0000-0000-000000000001__00000000-0000-0000-0000-000000000011__00000000-0000-0000-0000-000000003047=true' \
     'Ai__ProcurementAccess__00000000-0000-0000-0000-000000000001__00000000-0000-0000-0000-000000000013__00000000-0000-0000-0000-000000003048=true' \
-    dotnet src/Kasa.Api/bin/Release/net10.0/Kasa.Api.dll > "$logs" 2>&1 &
+    "$dotnet_command" src/Kasa.Api/bin/Release/net10.0/Kasa.Api.dll > "$logs" 2>&1 &
 api_pid=$!
 for ((i=0; i<60; i++)); do
     if curl -fsS "$POS_TEST_URL/health/live" >/dev/null 2>&1; then break; fi
@@ -101,17 +128,21 @@ for ((i=0; i<60; i++)); do
     sleep 1
 done
 if "$promotion_check"; then
-    python3 tests/quantity_promotions.py
+    "$python_command" tests/quantity_promotions.py
 elif "$lot_retail_check"; then
-    python3 tests/lot_retail.py
+    "$python_command" tests/lot_retail.py
 elif "$label_check"; then
-    python3 tests/weighed_price_labels.py
+    "$python_command" tests/weighed_price_labels.py
 else
-    if ! python3 tests/smoke.py; then
+    if ! "$python_command" tests/smoke.py; then
         cat "$logs" >&2
         exit 1
     fi
     "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/sales_period_audit.sql
+fi
+if ! "$python_command" tests/local_test_developer.py; then
+    cat "$logs" >&2
+    exit 1
 fi
 if "$restore_check"; then
     kill "$api_pid"
@@ -126,7 +157,7 @@ if "$restore_check"; then
         < "$restore_dir/kasa.dump"
     "${compose[@]}" exec -T db psql -X --csv -U kasa_owner -d kasa_restore -v ON_ERROR_STOP=1 \
         < tests/backup_control.sql > "$restore_dir/after.csv"
-    python3 - "$restore_dir/before.csv" "$restore_dir/after.csv" <<'PY'
+    "$python_command" - "$restore_dir/before.csv" "$restore_dir/after.csv" <<'PY'
 import csv
 import sys
 from decimal import Decimal

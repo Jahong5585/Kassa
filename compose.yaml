@@ -39,11 +39,17 @@ services:
       - ./db/027_lot_retail_settings.sql:/docker-entrypoint-initdb.d/027_lot_retail_settings.sql:ro
       - ./db/028_weighed_price_labels.sql:/docker-entrypoint-initdb.d/028_weighed_price_labels.sql:ro
       - ./db/029_staff_roles.sql:/docker-entrypoint-initdb.d/029_staff_roles.sql:ro
+      - ./db/030_platform_staff.sql:/docker-entrypoint-initdb.d/030_platform_staff.sql:ro
+      - ./db/031_test_store_markers.sql:/docker-entrypoint-initdb.d/031_test_store_markers.sql:ro
+      - ./db/032_platform_store_events.sql:/docker-entrypoint-initdb.d/032_platform_store_events.sql:ro
+      - ./db/033_test_store_isolation.sql:/docker-entrypoint-initdb.d/033_test_store_isolation.sql:ro
+      - ./db/034_platform_login_audit.sql:/docker-entrypoint-initdb.d/034_platform_login_audit.sql:ro
+      - ./db/035_platform_runtime_grants.sql:/docker-entrypoint-initdb.d/035_platform_runtime_grants.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U kasa_owner -d kasa"]
       interval: 2s
       timeout: 3s
-      retries: 30
+      retries: 90
 
 volumes:
   postgres_data:

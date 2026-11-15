@@ -38,6 +38,15 @@ namespace KasaDesktop
         private readonly string dataDirectory = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "KasaDesktop");
         private readonly WebView2 view = new WebView2 { Dock = DockStyle.Fill };
+        private readonly Button localPlatform = new Button
+        {
+            Dock = DockStyle.Top,
+            Height = 38,
+            Text = "Платформа · Тестовый вход разработчика",
+            Visible = false
+        };
+        private readonly System.Windows.Forms.Timer localPlatformTimer = new System.Windows.Forms.Timer { Interval = 15000 };
+        private readonly Uri localPlatformApi = new Uri("http://127.0.0.1:3510/");
         private readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = 4 * 1024 * 1024 };
         private readonly HttpClient http = new HttpClient(new HttpClientHandler
         {
@@ -56,6 +65,9 @@ namespace KasaDesktop
             WindowState = FormWindowState.Maximized;
             StartPosition = FormStartPosition.CenterScreen;
             Controls.Add(view);
+            Controls.Add(localPlatform);
+            localPlatform.Click += (_, __) => { using (var form = new PlatformWindow(localPlatformApi)) form.ShowDialog(this); };
+            localPlatformTimer.Tick += async (_, __) => await RefreshLocalPlatformButton();
             Shown += Initialize;
         }
 
@@ -82,6 +94,8 @@ namespace KasaDesktop
                     CoreWebView2HostResourceAccessKind.Deny);
                 core.WebMessageReceived += Receive;
                 view.Source = new Uri(Page);
+                await RefreshLocalPlatformButton();
+                localPlatformTimer.Start();
             }
             catch
             {
@@ -89,6 +103,21 @@ namespace KasaDesktop
                     Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
                 Close();
             }
+        }
+
+        private async Task RefreshLocalPlatformButton()
+        {
+            try
+            {
+                using (var response = await http.GetAsync(new Uri(localPlatformApi, "development/platform/status")))
+                {
+                    var body = await response.Content.ReadAsStringAsync();
+                    var status = response.IsSuccessStatusCode ? json.Deserialize<Dictionary<string, object>>(body) : null;
+                    localPlatform.Visible = status != null && Equals(status["enabled"], true) &&
+                                            Equals(status["environment"], "Development");
+                }
+            }
+            catch { localPlatform.Visible = false; }
         }
 
         private async void Receive(object sender, CoreWebView2WebMessageReceivedEventArgs args)

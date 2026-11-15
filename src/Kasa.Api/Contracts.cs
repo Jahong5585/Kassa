@@ -2,6 +2,12 @@ using System.Text.Json.Serialization;
 
 namespace Kasa.Api;
 
+public sealed record LocalDeveloperLogin(string Login, string Password);
+public sealed record LocalDeveloperToken(string AccessToken, string TokenType, int ExpiresIn, DateTime ExpiresAt);
+public sealed record CreatePlatformTestStore(string Name, string? TimeZone = null);
+public sealed record RenamePlatformTestStore(string Name);
+public sealed record PlatformTestStore(Guid OrganizationId, Guid StoreId, string Name, string TimeZone, bool IsTest);
+
 public sealed record RegisterDevice(Guid RegisterId, string Name, bool Active, int Version, IReadOnlyList<Guid> CashierIds);
 public sealed record RegisterNewDevice(Guid RegisterId, string Name, Guid CashierId, string RegisterKey);
 public sealed record RotateDeviceKey(int ExpectedVersion, string RegisterKey);

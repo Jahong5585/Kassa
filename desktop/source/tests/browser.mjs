@@ -729,7 +729,7 @@ try {
   await locale.getByText('Sinov cheki • fiskal emas',{exact:true}).last().waitFor();
   await locale.locator('#receipt-dialog').getByRole('button',{name:'Yopish',exact:true}).last().click();
   await button(locale,'Qabul').click();
-  await button(locale,'Administrator').click();
+  await locale.locator('#active-role').selectOption('admin');
   await button(locale,'Boshqaruv').click();
   await locale.getByRole('heading',{name:'Mahsulotlar katalogi'}).waitFor();
   await button(locale,'Hisobotlar va audit').click();

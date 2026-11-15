@@ -17,14 +17,17 @@ var developmentKey = configuration["Auth:DevelopmentKey"];
 var authority = configuration["Auth:Authority"];
 var audience = configuration["Auth:Audience"];
 var adminAcr = configuration["Auth:AdminAcr"];
+var allowLocalTestDeveloper = configuration.GetValue<bool>("Auth:AllowLocalTestDeveloper");
 if (string.IsNullOrWhiteSpace(audience) ||
-    (developmentKey is null && (!Uri.TryCreate(authority, UriKind.Absolute, out var issuer) || issuer.Scheme != "https")))
+    (developmentKey is null && !allowLocalTestDeveloper &&
+     (!Uri.TryCreate(authority, UriKind.Absolute, out var issuer) || issuer.Scheme != "https")))
     throw new InvalidOperationException("Configure Auth:Audience and an HTTPS Auth:Authority.");
 if (developmentKey is not null && (!development || Encoding.UTF8.GetByteCount(developmentKey) < 32))
     throw new InvalidOperationException("Development JWT keys must have at least 32 bytes and are development-only.");
 
 if (!development && string.IsNullOrWhiteSpace(adminAcr))
     throw new InvalidOperationException("Configure Auth:AdminAcr to require the provider's WebAuthn assurance level.");
+var localTestMode = LocalTestDeveloperMode.Read(builder, audience!);
 
 var connectionString = configuration.GetConnectionString("Pos")
     ?? throw new InvalidOperationException("Configure ConnectionStrings:Pos.");
@@ -34,6 +37,9 @@ if (!Uri.TryCreate(procurementAiEndpoint, UriKind.Absolute, out var procurementA
     (!development && (procurementAiUri.Scheme != "https" || procurementAiUri.Host != "api.groq.com")))
     throw new InvalidOperationException("Configure Ai:Endpoint as Groq HTTPS. Local HTTP is development-only.");
 builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString));
+builder.Services.AddSingleton(localTestMode);
+builder.Services.AddScoped<LocalDeveloperLoginService>();
+builder.Services.AddScoped<PlatformService>();
 builder.Services.AddSingleton<InvoiceScanner>();
 builder.Services.AddScoped<PosService>();
 builder.Services.AddHttpClient<ProcurementExplainer>(client =>
@@ -65,6 +71,15 @@ builder.Services.AddRateLimiter(options =>
     options.AddPolicy("procurement-ai", context => RateLimitPartition.GetFixedWindowLimiter(
         context.User.FindFirst("sub")?.Value ?? "unknown",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 3, Window = TimeSpan.FromMinutes(1) }));
+    options.AddPolicy("local-developer-login", context => RateLimitPartition.GetFixedWindowLimiter(
+        context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 5,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0,
+            AutoReplenishment = true
+        }));
 });
 builder.Services.AddOpenApi(options => options.AddDocumentTransformer((document, _, _) =>
 {
@@ -130,7 +145,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJw
     options.SaveToken = false;
     options.Audience = audience;
     options.TokenValidationParameters.ClockSkew = TimeSpan.FromSeconds(30);
-    if (developmentKey is null)
+    if (developmentKey is null && !localTestMode.Enabled)
     {
         options.Authority = authority;
         options.TokenValidationParameters.ValidIssuer = authority;
@@ -138,8 +153,27 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJw
     else
     {
         options.TokenValidationParameters.ValidIssuer = "kasa-local";
-        options.TokenValidationParameters.IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(developmentKey));
+        var signingKeys = new List<SecurityKey>();
+        if (developmentKey is not null)
+            signingKeys.Add(new SymmetricSecurityKey(Encoding.UTF8.GetBytes(developmentKey)) { KeyId = "development" });
+        if (localTestMode.SigningKey is not null)
+            signingKeys.Add(new SymmetricSecurityKey(localTestMode.SigningKey) { KeyId = "local-test-developer" });
+        options.TokenValidationParameters.IssuerSigningKeys = signingKeys;
         options.TokenValidationParameters.ValidAlgorithms = [SecurityAlgorithms.HmacSha256];
+        options.Events = new JwtBearerEvents
+        {
+            OnTokenValidated = context =>
+            {
+                if (context.Principal?.FindFirst(LocalTestDeveloperMode.Claim)?.Value == "true")
+                {
+                    var key = context.SecurityToken.SigningKey as SymmetricSecurityKey;
+                    if (!localTestMode.Enabled || localTestMode.SigningKey is null || key is null ||
+                        !System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(key.Key, localTestMode.SigningKey))
+                        context.Fail("Local test developer tokens require the dedicated local signing key.");
+                }
+                return Task.CompletedTask;
+            }
+        };
     }
 });
 builder.Services.AddAuthorizationBuilder().SetFallbackPolicy(
@@ -186,11 +220,33 @@ app.UseAuthentication();
 app.UseRateLimiter();
 app.UseAuthorization();
 app.MapGet("/health/live", () => TypedResults.Ok(new { status = "ok" })).AllowAnonymous();
+if (localTestMode.Enabled)
+{
+    app.MapGet("/development/platform/status", (HttpContext context) =>
+        localTestMode.IsLocalRequest(context)
+            ? Results.Ok(new { enabled = true, environment = "Development", loopbackOnly = true })
+            : Results.Problem(statusCode: 403, title: "local_test_loopback_required"))
+        .AllowAnonymous();
+    app.MapPost("/development/platform/login", async (LocalDeveloperLogin request, LocalDeveloperLoginService login,
+        HttpContext context, CancellationToken ct) => TypedResults.Ok(await login.Login(context, request, ct)))
+        .AllowAnonymous()
+        .RequireRateLimiting("local-developer-login")
+        .ProducesProblem(401).ProducesProblem(403).ProducesProblem(429);
+}
 app.MapOpenApi();
 
 var api = app.MapGroup("/v1").RequireAuthorization()
     .ProducesProblem(400).ProducesProblem(401).ProducesProblem(403).ProducesProblem(404)
     .ProducesProblem(409).ProducesProblem(429).ProducesProblem(503);
+var platformApi = api.MapGroup("/platform");
+platformApi.MapGet("/test-stores", async (PlatformService platform, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await platform.List(context, ct))).WithName("ListPlatformTestStores");
+platformApi.MapPost("/test-stores", async (CreatePlatformTestStore request, PlatformService platform,
+    HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await platform.Create(context, request, ct))).WithName("CreatePlatformTestStore");
+platformApi.MapPatch("/test-stores/{id:guid}", async (Guid id, RenamePlatformTestStore request,
+    PlatformService platform, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await platform.Rename(context, id, request, ct))).WithName("RenamePlatformTestStore");
 api.MapGet("/me/roles", async (Guid storeId, PosService pos, HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await pos.ReadMyRoles(context, storeId, ct))).WithName("ReadMyRoles");
 api.MapPost("/shifts", async (OpenShift request, PosService pos, HttpContext context, CancellationToken ct) =>

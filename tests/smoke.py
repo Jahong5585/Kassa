@@ -13,7 +13,17 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo as SystemZoneInfo, ZoneInfoNotFoundError
+
+
+def ZoneInfo(name):
+    """Use the Windows-safe fixed offset for Uzbekistan when tzdata is absent."""
+    try:
+        return SystemZoneInfo(name)
+    except ZoneInfoNotFoundError:
+        if name == "Asia/Tashkent":
+            return datetime.timezone(datetime.timedelta(hours=5), name)
+        raise
 
 BASE = os.environ["POS_TEST_URL"]
 KEY = os.environ["POS_TEST_REGISTER_KEY"]
