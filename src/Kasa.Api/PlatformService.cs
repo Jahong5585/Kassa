@@ -5,7 +5,7 @@ using Npgsql;
 namespace Kasa.Api;
 
 internal sealed class PlatformService(NpgsqlDataSource source, IConfiguration configuration, LocalTestDeveloperMode mode,
-    TemporaryPlatformDeveloperAccess temporaryDeveloper)
+    TemporaryPlatformDeveloperAccess temporaryDeveloper, IdentityProvisioningService identities)
 {
     private sealed record Permission(string Issuer, string Subject, bool Write, bool Local);
 
@@ -24,7 +24,12 @@ internal sealed class PlatformService(NpgsqlDataSource source, IConfiguration co
         await using var tx = await db.BeginTransactionAsync(ct);
         await Require(db, tx, context, write: false, ct);
         await using var command = db.Sql(tx, """
-            SELECT o.id, o.name, s.id, s.name, s.time_zone, s.platform_version, s.is_test
+            SELECT o.id, o.name, s.id, s.name, s.time_zone, s.platform_version, s.is_test,
+              (SELECT st.subject FROM staff st
+               JOIN staff_stores ss ON ss.org_id = st.org_id AND ss.staff_id = st.id AND ss.active
+               JOIN staff_roles sr ON sr.org_id = st.org_id AND sr.staff_id = st.id AND sr.role = 'owner'
+               WHERE st.org_id = o.id AND ss.store_id = s.id AND st.active
+               ORDER BY st.id LIMIT 1)
             FROM organizations o JOIN stores s ON s.org_id = o.id
             WHERE o.is_test AND s.is_test
             ORDER BY lower(o.name), o.id, lower(s.name), s.id
@@ -34,7 +39,7 @@ internal sealed class PlatformService(NpgsqlDataSource source, IConfiguration co
         var result = new List<PlatformStoreItem>();
         while (await rows.ReadAsync(ct))
             result.Add(new(rows.GetGuid(0), rows.GetString(1), rows.GetGuid(2), rows.GetString(3), rows.GetString(4),
-                rows.GetInt32(5), rows.GetBoolean(6)));
+                rows.GetInt32(5), rows.GetBoolean(6), rows.IsDBNull(7) ? null : rows.GetString(7)));
         var next = result.Count > 100 ? offset + 100 : (int?)null;
         if (result.Count > 100) result.RemoveAt(100);
         return new(result, next);
@@ -47,7 +52,8 @@ internal sealed class PlatformService(NpgsqlDataSource source, IConfiguration co
             throw new PosError(400, "invalid_platform_store_create");
         var organizationName = ValidateName(request.OrganizationName);
         var storeName = ValidateName(request.StoreName);
-        var ownerSubject = ValidateSubject(request.OwnerSubject);
+        var ownerSubject = string.IsNullOrWhiteSpace(request.OwnerSubject)
+            ? null : ValidateSubject(request.OwnerSubject);
         var reason = ValidateReason(request.Reason);
         if (request.TimeZone != "Asia/Tashkent") throw new PosError(400, "invalid_time_zone");
 
@@ -79,11 +85,13 @@ internal sealed class PlatformService(NpgsqlDataSource source, IConfiguration co
             INSERT INTO stores (org_id, id, name, time_zone, is_test, platform_version)
             VALUES ($1, $2, $3, $4, true, 1)
             """, request.OrganizationId, request.StoreId, storeName, request.TimeZone);
-        await EnsureOwner(db, tx, request.OrganizationId, request.StoreId, ownerSubject, ct);
+        if (ownerSubject is not null)
+            await EnsureOwner(db, tx, request.OrganizationId, request.StoreId, ownerSubject, ct);
         await Audit(db, tx, permission, "create_test_store", request.OrganizationId, request.StoreId, storeName,
             reason, null, storeName, ct);
         await tx.CommitAsync(ct);
-        return new(request.OrganizationId, organizationName, request.StoreId, storeName, request.TimeZone, 1, true);
+        return new(request.OrganizationId, organizationName, request.StoreId, storeName, request.TimeZone, 1, true,
+            ownerSubject);
     }
 
     internal async Task<PlatformStoreItem> RenameStore(HttpContext context, Guid organizationId, Guid storeId,
@@ -121,8 +129,69 @@ internal sealed class PlatformService(NpgsqlDataSource source, IConfiguration co
         await rows.DisposeAsync();
         await Audit(db, tx, permission, "rename_test_store", organizationId, storeId, name, reason,
             previousName, name, ct);
+        await using var owner = db.Sql(tx, """
+            SELECT st.subject FROM staff st
+            JOIN staff_stores ss ON ss.org_id = st.org_id AND ss.staff_id = st.id AND ss.active
+            JOIN staff_roles sr ON sr.org_id = st.org_id AND sr.staff_id = st.id AND sr.role = 'owner'
+            WHERE st.org_id = $1 AND ss.store_id = $2 AND st.active ORDER BY st.id LIMIT 1
+            """, organizationId, storeId);
+        var ownerSubject = await owner.ExecuteScalarAsync(ct) as string;
         await tx.CommitAsync(ct);
-        return new(organizationId, organizationName, storeId, name, zone, version, true);
+        return new(organizationId, organizationName, storeId, name, zone, version, true, ownerSubject);
+    }
+
+    internal async Task<PlatformOwnerAccount> CreateOwnerAccount(HttpContext context, Guid organizationId,
+        Guid storeId, CreatePlatformOwnerAccount request, CancellationToken ct)
+    {
+        if (organizationId == Guid.Empty || storeId == Guid.Empty)
+            throw new PosError(400, "invalid_platform_store_change");
+        var reason = ValidateReason(request.Reason);
+        var replaceSubject = string.IsNullOrWhiteSpace(request.ReplaceSubject)
+            ? null : ValidateSubject(request.ReplaceSubject);
+
+        await using (var preflightDb = await source.OpenConnectionAsync(ct))
+        await using (var preflightTx = await preflightDb.BeginTransactionAsync(ct))
+        {
+            await Require(preflightDb, preflightTx, context, write: true, ct);
+            await VerifyOwnerTarget(preflightDb, preflightTx, organizationId, storeId, replaceSubject, ct);
+        }
+
+        var provisioned = await identities.Create(request.Username, request.FirstName, request.LastName, request.Email, ct);
+        try
+        {
+            await using var db = await source.OpenConnectionAsync(ct);
+            await using var tx = await db.BeginTransactionAsync(ct);
+            var permission = await Require(db, tx, context, write: true, ct);
+            var storeName = await VerifyOwnerTarget(db, tx, organizationId, storeId, replaceSubject, ct);
+            if (await Exists(db, tx, "SELECT 1 FROM staff WHERE org_id = $1 AND subject = $2",
+                    organizationId, provisioned.Subject, ct))
+                throw new PosError(409, "owner_subject_conflict");
+            if (replaceSubject is null)
+            {
+                await EnsureOwner(db, tx, organizationId, storeId, provisioned.Subject, ct);
+            }
+            else
+            {
+                var updated = await db.Run(tx, ct, """
+                    UPDATE staff st SET subject = $1
+                    FROM staff_stores ss, staff_roles sr
+                    WHERE st.org_id = $2 AND st.subject = $3
+                      AND ss.org_id = st.org_id AND ss.staff_id = st.id AND ss.store_id = $4 AND ss.active
+                      AND sr.org_id = st.org_id AND sr.staff_id = st.id AND sr.role = 'owner'
+                    """, provisioned.Subject, organizationId, replaceSubject, storeId);
+                if (updated != 1) throw new PosError(409, "platform_owner_changed");
+            }
+            await Audit(db, tx, permission, "assign_owner", organizationId, storeId, storeName, reason,
+                null, null, ct);
+            await tx.CommitAsync(ct);
+            return new(organizationId, storeId, provisioned.Subject, provisioned.Username,
+                provisioned.TemporaryPassword, true, ["UPDATE_PASSWORD", "CONFIGURE_TOTP"]);
+        }
+        catch
+        {
+            await identities.Delete(provisioned.Subject, CancellationToken.None);
+            throw;
+        }
     }
 
     internal async Task<PlatformAuditPage> AuditEvents(HttpContext context, int offset, CancellationToken ct)
@@ -311,6 +380,36 @@ internal sealed class PlatformService(NpgsqlDataSource source, IConfiguration co
             INSERT INTO staff_stores (org_id, staff_id, store_id, active) VALUES ($1, $2, $3, true)
             ON CONFLICT (org_id, staff_id, store_id) DO UPDATE SET active = true
             """, organizationId, staffId, storeId);
+    }
+
+    private static async Task<string> VerifyOwnerTarget(NpgsqlConnection db, NpgsqlTransaction tx,
+        Guid organizationId, Guid storeId, string? replaceSubject, CancellationToken ct)
+    {
+        await using var store = db.Sql(tx, """
+            SELECT s.name FROM stores s JOIN organizations o ON o.id = s.org_id
+            WHERE s.org_id = $1 AND s.id = $2 AND s.is_test AND o.is_test
+            """, organizationId, storeId);
+        var storeName = await store.ExecuteScalarAsync(ct) as string;
+        if (storeName is null) throw new PosError(404, "test_store_not_found");
+        await using var owner = db.Sql(tx, """
+            SELECT st.subject FROM staff st
+            JOIN staff_stores ss ON ss.org_id = st.org_id AND ss.staff_id = st.id AND ss.active
+            JOIN staff_roles sr ON sr.org_id = st.org_id AND sr.staff_id = st.id AND sr.role = 'owner'
+            WHERE st.org_id = $1 AND ss.store_id = $2 AND st.active
+            ORDER BY st.id LIMIT 2
+            """, organizationId, storeId);
+        await using var rows = await owner.ExecuteReaderAsync(ct);
+        var subjects = new List<string>();
+        while (await rows.ReadAsync(ct)) subjects.Add(rows.GetString(0));
+        if (replaceSubject is null)
+        {
+            if (subjects.Count > 0) throw new PosError(409, "platform_owner_already_assigned");
+        }
+        else if (subjects.Count != 1 || !string.Equals(subjects[0], replaceSubject, StringComparison.Ordinal))
+        {
+            throw new PosError(409, "platform_owner_changed");
+        }
+        return storeName;
     }
 
     private static Task<int> Audit(NpgsqlConnection db, NpgsqlTransaction tx, Permission permission, string action,

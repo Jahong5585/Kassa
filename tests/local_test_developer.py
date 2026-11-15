@@ -16,7 +16,7 @@ AUDIENCE = os.environ["Auth__Audience"]
 DEVELOPMENT_KEY = os.environ["Auth__DevelopmentKey"].encode()
 
 
-def call(path, body=None, token=None, expected=200, method=None, base=BASE):
+def call(path, body=None, token=None, expected=200, method=None, base=BASE, include_headers=False):
     headers = {}
     data = None
     if body is not None:
@@ -32,7 +32,8 @@ def call(path, body=None, token=None, expected=200, method=None, base=BASE):
     with response:
         payload = response.read()
         assert response.status == expected, (path, expected, response.status, payload)
-        return json.loads(payload) if payload else None
+        result = json.loads(payload) if payload else None
+        return (result, response.headers) if include_headers else result
 
 
 def ordinary_token(subject, mfa=False, auth_time=None):
@@ -86,20 +87,42 @@ def main():
         "storeId": store_id,
         "storeName": "Тестовый магазин",
         "timeZone": "Asia/Tashkent",
-        "ownerSubject": "owner-" + uuid.uuid4().hex,
+        "ownerSubject": None,
         "reason": "Автоматическая проверка контракта Windows-клиента",
     }, token, method="POST")
     assert platform_created["storeId"] == store_id and platform_created["version"] == 1
+    assert platform_created["ownerSubject"] is None
     page = call("/v1/platform/stores?offset=0", token=token)
     row = next(item for item in page["items"] if item["storeId"] == store_id)
     assert row["organizationName"] == "Тестовая организация" and row["isTest"] is True
+    assert row["ownerSubject"] is None
     renamed_platform = call(
         "/v1/platform/organizations/" + organization_id + "/stores/" + store_id + "/name",
         {"expectedVersion": 1, "name": "Тестовый магазин 2", "reason": "Проверка переименования"},
         token, method="PUT")
     assert renamed_platform["version"] == 2 and renamed_platform["storeName"] == "Тестовый магазин 2"
+    owner, owner_headers = call(
+        "/v1/platform/organizations/" + organization_id + "/stores/" + store_id + "/owner-account",
+        {"username": "owner." + uuid.uuid4().hex[:12], "firstName": "Test", "lastName": "Owner",
+         "email": None, "replaceSubject": None, "reason": "Создание тестового владельца"},
+        token, method="POST", include_headers=True)
+    assert owner["subject"] and owner["username"].startswith("owner.")
+    password = owner["temporaryPassword"]
+    assert len(password) >= 16 and any(c.isupper() for c in password) and any(c.islower() for c in password)
+    assert any(c.isdigit() for c in password) and any(not c.isalnum() for c in password)
+    assert owner["passwordTemporary"] is True
+    assert owner["requiredActions"] == ["UPDATE_PASSWORD", "CONFIGURE_TOTP"]
+    assert "no-store" in owner_headers.get("Cache-Control", "")
+    owner_roles = call("/v1/me/roles?storeId=" + store_id, token=ordinary_token(owner["subject"]))
+    assert owner_roles["owner"] is True
+    assert owner_roles["roles"] == ["admin", "cashier", "receiver"]
+    page_after_owner = call("/v1/platform/stores?offset=0", token=token)
+    owner_row = next(item for item in page_after_owner["items"] if item["storeId"] == store_id)
+    assert owner_row["ownerSubject"] == owner["subject"]
     audit = call("/v1/platform/audit?offset=0", token=token)
     assert any(event["storeId"] == store_id and event["reason"] == "Проверка переименования"
+               for event in audit["items"])
+    assert any(event["storeId"] == store_id and event["action"] == "assign_owner"
                for event in audit["items"])
 
     developer = "10000000-0000-0000-0000-000000000001"

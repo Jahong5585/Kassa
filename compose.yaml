@@ -47,6 +47,7 @@ services:
       - ./db/034_platform_login_audit.sql:/docker-entrypoint-initdb.d/034_platform_login_audit.sql:ro
       - ./db/035_platform_runtime_grants.sql:/docker-entrypoint-initdb.d/035_platform_runtime_grants.sql:ro
       - ./db/036_platform_desktop_contract.sql:/docker-entrypoint-initdb.d/036_platform_desktop_contract.sql:ro
+      - ./db/037_platform_owner_accounts.sql:/docker-entrypoint-initdb.d/037_platform_owner_accounts.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U kasa_owner -d kasa"]
       interval: 2s

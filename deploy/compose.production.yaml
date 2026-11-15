@@ -52,6 +52,7 @@ services:
       - ../db/034_platform_login_audit.sql:/docker-entrypoint-initdb.d/034_platform_login_audit.sql:ro
       - ../db/035_platform_runtime_grants.sql:/docker-entrypoint-initdb.d/035_platform_runtime_grants.sql:ro
       - ../db/036_platform_desktop_contract.sql:/docker-entrypoint-initdb.d/036_platform_desktop_contract.sql:ro
+      - ../db/037_platform_owner_accounts.sql:/docker-entrypoint-initdb.d/037_platform_owner_accounts.sql:ro
       - ./init-keycloak-db.sh:/docker-entrypoint-initdb.d/100_init_keycloak.sh:ro
       - ./init-kasa-bootstrap.sh:/docker-entrypoint-initdb.d/900_init_kasa_bootstrap.sh:ro
     healthcheck:
@@ -104,6 +105,11 @@ services:
       Auth__TemporaryPlatformDeveloperIssuer: ${KASA_TEMP_PLATFORM_ISSUER:-}
       Auth__TemporaryPlatformDeveloperSubject: ${KASA_TEMP_PLATFORM_SUBJECT:-}
       Auth__TemporaryPlatformDeveloperExpiresAt: ${KASA_TEMP_PLATFORM_EXPIRES_AT:-}
+      IdentityProvisioning__Enabled: ${KASA_IDENTITY_PROVISIONING_ENABLED:-false}
+      IdentityProvisioning__BaseUrl: ${KASA_IDENTITY_PROVISIONING_BASE_URL:-http://keycloak:8080/auth/}
+      IdentityProvisioning__Realm: ${KASA_IDENTITY_PROVISIONING_REALM:-kasa}
+      IdentityProvisioning__ClientId: ${KASA_IDENTITY_PROVISIONING_CLIENT_ID:-kasa-platform-provisioner}
+      IdentityProvisioning__ClientSecret: ${KASA_IDENTITY_PROVISIONING_CLIENT_SECRET:-}
       Purchasing__RequireReceiptAttachment: "true"
       InvoiceScanner__Host: clamd
       InvoiceScanner__Port: "3310"

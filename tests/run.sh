@@ -63,8 +63,10 @@ export ConnectionStrings__Pos="Host=127.0.0.1;Port=$POS_DB_PORT;Database=kasa;Us
 api_pid=
 scanner_pid=
 groq_pid=
+keycloak_pid=
 scanner_port_file="$(mktemp)"
 groq_port_file="$(mktemp)"
+keycloak_port_file="$(mktemp)"
 logs="$(mktemp)"
 restore_dir=
 cleanup() {
@@ -72,7 +74,8 @@ cleanup() {
     "${compose[@]}" down --volumes >/dev/null 2>&1 || true
     if [[ -n "$scanner_pid" ]]; then kill "$scanner_pid" 2>/dev/null || true; fi
     if [[ -n "$groq_pid" ]]; then kill "$groq_pid" 2>/dev/null || true; fi
-    rm -f "$logs" "$scanner_port_file" "$groq_port_file"
+    if [[ -n "$keycloak_pid" ]]; then kill "$keycloak_pid" 2>/dev/null || true; fi
+    rm -f "$logs" "$scanner_port_file" "$groq_port_file" "$keycloak_port_file"
     if [[ -n "$restore_dir" ]]; then rm -rf "$restore_dir"; fi
 }
 trap cleanup EXIT
@@ -95,6 +98,19 @@ groq_port="$(cat "$groq_port_file")"
 [[ "$groq_port" =~ ^[0-9]+$ ]] || { echo "Groq fixture failed to start" >&2; exit 1; }
 export Ai__Endpoint="http://127.0.0.1:$groq_port/openai/v1/"
 export GROQ_TEST_URL="http://127.0.0.1:$groq_port"
+"$python_command" tests/keycloak_admin_stub.py "$keycloak_port_file" &
+keycloak_pid=$!
+for ((i=0; i<100; i++)); do
+    if [[ -s "$keycloak_port_file" ]]; then break; fi
+    sleep 0.05
+done
+keycloak_port="$(cat "$keycloak_port_file")"
+[[ "$keycloak_port" =~ ^[0-9]+$ ]] || { echo "Keycloak fixture failed to start" >&2; exit 1; }
+export IdentityProvisioning__Enabled=true
+export IdentityProvisioning__BaseUrl="http://127.0.0.1:$keycloak_port/auth/"
+export IdentityProvisioning__Realm=kasa
+export IdentityProvisioning__ClientId=kasa-platform-provisioner
+export IdentityProvisioning__ClientSecret="$(hex)$(hex)"
 "${compose[@]}" up -d --wait
 if "$restore_check"; then
     pg_version=$("${compose[@]}" exec -T db psql -XAt -U kasa_owner -d kasa -v ON_ERROR_STOP=1 -c 'SHOW server_version_num')

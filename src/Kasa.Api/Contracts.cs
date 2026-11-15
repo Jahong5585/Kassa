@@ -9,11 +9,15 @@ public sealed record RenamePlatformTestStore(string Name);
 public sealed record PlatformTestStore(Guid OrganizationId, Guid StoreId, string Name, string TimeZone, bool IsTest);
 public sealed record PlatformIdentity(string Issuer, string Subject, bool CanRead, bool CanWrite);
 public sealed record PlatformStoreItem(Guid OrganizationId, string OrganizationName, Guid StoreId, string StoreName,
-    string TimeZone, int Version, bool IsTest);
+    string TimeZone, int Version, bool IsTest, string? OwnerSubject);
 public sealed record PlatformStorePage(IReadOnlyList<PlatformStoreItem> Items, int? NextOffset);
 public sealed record CreatePlatformStore(Guid OrganizationId, string OrganizationName, Guid StoreId, string StoreName,
-    string TimeZone, string OwnerSubject, string Reason);
+    string TimeZone, string? OwnerSubject, string Reason);
 public sealed record RenamePlatformStore(int ExpectedVersion, string Name, string Reason);
+public sealed record CreatePlatformOwnerAccount(string Username, string? FirstName, string? LastName, string? Email,
+    string? ReplaceSubject, string Reason);
+public sealed record PlatformOwnerAccount(Guid OrganizationId, Guid StoreId, string Subject, string Username,
+    string TemporaryPassword, bool PasswordTemporary, IReadOnlyList<string> RequiredActions);
 public sealed record PlatformAuditEvent(long Id, DateTime OccurredAt, string Action, Guid OrganizationId, Guid StoreId,
     string? PreviousName, string? NewName, string Reason);
 public sealed record PlatformAuditPage(IReadOnlyList<PlatformAuditEvent> Items, int? NextOffset);

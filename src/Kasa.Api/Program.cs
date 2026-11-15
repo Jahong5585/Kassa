@@ -30,6 +30,7 @@ if (!development && string.IsNullOrWhiteSpace(adminAcr))
     throw new InvalidOperationException("Configure Auth:AdminAcr to require the provider's WebAuthn assurance level.");
 var localTestMode = LocalTestDeveloperMode.Read(builder, audience!);
 var temporaryPlatformDeveloper = TemporaryPlatformDeveloperAccess.Read(configuration);
+var identityProvisioning = IdentityProvisioningOptions.Read(configuration, development);
 
 var connectionString = configuration.GetConnectionString("Pos")
     ?? throw new InvalidOperationException("Configure ConnectionStrings:Pos.");
@@ -41,8 +42,17 @@ if (!Uri.TryCreate(procurementAiEndpoint, UriKind.Absolute, out var procurementA
 builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString));
 builder.Services.AddSingleton(localTestMode);
 builder.Services.AddSingleton(temporaryPlatformDeveloper);
+builder.Services.AddSingleton(identityProvisioning);
 builder.Services.AddScoped<LocalDeveloperLoginService>();
 builder.Services.AddScoped<PlatformService>();
+builder.Services.AddHttpClient<IdentityProvisioningService>(client =>
+{
+    client.BaseAddress = identityProvisioning.BaseUrl;
+    client.Timeout = TimeSpan.FromSeconds(10);
+    client.MaxResponseContentBufferSize = 32 * 1024;
+})
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false })
+    .RedactLoggedHeaders(_ => true);
 builder.Services.AddSingleton<InvoiceScanner>();
 builder.Services.AddScoped<PosService>();
 builder.Services.AddHttpClient<ProcurementExplainer>(client =>
@@ -79,6 +89,15 @@ builder.Services.AddRateLimiter(options =>
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 3, Window = TimeSpan.FromMinutes(1) }));
     options.AddPolicy("local-developer-login", context => RateLimitPartition.GetFixedWindowLimiter(
         context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 5,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0,
+            AutoReplenishment = true
+        }));
+    options.AddPolicy("platform-identity", context => RateLimitPartition.GetFixedWindowLimiter(
+        context.User.FindFirst("sub")?.Value ?? "unknown",
         _ => new FixedWindowRateLimiterOptions
         {
             PermitLimit = 5,
@@ -283,6 +302,14 @@ platformApi.MapPut("/organizations/{organizationId:guid}/stores/{storeId:guid}/n
         HttpContext context, CancellationToken ct) =>
         TypedResults.Ok(await platform.RenameStore(context, organizationId, storeId, request, ct)))
     .WithName("RenamePlatformStore");
+platformApi.MapPost("/organizations/{organizationId:guid}/stores/{storeId:guid}/owner-account",
+    async (Guid organizationId, Guid storeId, CreatePlatformOwnerAccount request, PlatformService platform,
+        HttpContext context, CancellationToken ct) =>
+    {
+        context.Response.Headers.CacheControl = "no-store";
+        context.Response.Headers.Pragma = "no-cache";
+        return TypedResults.Ok(await platform.CreateOwnerAccount(context, organizationId, storeId, request, ct));
+    }).WithName("CreatePlatformOwnerAccount").RequireRateLimiting("platform-identity");
 platformApi.MapGet("/audit", async (int offset, PlatformService platform, HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await platform.AuditEvents(context, offset, ct))).WithName("ListPlatformAudit");
 platformApi.MapGet("/test-stores", async (PlatformService platform, HttpContext context, CancellationToken ct) =>

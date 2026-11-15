@@ -38,10 +38,30 @@ Windows-клиент использует расширенный контрак�
 | Метод и маршрут | Назначение |
 | --- | --- |
 | `GET /v1/platform/me` | текущие глобальные права `canRead` и `canWrite` |
-| `GET /v1/platform/stores?offset=0` | страница тестовых организаций и магазинов с `version` |
-| `POST /v1/platform/stores` | создание явно помеченного тестового магазина и назначение владельца; обязательны UUID, названия, `ownerSubject`, часовой пояс и причина |
+| `GET /v1/platform/stores?offset=0` | страница тестовых организаций и магазинов с `version` и текущим `ownerSubject` либо `null` |
+| `POST /v1/platform/stores` | создание явно помеченного тестового магазина; обязательны UUID, названия, часовой пояс и причина, `ownerSubject` можно не передавать |
 | `PUT /v1/platform/organizations/{organizationId}/stores/{storeId}/name` | переименование по `expectedVersion` с обязательной причиной |
-| `GET /v1/platform/audit?offset=0` | глобальный журнал создания и переименования тестовых магазинов |
+| `POST /v1/platform/organizations/{organizationId}/stores/{storeId}/owner-account` | создание учётной записи владельца в сервисе входа и назначение магазину |
+| `GET /v1/platform/audit?offset=0` | глобальный журнал создания, переименования и назначения владельцев тестовых магазинов |
+
+Создание владельца принимает следующее тело:
+
+```json
+{
+  "username": "owner.fodils",
+  "firstName": "Fodil",
+  "lastName": "",
+  "email": null,
+  "replaceSubject": null,
+  "reason": "Создание владельца тестового магазина"
+}
+```
+
+`username` обязателен: 3–64 символа, латинские буквы, цифры, точка, дефис и подчёркивание. `firstName`, `lastName` и `email` необязательны. Если у магазина уже есть владелец, клиент передаёт его точное значение из `ownerSubject` в `replaceSubject`; это защищает от случайной перезаписи параллельного изменения. Ответ содержит `subject`, `username`, одноразово показанный `temporaryPassword`, `passwordTemporary: true` и `requiredActions: ["UPDATE_PASSWORD", "CONFIGURE_TOTP"]`.
+
+Ответ всегда имеет `Cache-Control: no-store`. Временный пароль нельзя писать в журнал, телеметрию, файл настроек или базу клиента. После закрытия окна клиент обязан удалить его из состояния. При первом входе владелец меняет пароль и подключает приложение-аутентификатор. Для маршрута действует отдельный лимит 5 запросов в минуту на пользователя.
+
+Коды нового маршрута: `400 invalid_identity_username`/ошибка полей, `403 platform_write_forbidden`, `404 test_store_not_found`, `409 identity_username_conflict`, `409 platform_owner_already_assigned` или `platform_owner_changed`, `429` и `503 identity_provisioning_disabled`/`identity_provisioning_unavailable`. Создание учётных записей включается внешними настройками `IdentityProvisioning:*`; секрет служебного клиента хранится вне Git.
 
 Локальный JWT имеет `iss=kasa-local`, `sub=developer-test`, аудиторию из `Auth:Audience`, `local_test_developer=true` и срок не более 60 минут. Пароль клиент не сохраняет. Вход ограничен по частоте. Полная локальная настройка приведена в `docs/KASA_LOCAL_TEST_DEVELOPER.md`.
 
@@ -345,6 +365,8 @@ UUID в путях передаются без фигурных скобок. К
 | `CountInventory` | `expectedVersion` — `int`, `items` — `CountInventoryLine[]` |
 | `CountInventoryLine` | `productId` — `Guid`, `lotId` — `Guid`, `lotRevision` — `long`, `stockQuantity` * — `decimal`, `quarantineQuantity` * — `decimal` |
 | `CreateCashMovement` | `operationId` — `Guid`, `direction` — `string`, `amount` — `decimal`, `reason` — `string` |
+| `CreatePlatformOwnerAccount` | `username` — `string`, `firstName` — `string?`, `lastName` — `string?`, `email` — `string?`, `replaceSubject` — `string?`, `reason` — `string` |
+| `CreatePlatformStore` | `organizationId` — `Guid`, `organizationName` — `string`, `storeId` — `Guid`, `storeName` — `string`, `timeZone` — `string`, `ownerSubject` — `string?`, `reason` — `string` |
 | `CreateInventory` | `inventoryId` — `Guid`, `reason` — `string`, `lots` — `StockLotKey[]?`, по умолчанию `null`, `scope` — `InventoryScope?`, по умолчанию `null` |
 | `CreatePurchaseOrder` | `orderId` — `Guid`, `supplierRef` — `string`, `items` — `OrderItem[]` |
 | `CreateReceipt` | `receiptId` — `Guid`, `supplierRef` — `string`, `invoiceNumber` — `string`, `invoiceDate` — `DateOnly`, `items` — `ReceiptItem[]`, `purchaseOrderId` — `Guid?`, по умолчанию `null` |
