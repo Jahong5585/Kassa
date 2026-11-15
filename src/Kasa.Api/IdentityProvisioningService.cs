@@ -7,25 +7,27 @@ using System.Text.RegularExpressions;
 
 namespace Kasa.Api;
 
-internal sealed record IdentityProvisioningOptions(bool Enabled, Uri? BaseUrl, string Realm, string ClientId,
-    string ClientSecret)
+internal sealed record IdentityProvisioningOptions(bool Enabled, Uri? BaseUrl, string Realm, string TokenRealm,
+    string ClientId, string ClientSecret)
 {
     internal static IdentityProvisioningOptions Read(IConfiguration configuration, bool development)
     {
         var enabled = configuration.GetValue<bool>("IdentityProvisioning:Enabled");
         var baseValue = configuration["IdentityProvisioning:BaseUrl"];
         var realm = configuration["IdentityProvisioning:Realm"]?.Trim() ?? "kasa";
+        var tokenRealm = configuration["IdentityProvisioning:TokenRealm"]?.Trim() ?? realm;
         var clientId = configuration["IdentityProvisioning:ClientId"]?.Trim() ?? "";
         var clientSecret = configuration["IdentityProvisioning:ClientSecret"] ?? "";
-        if (!enabled) return new(false, null, realm, clientId, clientSecret);
+        if (!enabled) return new(false, null, realm, tokenRealm, clientId, clientSecret);
         if (!Uri.TryCreate(baseValue, UriKind.Absolute, out var baseUrl) ||
             baseUrl.Scheme is not ("http" or "https") ||
             (!development && baseUrl.Scheme != "https" && baseUrl.Host != "keycloak"))
             throw new InvalidOperationException("IdentityProvisioning:BaseUrl must be HTTPS or the internal keycloak host.");
         if (!Regex.IsMatch(realm, "^[A-Za-z0-9._-]{1,64}$") ||
+            !Regex.IsMatch(tokenRealm, "^[A-Za-z0-9._-]{1,64}$") ||
             !Regex.IsMatch(clientId, "^[A-Za-z0-9._-]{1,128}$") || clientSecret.Length < 32)
             throw new InvalidOperationException("Configure the identity provisioning realm, client and secret.");
-        return new(true, new Uri(baseUrl.ToString().TrimEnd('/') + "/"), realm, clientId, clientSecret);
+        return new(true, new Uri(baseUrl.ToString().TrimEnd('/') + "/"), realm, tokenRealm, clientId, clientSecret);
     }
 }
 
@@ -91,7 +93,7 @@ internal sealed partial class IdentityProvisioningService(HttpClient client, Ide
     private async Task<string> AdminToken(CancellationToken ct)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post,
-            $"realms/{Uri.EscapeDataString(options.Realm)}/protocol/openid-connect/token")
+            $"realms/{Uri.EscapeDataString(options.TokenRealm)}/protocol/openid-connect/token")
         {
             Content = new FormUrlEncodedContent(new Dictionary<string, string>
             {

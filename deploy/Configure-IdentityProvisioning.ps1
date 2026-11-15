@@ -61,9 +61,10 @@ $token = Invoke-RestMethod -Method Post -Uri "$KeycloakUrl/realms/master/protoco
     -ContentType 'application/x-www-form-urlencoded' -Body $tokenBody
 $headers = @{ Authorization = 'Bearer ' + $token.access_token }
 $realm = 'kasa'
+$clientRealm = $realm
 $clientId = 'kasa-platform-provisioner'
 $clients = @((Invoke-RestMethod -Headers $headers `
-        -Uri "$KeycloakUrl/admin/realms/$realm/clients?clientId=$clientId") | ForEach-Object { $_ })
+        -Uri "$KeycloakUrl/admin/realms/$clientRealm/clients?clientId=$clientId") | ForEach-Object { $_ })
 
 if ($clients.Count -eq 0) {
     $bytes = [byte[]]::new(48)
@@ -76,12 +77,12 @@ if ($clients.Count -eq 0) {
         secret = $secret
     } | ConvertTo-Json
     Invoke-WebRequest -Method Post -Headers $headers -ContentType 'application/json' `
-        -Uri "$KeycloakUrl/admin/realms/$realm/clients" -Body $body | Out-Null
+        -Uri "$KeycloakUrl/admin/realms/$clientRealm/clients" -Body $body | Out-Null
     $clients = @((Invoke-RestMethod -Headers $headers `
-            -Uri "$KeycloakUrl/admin/realms/$realm/clients?clientId=$clientId") | ForEach-Object { $_ })
+            -Uri "$KeycloakUrl/admin/realms/$clientRealm/clients?clientId=$clientId") | ForEach-Object { $_ })
 } else {
     $secretResult = Invoke-RestMethod -Headers $headers `
-        -Uri "$KeycloakUrl/admin/realms/$realm/clients/$($clients[0].id)/client-secret"
+        -Uri "$KeycloakUrl/admin/realms/$clientRealm/clients/$($clients[0].id)/client-secret"
     $secret = $secretResult.value
 }
 
@@ -90,23 +91,39 @@ if ($clients.Count -ne 1 -or [string]::IsNullOrWhiteSpace($secret)) {
 }
 
 $serviceAccount = Invoke-RestMethod -Headers $headers `
-    -Uri "$KeycloakUrl/admin/realms/$realm/clients/$($clients[0].id)/service-account-user"
+    -Uri "$KeycloakUrl/admin/realms/$clientRealm/clients/$($clients[0].id)/service-account-user"
 $management = @((Invoke-RestMethod -Headers $headers `
-        -Uri "$KeycloakUrl/admin/realms/$realm/clients?clientId=realm-management") | ForEach-Object { $_ })
+        -Uri "$KeycloakUrl/admin/realms/$clientRealm/clients?clientId=realm-management") | ForEach-Object { $_ })
 if ($management.Count -ne 1) { throw 'realm-management client was not found.' }
 $roles = @()
 foreach ($name in @('manage-users', 'view-users', 'query-users')) {
     $roles += Invoke-RestMethod -Headers $headers `
-        -Uri "$KeycloakUrl/admin/realms/$realm/clients/$($management[0].id)/roles/$name"
+        -Uri "$KeycloakUrl/admin/realms/$clientRealm/clients/$($management[0].id)/roles/$name"
 }
 Invoke-WebRequest -Method Post -Headers $headers -ContentType 'application/json' `
-    -Uri "$KeycloakUrl/admin/realms/$realm/users/$($serviceAccount.id)/role-mappings/clients/$($management[0].id)" `
+    -Uri "$KeycloakUrl/admin/realms/$clientRealm/users/$($serviceAccount.id)/role-mappings/clients/$($management[0].id)" `
     -Body ($roles | ConvertTo-Json -Depth 5 -AsArray) | Out-Null
+
+$scopes = @((Invoke-RestMethod -Headers $headers `
+        -Uri "$KeycloakUrl/admin/realms/$realm/client-scopes") | ForEach-Object { $_ })
+$adminScope = @($scopes | Where-Object { $_.name -eq 'kc-admin-api' })
+if ($adminScope.Count -ne 1) { throw 'The required kc-admin-api client scope was not found.' }
+Invoke-WebRequest -Method Put -Headers $headers `
+    -Uri "$KeycloakUrl/admin/realms/$realm/clients/$($clients[0].id)/default-client-scopes/$($adminScope[0].id)" `
+    -Body ([byte[]]::new(0)) | Out-Null
+
+$legacy = @((Invoke-RestMethod -Headers $headers `
+        -Uri "$KeycloakUrl/admin/realms/master/clients?clientId=$clientId") | ForEach-Object { $_ })
+foreach ($client in $legacy) {
+    Invoke-WebRequest -Method Delete -Headers $headers `
+        -Uri "$KeycloakUrl/admin/realms/master/clients/$($client.id)" | Out-Null
+}
 
 Set-Env $EnvFile @{
     KASA_IDENTITY_PROVISIONING_ENABLED = 'true'
     KASA_IDENTITY_PROVISIONING_BASE_URL = 'http://keycloak:8080/auth/'
     KASA_IDENTITY_PROVISIONING_REALM = $realm
+    KASA_IDENTITY_PROVISIONING_TOKEN_REALM = $realm
     KASA_IDENTITY_PROVISIONING_CLIENT_ID = $clientId
     KASA_IDENTITY_PROVISIONING_CLIENT_SECRET = $secret
 }
@@ -127,6 +144,7 @@ if ($DeleteBootstrapClient -and $BootstrapClientId) {
 [pscustomobject]@{
     ClientId = $clientId
     Realm = $realm
+    TokenRealm = $realm
     Enabled = $true
     SecretStoredOutsideGit = $true
 }

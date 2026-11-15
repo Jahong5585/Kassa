@@ -108,6 +108,7 @@ services:
       IdentityProvisioning__Enabled: ${KASA_IDENTITY_PROVISIONING_ENABLED:-false}
       IdentityProvisioning__BaseUrl: ${KASA_IDENTITY_PROVISIONING_BASE_URL:-http://keycloak:8080/auth/}
       IdentityProvisioning__Realm: ${KASA_IDENTITY_PROVISIONING_REALM:-kasa}
+      IdentityProvisioning__TokenRealm: ${KASA_IDENTITY_PROVISIONING_TOKEN_REALM:-kasa}
       IdentityProvisioning__ClientId: ${KASA_IDENTITY_PROVISIONING_CLIENT_ID:-kasa-platform-provisioner}
       IdentityProvisioning__ClientSecret: ${KASA_IDENTITY_PROVISIONING_CLIENT_SECRET:-}
       Purchasing__RequireReceiptAttachment: "true"

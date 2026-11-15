@@ -61,7 +61,7 @@ Windows-клиент использует расширенный контрак�
 
 Ответ всегда имеет `Cache-Control: no-store`. Временный пароль нельзя писать в журнал, телеметрию, файл настроек или базу клиента. После закрытия окна клиент обязан удалить его из состояния. При первом входе владелец меняет пароль и подключает приложение-аутентификатор. Для маршрута действует отдельный лимит 5 запросов в минуту на пользователя.
 
-Коды нового маршрута: `400 invalid_identity_username`/ошибка полей, `403 platform_write_forbidden`, `404 test_store_not_found`, `409 identity_username_conflict`, `409 platform_owner_already_assigned` или `platform_owner_changed`, `429` и `503 identity_provisioning_disabled`/`identity_provisioning_unavailable`. Создание учётных записей включается внешними настройками `IdentityProvisioning:*`; секрет служебного клиента хранится вне Git.
+Коды нового маршрута: `400 invalid_identity_username`/ошибка полей, `403 platform_write_forbidden`, `404 test_store_not_found`, `409 identity_username_conflict`, `409 platform_owner_already_assigned` или `platform_owner_changed`, `429` и `503 identity_provisioning_disabled`/`identity_provisioning_unavailable`. Создание учётных записей включается внешними настройками `IdentityProvisioning:*`; служебный клиент имеет встроенный scope `kc-admin-api` и только роли управления пользователями целевого realm, а его секрет хранится вне Git.
 
 Локальный JWT имеет `iss=kasa-local`, `sub=developer-test`, аудиторию из `Auth:Audience`, `local_test_developer=true` и срок не более 60 минут. Пароль клиент не сохраняет. Вход ограничен по частоте. Полная локальная настройка приведена в `docs/KASA_LOCAL_TEST_DEVELOPER.md`.
 
