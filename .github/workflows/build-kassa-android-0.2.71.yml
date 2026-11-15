@@ -16,10 +16,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
 
       - uses: subosito/flutter-action@v2
         with:
@@ -36,10 +36,21 @@ jobs:
       - name: Install Android build components
         shell: bash
         run: |
+          sdk="$RUNNER_TEMP/kassa-android-sdk"
+          tools="$RUNNER_TEMP/kassa-android-tools.zip"
+          curl --fail --location --silent --show-error --retry 3 \
+            https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip -o "$tools"
+          echo "4e4c464f145a7512b57d088ac6c278c03c9eea610886b35a5e0804e74eedf583  $tools" | sha256sum --check
+          mkdir -p "$sdk/cmdline-tools"
+          unzip -q "$tools" -d "$sdk/cmdline-tools"
+          mv "$sdk/cmdline-tools/cmdline-tools" "$sdk/cmdline-tools/latest"
+          manager="$sdk/cmdline-tools/latest/bin/sdkmanager"
           set +o pipefail
-          yes | sdkmanager --licenses >/dev/null
+          yes | "$manager" --sdk_root="$sdk" --licenses >/dev/null
           set -o pipefail
-          sdkmanager --install 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358'
+          "$manager" --sdk_root="$sdk" --install 'platform-tools' 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358'
+          printf 'ANDROID_HOME=%s\nANDROID_SDK_ROOT=%s\n' "$sdk" "$sdk" >> "$GITHUB_ENV"
+          echo "$sdk/platform-tools" >> "$GITHUB_PATH"
 
       - name: Compile and sign the test APK
         working-directory: compiled-source/apps/mobile-flutter
