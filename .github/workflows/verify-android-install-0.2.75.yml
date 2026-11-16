@@ -1,0 +1,44 @@
+name: Verify Android 0.2.75 package installation
+
+on:
+  push:
+    branches: ['codex/verify-android-install-0.2.75']
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Kassa-Android-0.2.75-TEST
+          path: signed-apk
+          run-id: '43864529240'
+          github-token: ${{ github.token }}
+      - name: Verify the exact delivered APK
+        run: |
+          echo '054bdc2a5ebf860ef84ab3ae392caf941567c0dabb08a42da82f1bd726f311d7  signed-apk/Kassa_Android_0.2.75_TEST.apk' | sha256sum --check
+      - name: Enable hardware acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install the delivered APK in Android 15
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          script: |
+            adb shell getprop ro.build.version.release
+            adb install --no-incremental signed-apk/Kassa_Android_0.2.75_TEST.apk
+            adb shell pm path uz.qrspace.kassa.mobile.multirolepilot.accountpreview
+            adb shell dumpsys package uz.qrspace.kassa.mobile.multirolepilot.accountpreview > installed-package.txt
+            grep -F 'versionName=0.2.75' installed-package.txt
+            grep -F 'versionCode=2095' installed-package.txt
