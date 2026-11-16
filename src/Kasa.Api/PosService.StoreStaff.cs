@@ -37,7 +37,7 @@ internal sealed partial class PosService
         var proposedId = Guid.NewGuid();
         var created = await db.Run(tx, ct, """
             INSERT INTO staff (org_id, id, subject, role) VALUES ($1, $2, $3, $4)
-            ON CONFLICT (subject) DO NOTHING
+            ON CONFLICT DO NOTHING
             """, scope.Organization, proposedId, request.Subject, request.Role);
         await using var account = db.Sql(tx, """
             SELECT id FROM staff WHERE org_id = $1 AND subject = $2 AND active
@@ -113,7 +113,7 @@ internal sealed partial class PosService
         StoreScope scope, Guid? staffId, int offset, CancellationToken ct)
     {
         await using var command = db.Sql(tx, """
-            SELECT s.id, s.subject, s.role, ARRAY(
+            SELECT s.id, COALESCE(s.subject, s.display_name), s.role, ARRAY(
                 SELECT p.role FROM staff_roles p
                 WHERE (p.org_id, p.staff_id) = (a.org_id, a.staff_id)
                 ORDER BY p.role

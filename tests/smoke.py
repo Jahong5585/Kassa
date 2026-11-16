@@ -243,8 +243,8 @@ def main():
     request(admin_report, staff="receiver", expected=403)
     request(admin_report, expected=403)
     request(admin_report, staff="admin-foreign", expected=404)
-    request(admin_report, staff="admin-a", mfa=False, expected=403)
-    report = request(admin_report, staff="admin-a")
+    # Store admin is an operational role and must not inherit platform MFA requirements.
+    report = request(admin_report, staff="admin-a", mfa=False)
     assert report["salesCount"] == 2 and report["cashSales"] == 17500
     assert report["manualCashlessSales"] == 17500 and report["expectedCash"] == 27500
     assert request("/v1/shifts/" + shift_a)["expectedCash"] is None
@@ -341,7 +341,6 @@ def check_receiving():
     assert request(path + "?status=submitted", staff="admin-a") == [submitted]
     request(row + "/post", {"expectedVersion": 2}, staff="receiver", expected=403)
     request(row + "/post", {"expectedVersion": 2}, expected=403)
-    request(row + "/post", {"expectedVersion": 2}, staff="admin-a", mfa=False, expected=403)
     assert request("/v1/catalog/barcodes/001")["lots"] == []
 
     back = request(row + "/return-to-draft", {"expectedVersion": 2, "reason": "Проверьте количество"}, staff="admin-a")
@@ -447,7 +446,6 @@ def check_refunds(shift_b):
     approval = {"registerId": fixture_id(21), "amount": 17500, "refund": second}
     request(approval_path, approval, staff="receiver", expected=403)
     request(approval_path, approval, staff="admin-foreign", expected=404)
-    request(approval_path, approval, staff="admin-a", mfa=False, expected=403)
     request(approval_path, {**approval, "amount": 1}, staff="admin-a", expected=409)
     approved = request(approval_path, approval, staff="admin-a")
     assert request(approval_path, approval, staff="admin-a") == approved
@@ -1238,7 +1236,6 @@ def check_replenishment():
     request(forecast, {}, staff="cashier-a", expected=403)
     request(forecast, {}, staff="receiver", expected=403)
     request(forecast, {}, staff="admin-foreign", expected=404)
-    request(forecast, {}, staff=admin, mfa=False, expected=403)
     request(forecast, {"orderWeekdays": []}, staff=admin, expected=400)
     spec = request("/openapi/v1.json")
     route = spec["paths"]["/v1/stores/{storeId}/procurement/recommendations/{code}/{sku}"]["post"]
@@ -1329,7 +1326,6 @@ def check_replenishment():
     assert request(other_store, staff="admin-ai-scoped", expected=403,
                    method="POST")["code"] == "procurement_ai_access_denied"
     assert groq_calls() == calls_before_other_store
-    assert request(explain, staff=admin, mfa=False, expected=403, method="POST")["code"] == "admin_mfa_required"
     explanation = request(explain, staff=admin, method="POST")
     assert explanation["explanation"].startswith("Запас может закончиться")
     assert datetime.datetime.fromisoformat(explanation["calculatedAt"]) >= \
@@ -1527,7 +1523,6 @@ def check_sales_period():
 
     request(scope + period, staff=None, expected=401)
     request(scope + period, staff="receiver", expected=403)
-    request(scope + period, staff=admin, mfa=False, expected=403)
     request(scope + period, staff="admin-foreign", expected=404)
     request(scope + "/csv" + filter_b, staff="cashier-a", expected=403)
     request(scope + "/csv" + filter_b, staff="admin-foreign", expected=404)
@@ -1590,7 +1585,6 @@ def check_profit_report():
     assert "text/csv" in spec[api_path + "/csv"]["get"]["responses"]["200"]["content"]
     request(route + period, staff=None, expected=401)
     request(route + period, staff="receiver", expected=403)
-    request(route + period, staff=admin, mfa=False, expected=403)
     request(route + period, staff="admin-foreign", expected=404)
     request(route + "/csv" + period, staff="cashier-a", expected=403)
     request(route + "/csv" + period, staff="admin-foreign", expected=404)
@@ -1647,7 +1641,6 @@ def check_stock_expiry_report():
     for staff, status in ((None, 401), ("cashier-a", 403), ("receiver", 403), ("admin-foreign", 404)):
         request(route, staff=staff, expected=status)
         request(csv_route, staff=staff, expected=status)
-    request(csv_route, staff=admin, mfa=False, expected=403)
     request(csv_route + "?filter=bad", staff=admin, expected=400)
     assert request(route, staff=admin)["filter"] == "within7"
     assert all(row["daysLeft"] == 0 for row in request(route + "?filter=today", staff=admin)["items"])
@@ -1693,7 +1686,6 @@ def check_stock_losses():
     assert "text/csv" in spec[api_path + "/csv"]["get"]["responses"]["200"]["content"]
     request(scope + period, staff=None, expected=401)
     request(scope + period, staff="receiver", expected=403)
-    request(scope + period, staff=admin, mfa=False, expected=403)
     request(scope + period, staff="admin-foreign", expected=404)
     for staff, status in (("cashier-a", 403), ("receiver", 403), ("admin-foreign", 404)):
         request(scope + "/csv" + period, staff=staff, expected=status)
@@ -1748,7 +1740,6 @@ def check_stock_movement_report():
     assert "text/csv" in spec[api_path + "/csv"]["get"]["responses"]["200"]["content"]
     request(scope + past, staff=None, expected=401)
     request(scope + past, staff="receiver", expected=403)
-    request(scope + past, staff=admin, mfa=False, expected=403)
     request(scope + past, staff="admin-foreign", expected=404)
     request(scope + "/csv" + past, staff="cashier-a", expected=403)
     request(scope + "/csv" + past, staff="admin-foreign", expected=404)
@@ -1881,7 +1872,6 @@ def check_supplier_invoice_settlements():
     request(invoices, staff=None, expected=401)
     request(path_a, staff="cashier-a", expected=403)
     request(path_a, staff="admin-foreign", expected=404)
-    request(path_a, staff=admin, mfa=False, expected=403)
 
     def payment(reference, amount):
         body = {"operationId": str(uuid.uuid4()), "amount": amount, "paymentDate": str(today),
@@ -2000,7 +1990,6 @@ def check_supplier_invoice_settlements():
     transfer_path = credit_transfers + "/" + applied["operationId"]
     assert request(transfer_path, staff=admin) == applied
     request(transfer_path, staff="admin-foreign", expected=404)
-    request(transfer_path, staff=admin, mfa=False, expected=403)
     assert request(credit_transfers, {**command, "reason": "Изменённая причина"},
                    staff=admin, expected=409)["code"] == "supplier_credit_transfer_id_reused"
     assert read_invoice(invoice_a)["creditSentAmount"] == 3 and read_invoice(invoice_a)["overpaidAmount"] == 7
@@ -2069,7 +2058,6 @@ def check_supplier_settlement_report():
     assert set(spec["/v1/reports/stores/{storeId}/supplier-settlements"]["get"]["security"][0]) == {"Bearer", "OperatorSession"}
     for staff, status in ((None, 401), ("cashier-b", 403), ("receiver", 403), ("admin-foreign", 404)):
         request(route, staff=staff, expected=status)
-    request(route, staff=admin, mfa=False, expected=403)
     request(route + "?offset=-1", staff=admin, expected=400)
     request(route + "?supplierCode=bad%20code", staff=admin, expected=400)
 
@@ -2152,7 +2140,6 @@ def check_opening_stock():
     request(preview_path, body, staff=None, expected=401)
     request(preview_path, body, staff="receiver", expected=403)
     request(opening, body, staff="cashier-a", expected=403)
-    request(opening, body, staff=admin, mfa=False, expected=403)
     request(opening, body, staff="admin-foreign", expected=404)
 
     preview = request(preview_path, body, staff=admin)
@@ -2292,7 +2279,6 @@ def check_scoped_inventory():
     path = inventories + "/" + body["inventoryId"]
     request(inventories, body, staff=None, expected=401)
     request(inventories, body, staff="receiver", expected=403)
-    request(inventories, body, staff=admin, mfa=False, expected=403)
     request(inventories, {**body, "lots": []}, staff=admin, expected=400)
     request(inventories, create({"kind": "full", "productId": piece}), staff=admin, expected=400)
     request(inventories, create({"kind": "product", "productId": fixture_id(2599)}), staff=admin, expected=404)
@@ -2409,7 +2395,6 @@ def check_inventory_cost():
     assert set(spec["/v1/reports/stores/{storeId}/stock-valuation"]["get"]["security"][0]) == {"Bearer", "OperatorSession"}
     for staff, status in ((None, 401), ("cashier-a", 403), ("receiver", 403), ("admin-foreign", 404)):
         request(valuation_path, staff=staff, expected=status)
-    request(valuation_path, staff=admin, mfa=False, expected=403)
     request(valuation_path + "?offset=-1", staff=admin, expected=400)
     request(valuation_path + "?productId=" + fixture_id(2899), staff=admin, expected=404)
 
@@ -2541,7 +2526,6 @@ def check_stock_valuation_csv(path, product, valuation, admin):
     request(filtered, staff=None, expected=401)
     request(filtered, staff="cashier-a", expected=403)
     request(filtered, staff="receiver", expected=403)
-    request(filtered, staff=admin, mfa=False, expected=403)
     request(filtered, staff="admin-foreign", expected=404)
     request(csv_path + "?productId=" + fixture_id(0), staff=admin, expected=400)
     request(csv_path + "?productId=" + fixture_id(2899), staff=admin, expected=404)
@@ -2598,7 +2582,6 @@ def check_register_devices():
         request(base, body, staff=staff, expected=status)
         request(path + "/rotate-key", rotate, staff=staff, expected=status)
         request(path + "/revoke", revoke, staff=staff, expected=status)
-    request(base, body, staff=admin, mfa=False, expected=403)
     request(base, {**body, "cashierId": fixture_id(35)}, staff=admin, expected=404)
     request(path, staff=admin, expected=404)
     request(base, {**body, "registerKey": "invalid"}, staff=admin, expected=400)
@@ -2622,17 +2605,14 @@ def check_register_devices():
     recover = {"countedCash": 0, "reason": "Устройство отозвано"}
     assert request(recover_path, recover, staff=admin, expected=409)["code"] == "shift_recovery_not_required"
     request(recover_path, recover, staff="receiver", expected=403)
-    request(recover_path, recover, staff=admin, mfa=False, expected=403)
     request(recover_path.replace(store, fixture_id(12)), recover, staff="admin-foreign", expected=404)
     request(path + "/rotate-key", {**rotate, "registerKey": key}, staff=admin, expected=409)
-    request(path + "/rotate-key", rotate, staff=admin, mfa=False, expected=403)
     rotated = request(path + "/rotate-key", rotate, staff=admin)
     assert rotated == {**created, "version": 2}
     assert request(path + "/rotate-key", rotate, staff=admin) == rotated
     request("/v1/sales", order, register=register, key=key, expected=403)
     assert request("/v1/sales", order, register=register, key=new_key) == sold
 
-    request(path + "/revoke", revoke, staff=admin, mfa=False, expected=403)
     removed = request(path + "/revoke", revoke, staff=admin)
     assert removed == {**created, "version": 3, "active": False}
     assert request(path + "/revoke", revoke, staff=admin) == removed
@@ -2667,7 +2647,6 @@ def check_store_staff():
     for staff, status in ((None, 401), ("cashier-a", 403), ("receiver", 403), ("admin-foreign", 404)):
         request(root, staff=staff, expected=status)
         request(root, employee, staff=staff, expected=status)
-    request(root, employee, staff=admin, mfa=False, expected=403)
     request(root, {**employee, "registerId": fixture_id(23)}, staff=admin, expected=404)
     request(root, {"subject": "cashier-a", "role": "admin"}, staff=admin, expected=409)
     request(root, {"subject": "admin-foreign", "role": "admin"}, staff=admin, expected=409)
@@ -2704,7 +2683,6 @@ def check_store_staff():
     assert request(other, delegate, staff=admin) == first
     assert request(root, extra_headers=headers) and request(other, extra_headers=headers)
     revoke = root + "/" + first["staffId"] + "/revoke"
-    request(revoke, method="POST", staff=admin, mfa=False, expected=403)
     request(revoke, method="POST", staff=admin)
     request(root, extra_headers=headers, expected=404)
     request(f"/v1/reports/stores/{store}/stock-expiry/csv", extra_headers=headers, expected=404)
@@ -2725,7 +2703,6 @@ def check_store_audit():
     assert set(spec["/v1/stores/{storeId}/audit"]["get"]["security"][0]) == {"Bearer", "OperatorSession"}
     for staff, status in ((None, 401), ("cashier-b", 403), ("receiver", 403), ("admin-foreign", 404)):
         request(path + params, staff=staff, expected=status)
-    request(path + params, staff=admin, mfa=False, expected=403)
     request(path + params + "&limit=101", staff=admin, expected=400)
     request(path + params + "&after=invalid", staff=admin, expected=400)
     request(path + f"?from={today}&to={day}", staff=admin, expected=400)
@@ -2781,7 +2758,6 @@ def check_receipt_cancellation():
     command = {"expectedVersion": 1, "reason": "Ошибочный черновик"}
     request(path + "/cancel", command, staff=None, expected=401)
     request(path + "/cancel", command, staff="cashier-b", expected=403)
-    request(path + "/cancel", command, staff=admin, mfa=False, expected=403)
     request(path + "/cancel", command, staff="admin-foreign", expected=404)
     request(path + "/cancel", {**command, "reason": ""}, staff=admin, expected=400)
     request(path + "/cancel", {**command, "expectedVersion": 2}, staff="receiver", expected=409)
@@ -2846,7 +2822,6 @@ def check_store_exceptions():
     assert set(spec["/v1/reports/stores/{storeId}/exceptions"]["get"]["security"][0]) == {"Bearer", "OperatorSession"}
     for staff, status in ((None, 401), ("cashier-b", 403), (receiver, 403), ("admin-foreign", 404)):
         request(path, staff=staff, expected=status)
-    request(path, staff=admin, mfa=False, expected=403)
     request(path + "?code=wrong", staff=admin, expected=400)
     request(path + "?limit=101", staff=admin, expected=400)
     request(path + "?offset=-1", staff=admin, expected=400)
@@ -2910,8 +2885,6 @@ def check_stock_snapshots():
     for staff, status in ((None, 401), ("cashier-b", 403), ("receiver-exceptions", 403), ("admin-foreign", 404)):
         request(path, command, staff=staff, expected=status)
         request(query, staff=staff, expected=status)
-    request(path, command, staff=admin, mfa=False, expected=403)
-    request(query, staff=admin, mfa=False, expected=403)
     assert request(path + f"?date={yesterday}", staff=admin, expected=404)["code"] == "stock_snapshot_not_found"
     request(query + "&offset=-1", staff=admin, expected=400)
     request(prefix + "/catalog/products/" + product,
@@ -2970,7 +2943,6 @@ def check_background_stock_movement_exports():
         request(route, data, staff=staff, expected=status)
         request(path, staff=staff, expected=status)
         request(path + "/file", staff=staff, expected=status)
-    request(route, data, staff=author, mfa=False, expected=403)
     request(route, {**data, "to": str(day - datetime.timedelta(days=1))}, staff=author, expected=400)
     request(route, {**data, "productId": None}, staff=author, expected=400)
 
@@ -2987,8 +2959,6 @@ def check_background_stock_movement_exports():
     assert conflict["code"] == "stock_movement_export_operation_conflict"
     request(path, staff="admin-replenishment", expected=404)
     request(path + "/file", staff="admin-replenishment", expected=404)
-    request(path, staff=author, mfa=False, expected=403)
-    request(path + "/file", staff=author, mfa=False, expected=403)
 
     def ready(url, staff):
         deadline = time.monotonic() + 20
@@ -3103,7 +3073,6 @@ def check_register_diagnostics(previous_shift_b):
     assert rows[0]["registerId"] == fixture_id(21) and rows[0]["shiftId"] == shift
     assert rows[0]["operationId"] == operation and rows[0]["occurredAt"] == saved["receivedAt"]
     request(report + "?code=saleOutcomeUnknown", staff="admin-foreign", expected=404)
-    request(report + "?code=saleOutcomeUnknown", staff=admin, mfa=False, expected=403)
     foreign = report.replace(store, fixture_id(12))
     assert request(foreign + "?code=saleOutcomeUnknown", staff="admin-foreign")["items"] == []
     assert quantity() == before

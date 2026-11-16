@@ -102,6 +102,7 @@ services:
       Auth__Authority: https://kassa.qr-space.uz/auth/realms/kasa
       Auth__Audience: kasa-api
       Auth__AdminAcr: "1"
+      Auth__RequireOperatorSession: ${KASA_REQUIRE_OPERATOR_SESSION:-false}
       Auth__AllowTemporaryPlatformDeveloperMfaOnly: ${KASA_TEMP_PLATFORM_MFA_ONLY:-false}
       Auth__TemporaryPlatformDeveloperIssuer: ${KASA_TEMP_PLATFORM_ISSUER:-}
       Auth__TemporaryPlatformDeveloperSubject: ${KASA_TEMP_PLATFORM_SUBJECT:-}

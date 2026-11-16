@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+import secrets
 import subprocess
 import time
 import urllib.error
@@ -21,6 +22,8 @@ EMPLOYEE = "00000000-0000-0000-0000-000000009001"
 DEVICE = "00000000-0000-0000-0000-000000009002"
 SECOND_EMPLOYEE = "00000000-0000-0000-0000-000000009003"
 REGISTER = "00000000-0000-0000-0000-000000000021"
+NEW_REGISTER = "00000000-0000-0000-0000-000000009021"
+OWNER_REGISTER = "00000000-0000-0000-0000-000000009022"
 
 
 def token(subject="admin-owner"):
@@ -67,6 +70,7 @@ def expire_session(session_id):
 
 
 def main():
+    capture_contract = os.environ.get("POS_CAPTURE_DESKTOP_CONTRACT") == "1"
     spec, _ = call("/openapi/v1.json")
     bootstrap = spec["paths"]["/v1/me/stores"]["get"]["security"][0]
     business = spec["paths"]["/v1/stores/{storeId}/employees"]["get"]["security"][0]
@@ -134,11 +138,96 @@ def main():
     denied, _ = call(f"/v1/stores/{STORE}/registers", expected=403, session=employee_token, role="admin")
     assert denied["code"] == "active_role_denied"
 
+    legacy_staff, _ = call(f"/v1/stores/{STORE}/staff?offset=0", session=owner_token, role="admin")
+    local_staff = next(row for row in legacy_staff if row["staffId"] == EMPLOYEE)
+    assert local_staff["subject"] == "Саида Каримова"
+    assert set(local_staff["roles"]) == {"cashier", "receiver"}
+    assert local_staff["staffId"] == employee["employeeId"]
+    if capture_contract:
+        print("CAPTURE staff 200 " + json.dumps(local_staff, ensure_ascii=False, sort_keys=True))
+
+    new_register_key = secrets.token_hex(32)
+    created_register, _ = call(f"/v1/stores/{STORE}/registers",
+                               {"registerId": NEW_REGISTER, "name": "Desktop 0.8.5 E2E",
+                                "cashierId": EMPLOYEE, "registerKey": new_register_key},
+                               session=owner_token, role="admin")
+    assert created_register["registerId"] == NEW_REGISTER
+    assert created_register["cashierIds"] == [EMPLOYEE]
+    assert set(created_register) == {"registerId", "name", "active", "version", "cashierIds"}
+    if capture_contract:
+        print("CAPTURE register-create 200 " + json.dumps(created_register, ensure_ascii=False, sort_keys=True))
+
+    owner_register_key = secrets.token_hex(32)
+    call(f"/v1/stores/{STORE}/registers",
+         {"registerId": OWNER_REGISTER, "name": "Unassigned cashier check",
+          "cashierId": owner_id, "registerKey": owner_register_key},
+         session=owner_token, role="admin")
+
+    desktop_employee, _ = call(f"/v1/stores/{STORE}/operator-sessions",
+                               {"operatorId": EMPLOYEE, "password": PASSWORD, "deviceId": DEVICE})
+    desktop_token = desktop_employee["operatorSessionToken"]
+    unassigned, _ = call("/v1/shifts", {"shiftId": str(uuid.uuid4()), "openingCash": 1000},
+                         expected=403, session=desktop_token, role="cashier",
+                         headers={"X-Register-Id": OWNER_REGISTER, "X-Register-Key": owner_register_key})
+    assert unassigned["code"] == "register_access_denied"
+    desktop_shift_id = str(uuid.uuid4())
+    opened_shift, _ = call("/v1/shifts", {"shiftId": desktop_shift_id, "openingCash": 1000},
+                           session=desktop_token, role="cashier",
+                           headers={"X-Register-Id": NEW_REGISTER, "X-Register-Key": new_register_key})
+    assert opened_shift["shiftId"] == desktop_shift_id
+
+    active_shift, _ = call("/v1/shifts/active", session=desktop_token, role="cashier",
+                           headers={"X-Register-Id": NEW_REGISTER, "X-Register-Key": new_register_key})
+    assert active_shift["shiftId"] == desktop_shift_id and active_shift["closedAt"] is None
+    if capture_contract:
+        print("CAPTURE shift-active-open 200 " + json.dumps(active_shift, ensure_ascii=False, sort_keys=True))
+    call(f"/v1/shifts/{desktop_shift_id}/close", {"countedCash": 1000}, session=desktop_token,
+         role="cashier", headers={"X-Register-Id": NEW_REGISTER, "X-Register-Key": new_register_key})
+    no_active_shift, _ = call("/v1/shifts/active", expected=204, session=desktop_token, role="cashier",
+                              headers={"X-Register-Id": NEW_REGISTER, "X-Register-Key": new_register_key})
+    assert no_active_shift is None
+    current_route, _ = call("/v1/shifts/current", expected=404, session=desktop_token, role="cashier",
+                            headers={"X-Register-Id": NEW_REGISTER, "X-Register-Key": new_register_key})
+    if capture_contract:
+        print("CAPTURE shift-active-empty 204 <empty>")
+        print("CAPTURE shift-current 404 " + (json.dumps(current_route, ensure_ascii=False, sort_keys=True)
+                                                  if current_route is not None else "<empty>"))
+
+    rotated_register, _ = call(f"/v1/stores/{STORE}/registers/{NEW_REGISTER}/rotate-key",
+                               {"expectedVersion": created_register["version"],
+                                "registerKey": secrets.token_hex(32)},
+                               session=owner_token, role="admin")
+    assert set(rotated_register) == {"registerId", "name", "active", "version", "cashierIds"}
+    assert rotated_register["version"] == created_register["version"] + 1
+    if capture_contract:
+        print("CAPTURE register-rotate 200 " + json.dumps(rotated_register, ensure_ascii=False, sort_keys=True))
+
+    call("/v1/operator-sessions/current", expected=204, method="DELETE",
+         session=desktop_token, role="cashier")
+    revoked, _ = call("/v1/operator-sessions/current", expected=401,
+                      session=desktop_token, role="cashier")
+    assert revoked["code"] in ("operator_session_expired", "operator_session_invalid")
+    relogin, _ = call(f"/v1/stores/{STORE}/operator-sessions",
+                      {"operatorId": EMPLOYEE, "password": PASSWORD, "deviceId": DEVICE})
+    call("/v1/operator-sessions/current", session=relogin["operatorSessionToken"], role="cashier")
+
+    call("/v1/operator-sessions/current", expected=204, method="DELETE",
+         session=owner_token, role="admin")
+    owner_reuse, _ = call("/v1/operator-sessions/current", expected=401,
+                          session=owner_token, role="admin")
+    assert owner_reuse["code"] in ("operator_session_expired", "operator_session_invalid")
+    owner_session, _ = call(f"/v1/stores/{STORE}/operator-sessions",
+                            {"operatorId": owner_id, "password": None, "deviceId": DEVICE})
+    owner_token = owner_session["operatorSessionToken"]
+    call("/v1/operator-sessions/current", session=owner_token, role="admin")
+
     updated, _ = call(f"/v1/stores/{STORE}/employees/{EMPLOYEE}/roles",
                       {"expectedVersion": employee["version"], "roles": ["cashier"],
                        "reason": "integration role change"}, method="PUT", session=owner_token, role="admin")
     expired, _ = call("/v1/operator-sessions/current", expected=401, session=employee_token, role="cashier")
     assert expired["code"] in ("operator_session_expired", "operator_session_invalid")
+    call("/v1/operator-sessions/current", expected=401,
+         session=relogin["operatorSessionToken"], role="cashier")
 
     before_reset, _ = call(f"/v1/stores/{STORE}/operator-sessions",
                            {"operatorId": EMPLOYEE, "password": PASSWORD, "deviceId": DEVICE})
@@ -179,9 +268,6 @@ def main():
                         "reason": "integration cashier assignment"}, method="PUT",
                        session=owner_token, role="admin")
     assert set(register["cashierIds"]) == {EMPLOYEE, owner_id}
-    call("/v1/shifts", {"shiftId": str(uuid.uuid4()), "openingCash": 1000},
-         session=working_token, role="cashier",
-         headers={"X-Register-Id": REGISTER, "X-Register-Key": os.environ["POS_TEST_REGISTER_KEY"]})
     changed_password = new_password + "C"
     call("/v1/operator-sessions/current/change-password",
          {"currentPassword": new_password, "newPassword": changed_password},
