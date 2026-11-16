@@ -37,8 +37,15 @@ jobs:
           patch --batch --fuzz=0 -p1 -d compiled-source < build/kassa-account-login/android.patch
           echo 'b474f28db9e848bcb90780fece8a3b1c6930786607c49e3d6819df65439904ed  build/kassa-owner-login/android.patch' | sha256sum --check
           patch --batch --fuzz=0 -p1 -d compiled-source < build/kassa-owner-login/android.patch
-          echo '6b2efaf8a526380d77e50fbb3a1c9db1478c96c644ee7ac57719427db4e2ed84  build/kassa-owner-keycloak/android.patch' | sha256sum --check
+          echo 'bb5c4b3f684dbb4ed1d11491ef2324ae61c663290f4268ef7ab3011f9b2ae844  build/kassa-owner-keycloak/android.patch' | sha256sum --check
           patch --batch --fuzz=0 -p1 -d compiled-source < build/kassa-owner-keycloak/android.patch
+
+      - name: Test Android client
+        working-directory: compiled-source/apps/mobile-flutter
+        shell: bash
+        run: |
+          flutter pub get --enforce-lockfile
+          flutter test --no-pub --reporter expanded
 
       - name: Install Android build components
         shell: bash
@@ -58,13 +65,6 @@ jobs:
           "$manager" --sdk_root="$sdk" --install 'platform-tools' 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358'
           printf 'ANDROID_HOME=%s\nANDROID_SDK_ROOT=%s\n' "$sdk" "$sdk" >> "$GITHUB_ENV"
           echo "$sdk/platform-tools" >> "$GITHUB_PATH"
-
-      - name: Test Android client
-        working-directory: compiled-source/apps/mobile-flutter
-        shell: bash
-        run: |
-          flutter pub get --enforce-lockfile
-          flutter test --no-pub --reporter expanded
 
       - name: Compile and sign the test APK
         working-directory: compiled-source/apps/mobile-flutter

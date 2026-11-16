@@ -402,7 +402,7 @@
        expect(requests, [
          '/v1/me/stores',
          '/v1/me/roles',
-@@ -264,24 +260,14 @@
+@@ -264,25 +260,13 @@
        final client = MockClient((request) async {
          expect(request.followRedirects, isFalse);
          expect(await storage.read(key: key), isNull);
@@ -427,12 +427,12 @@
 -          'token_type_hint': 'refresh_token',
 +          'refresh_token': 'rotated',
          });
+-        return http.Response('', 200);
 +        return http.Response('', 204);
-+      });
-         return http.Response('', 200);
        });
        final logout = login.signOutAndRevoke(client: client);
-@@ -293,19 +279,14 @@
+       rotation.complete(renewed('cashier', 'rotated'));
+@@ -293,19 +277,14 @@
    );
  
    test(
@@ -456,7 +456,7 @@
        });
        expect(await login.signOutAndRevoke(client: client), isFalse);
        expect(await storage.read(key: key), isNull);
-@@ -341,7 +322,7 @@
+@@ -341,7 +320,7 @@
        }),
      )..onDeviceLoginPrompt = (prompt) { displayed = prompt; };
  
@@ -465,7 +465,7 @@
      expect(displayed?.code, 'ABCD-EFGH');
      expect(displayed?.verificationUri.toString(), '$issuer/device');
      expect(waits, [5, 5, 10]);
-@@ -360,7 +341,7 @@
+@@ -360,7 +339,7 @@
          fail('Cancelled device sent a token request');
        }),
      )..onDeviceLoginPrompt = (_) { displaying.complete(); };
@@ -474,7 +474,7 @@
      await displaying.future;
      login.cancelDeviceLogin();
      await attempt;
-@@ -376,7 +357,7 @@
+@@ -376,7 +355,7 @@
          return _metadata(tokenUri: 'https://other.invalid/token');
        }),
      );
@@ -483,7 +483,7 @@
      expect(await storage.read(key: key), isNull);
    });
  
-@@ -390,38 +371,25 @@
+@@ -390,38 +369,25 @@
          return _reply({'error': 'access_denied'}, status: 400);
        }),
      );
