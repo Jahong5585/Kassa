@@ -1,0 +1,531 @@
+--- a/apps/mobile-flutter/README.md
++++ b/apps/mobile-flutter/README.md
+@@ -1,4 +1,4 @@
+-# Касса для Android 0.2.76
++# Касса для Android 0.2.77
+ 
+ Исходники Flutter для магазина с персональным входом и назначением кассы. Идентификатор пакета соответствует пилоту 0.2.5 (`uz.qrspace.kassa.mobile.multirolepilot`). Для установки обновления поверх существующего пилота потребуется его исходная подпись.
+ 
+@@ -6,9 +6,9 @@
+ 
+ В релизной сборке используется договор API из авторизованного снимка OpenAPI от 15 ноября 2026 года в `Kassa_Production_Server_Connection_Guide_0.8.1.md`. Основной адрес — `https://kassa.qr-space.uz`. Профиль сверяет метод и путь с 149 защищёнными операциями снимка. Если сервер добавит маршруты, для включения функций по ним обновите профиль. Для стенда 0.7.15 с расширениями используйте прежний профиль отладки.
+ 
+-Кнопка «Войти в аккаунт» показывает код внутри приложения. Подтвердите код в Keycloak на доверенном устройстве. Пока сохранённая сессия действительна, при повторном запуске приложение открывает рабочее место без нового кода. После входа и восстановления сессии Android получает назначения через `GET /v1/me/stores`. Если у владельца один магазин и сервер подтверждает роль администратора, Android открывает его сразу. При нескольких магазинах показывает список. Ключ кассы запрашивается после выбора кассы.
++Кнопка «Войти в аккаунт» открывает форму Keycloak в защищённой вкладке Android на том же телефоне. После проверки пароля и MFA вкладка возвращает управление приложению по адресу `uz.qrspace.kassa:/oauth2redirect`. Пока сохранённая сессия действительна, при повторном запуске приложение восстанавливает её автоматически. После входа и восстановления сессии Android получает назначения через `GET /v1/me/stores`. Если у владельца один магазин и сервер подтверждает роль администратора, Android открывает его сразу. При нескольких магазинах показывает список. Ключ кассы запрашивается после выбора кассы.
+ 
+-Для публичного клиента `kasa-flutter` в Keycloak требуется Device Authorization Grant. Сохраняются audience `kasa-api`, настройки MFA и проверки ролей. «Войти по приглашению» доступно при сборке с `KASSA_NATIVE_INVITATION=true` для назначенных ролей кассира и приёмщика.
++Для публичного клиента `kasa-flutter` в Keycloak используется Authorization Code + PKCE S256. Сохраняются audience `kasa-api`, настройки MFA и проверки ролей. «Войти по приглашению» доступно при сборке с `KASSA_NATIVE_INVITATION=true` для назначенных ролей кассира и приёмщика.
+ 
+ При ответе об отсутствии `GET /v1/me/stores` в рабочем API пользователь, вошедший через Keycloak, может открыть назначенный магазин по UUID. Сервер проверяет назначения магазина и кассы.
+ 
+@@ -27,7 +27,7 @@
+ 
+ ## Единый Kassa API
+ 
+-Бизнес-запросы проходят через HTTPS и маршруты `/v1`. Рабочий адрес — `https://kassa.qr-space.uz`. Сборка вне debug принимает только этот адрес. Вход в аккаунт использует публичный OIDC-клиент `kasa-flutter` с Device Authorization Grant. Токен доступа остаётся в памяти. Токен обновления и идентификатор аккаунта сохраняются в защищённом хранилище отдельно для каждого OIDC-сервера и клиента. После перезапуска приложение запрашивает новый токен и предлагает снова выбрать рабочее место. При временном сбое можно повторить восстановление. При явном выходе приложение стирает сохранённую сессию и отправляет запрос на отзыв токена обновления, если OIDC discovery указывает допустимый адрес отзыва. Ключ кассы хранится в защищённом хранилище и отправляется в кассовых запросах.
++Бизнес-запросы проходят через HTTPS и маршруты `/v1`. Рабочий адрес — `https://kassa.qr-space.uz`. Сборка вне debug принимает только этот адрес. Вход в аккаунт использует публичный OIDC-клиент `kasa-flutter` с Authorization Code и PKCE S256. Токен доступа остаётся в памяти. Токен обновления и идентификатор аккаунта сохраняются в защищённом хранилище отдельно для каждого OIDC-сервера и клиента. После перезапуска приложение запрашивает новый токен и предлагает снова выбрать рабочее место. При временном сбое можно повторить восстановление. При явном выходе приложение стирает сохранённую сессию и завершает сессию Keycloak через POST logout с токеном обновления. Ключ кассы хранится в защищённом хранилище и отправляется в кассовых запросах.
+ 
+ Список ролей берётся из `GET /v1/me/roles?storeId={storeId}`. При повторном ответе 401 после обновления токена сессия закрывается. Запрос с 403 остаётся отклонённым в исходной роли. Черновики, корзины, ключи и ожидающие операции разделены по серверу, аккаунту, магазину, роли и, для кассира, кассе.
+ 
+--- a/apps/mobile-flutter/lib/device_login_view.dart
++++ /dev/null
+@@ -1,72 +0,0 @@
+-part of 'main.dart';
+-
+-Future<void> _signInInsideApp(
+-  BuildContext context,
+-  Login login, {
+-  NavigatorState? navigator,
+-  bool approval = false,
+-}) async {
+-  final target = navigator ?? Navigator.of(context, rootNavigator: true);
+-  DialogRoute<void>? route;
+-  final previous = login.onDeviceLoginPrompt;
+-  login.onDeviceLoginPrompt = (prompt) {
+-    if (!context.mounted || !target.mounted) {
+-      login.cancelDeviceLogin();
+-      return;
+-    }
+-    final shown = DialogRoute<void>(
+-      context: context,
+-      barrierDismissible: false,
+-      builder: (context) => AlertDialog(
+-        title: approval
+-            ? const _UiText('Подтверждение администратора', 'Administrator tasdig‘i')
+-            : const _UiText('Вход по коду', 'Kod orqali kirish'),
+-        content: SingleChildScrollView(
+-          child: Column(
+-            crossAxisAlignment: CrossAxisAlignment.start,
+-            mainAxisSize: MainAxisSize.min,
+-            children: [
+-              const _UiText(
+-                'Откройте адрес ниже на другом устройстве и введите код.',
+-                'Quyidagi manzilni boshqa qurilmada oching va kodni kiriting.',
+-              ),
+-              const SizedBox(height: 12),
+-              SelectableText(prompt.verificationUri.toString()),
+-              const SizedBox(height: 12),
+-              SelectableText(
+-                prompt.code,
+-                style: Theme.of(context).textTheme.headlineMedium,
+-              ),
+-              const SizedBox(height: 16),
+-              const LinearProgressIndicator(),
+-              const SizedBox(height: 8),
+-              const _UiText('Ждём подтверждения', 'Tasdiq kutilmoqda'),
+-            ],
+-          ),
+-        ),
+-        actions: [
+-          TextButton(
+-            onPressed: login.cancelDeviceLogin,
+-            child: const _UiText('Отмена', 'Bekor qilish'),
+-          ),
+-        ],
+-      ),
+-    );
+-    route = shown;
+-    unawaited(target.push(shown).then((_) {
+-      if (identical(route, shown)) login.cancelDeviceLogin();
+-    }));
+-  };
+-  try {
+-    if (approval) {
+-      await login.signInForApproval();
+-    } else {
+-      await login.signIn();
+-    }
+-  } finally {
+-    login.onDeviceLoginPrompt = previous;
+-    final shown = route;
+-    route = null;
+-    if (shown?.isActive == true && target.mounted) target.removeRoute(shown!);
+-  }
+-}
+--- a/apps/mobile-flutter/lib/language.dart
++++ b/apps/mobile-flutter/lib/language.dart
+@@ -81,6 +81,8 @@
+     'manual_discount_quote_unavailable' => 'Server qo‘lda chegirma hisoblashni hozircha qo‘llamaydi.',
+     'operating_expenses_unavailable' => 'Server do‘kon xarajatlarini hozircha qo‘llamaydi.',
+     'product_proposal_unavailable' => 'Server kartochkalarni tasdiqlash uchun hozircha qabul qilmaydi.',
++    'account_login_failed' => 'Hisobga kirish yakunlanmadi. Ulanishni tekshirib, qayta urinib ko‘ring.',
++    'account_login_unavailable' => 'Server Android orqali hisobga kirishga ruxsat bermadi. Administratorga murojaat qiling.',
+     'device_login_unavailable' => 'Serverda kod orqali kirish hozircha yoqilmagan.',
+     'device_login_denied' => 'Kirish rad etildi. Yangi kod so‘rang.',
+     'device_login_expired' => 'Kod muddati tugadi. Yangi kod so‘rang.',
+--- a/apps/mobile-flutter/lib/main.dart
++++ b/apps/mobile-flutter/lib/main.dart
+@@ -14,7 +14,6 @@
+ part 'receipts.dart';
+ part 'receipt_quantity_calculator.dart';
+ part 'language.dart';
+-part 'device_login_view.dart';
+ part 'mobile_invitation_view.dart';
+ part 'receipt_print.dart';
+ part 'sales_history.dart';
+@@ -227,7 +226,7 @@
+     _session.demo = false;
+     _session.api.origin;
+     if (!mounted) return;
+-    await _signInInsideApp(navigator.currentContext!, _session.login, navigator: navigator.currentState);
++    await _session.login.signIn();
+     await _enterAccount();
+   });
+ 
+@@ -1428,7 +1427,7 @@
+       }
+       approvalAdmin = Login(pos.storage);
+       try {
+-        await _signInInsideApp(context, approvalAdmin, approval: true);
++        await approvalAdmin.signInForApproval();
+       } on DeviceLoginCancelled {
+         return;
+       }
+--- a/apps/mobile-flutter/lib/pos.dart
++++ b/apps/mobile-flutter/lib/pos.dart
+@@ -182,6 +182,10 @@
+         'Сервер не смог выполнить вход по приглашению. Повторите попытку.',
+       'mobile_login_denied' =>
+         'Сервер отклонил вход по приглашению. Обратитесь к администратору.',
++      'account_login_failed' =>
++        'Не удалось завершить вход в аккаунт. Проверьте связь и повторите попытку.',
++      'account_login_unavailable' =>
++        'Сервер не разрешил вход в аккаунт из Android. Обратитесь к администратору.',
+       'device_login_unavailable' => 'Сервер пока не разрешает вход по коду.',
+       'device_login_denied' => 'Вход отклонён. Запросите новый код.',
+       'device_login_expired' => 'Код истёк. Запросите новый код.',
+@@ -505,16 +509,41 @@
+ 
+   Future<void> signIn() => _signIn(persist: true);
+ 
++  Future<void> signInByDeviceCode() => _signIn(persist: true, deviceCode: true);
++
+   Future<void> signInForApproval() => _signIn(persist: false);
+ 
+-  Future<void> _signIn({required bool persist}) async {
++  Future<TokenResponse> _accountTokens() async {
++    try {
++      return await _appAuth.authorizeAndExchangeCode(
++        AuthorizationTokenRequest(
++          clientId,
++          redirectUri,
++          discoveryUrl: _discovery,
++          scopes: const ['openid', 'profile', 'email'],
++          promptValues: const ['login'],
++          additionalParameters: _productionApiEnabled ? const {'acr_values': '1'} : null,
++        ),
++      );
++    } on FlutterAppAuthUserCancelledException {
++      throw const DeviceLoginCancelled();
++    } on FlutterAppAuthPlatformException catch (failure) {
++      final error = failure.platformErrorDetails.error;
++      if (error == 'unauthorized_client' || error == 'unsupported_response_type') {
++        throw ApiFailure(403, 'account_login_unavailable');
++      }
++      throw ApiFailure(0, 'account_login_failed');
++    }
++  }
++
++  Future<void> _signIn({required bool persist, bool deviceCode = false}) async {
+     if (_deviceCancellation != null) {
+       throw ApiFailure(409, 'device_login_in_progress');
+     }
+     final cancellation = Completer<void>();
+     _deviceCancellation = cancellation;
+     final generation = _generation;
+-    final transport = _deviceLoginClient ?? http.Client();
++    final transport = deviceCode ? _deviceLoginClient ?? http.Client() : null;
+ 
+     void checkCancelled() {
+       if (cancellation.isCompleted || generation != _generation) {
+@@ -523,7 +552,9 @@
+     }
+ 
+     try {
+-      final tokens = await _deviceTokens(transport, cancellation.future, checkCancelled);
++      final tokens = transport == null
++          ? await _accountTokens()
++          : await _deviceTokens(transport, cancellation.future, checkCancelled);
+       checkCancelled();
+       final access = tokens.accessToken;
+       final identity = tokens.idToken;
+@@ -554,7 +585,7 @@
+       _expiresAt = tokens.accessTokenExpirationDateTime;
+     } finally {
+       if (identical(_deviceCancellation, cancellation)) _deviceCancellation = null;
+-      if (_deviceLoginClient == null) transport.close();
++      if (_deviceLoginClient == null) transport?.close();
+     }
+   }
+ 
+@@ -748,27 +779,13 @@
+     }
+     final transport = client ?? http.Client();
+     try {
+-      final metadata = await _oidcRequest(transport, 'GET', Uri.parse(_discovery));
+-      if (metadata.statusCode != 200) return false;
+-      final discovery = jsonDecode(metadata.body);
+-      if (discovery is! Json || discovery['issuer'] != _issuer) return false;
+-      final advertised = discovery['revocation_endpoint'];
+-      final endpoint = advertised is String ? Uri.tryParse(advertised) : null;
+-      if (endpoint == null ||
+-          endpoint.scheme != 'https' ||
+-          !endpoint.hasAuthority ||
+-          endpoint.origin != Uri.parse(_issuer).origin ||
+-          endpoint.userInfo.isNotEmpty ||
+-          endpoint.hasFragment) {
+-        return false;
+-      }
+       final response = await _oidcRequest(
+         transport,
+         'POST',
+-        endpoint,
+-        form: {'client_id': clientId, 'token': tokenToRevoke, 'token_type_hint': 'refresh_token'},
++        Uri.parse('$_issuer/protocol/openid-connect/logout'),
++        form: {'client_id': clientId, 'refresh_token': tokenToRevoke},
+       );
+-      return response.statusCode == 200;
++      return response.statusCode == 204;
+     } on Exception {
+       return false;
+     } finally {
+--- a/apps/mobile-flutter/lib/sales_history.dart
++++ b/apps/mobile-flutter/lib/sales_history.dart
+@@ -173,7 +173,7 @@
+     final administrator = separateLogin ? Login(pos.storage) : pos.login;
+     try {
+       if (separateLogin) {
+-        await _signInInsideApp(context, administrator, approval: true);
++        await administrator.signInForApproval();
+       }
+       final options = await pos.refundOptions(
+         draft.sourceRegisterId,
+--- a/apps/mobile-flutter/pubspec.yaml
++++ b/apps/mobile-flutter/pubspec.yaml
+@@ -1,7 +1,7 @@
+ name: kassa_mobile
+ description: Android POS pilot for Kassa.
+ publish_to: none
+-version: 0.2.76+2096
++version: 0.2.77+2097
+ environment:
+   sdk: ">=3.10.0 <4.0.0"
+ dependencies:
+--- a/apps/mobile-flutter/test/session_test.dart
++++ b/apps/mobile-flutter/test/session_test.dart
+@@ -18,12 +18,17 @@
+ 
+ class _Auth extends FlutterAppAuth {
+   String subject = 'cashier';
++  Future<AuthorizationTokenResponse> Function(AuthorizationTokenRequest)? authorizeAccount;
+   final refreshes = <String?>[];
+   Future<TokenResponse> Function(String?)? exchange;
+   @override
+   Future<AuthorizationTokenResponse> authorizeAndExchangeCode(
+     AuthorizationTokenRequest request,
+-  ) async => fail('The Android app must not open a browser');
++  ) async {
++    final authorize = authorizeAccount;
++    if (authorize != null) return authorize(request);
++    return _accountTokens(subject);
++  }
+ 
+   @override
+   Future<TokenResponse> token(TokenRequest request) {
+@@ -65,23 +70,13 @@
+   'expires_in': 300,
+ });
+ 
+-Login _login(FlutterSecureStorage storage, _Auth auth) => Login(
+-  storage,
+-  appAuth: auth,
+-  deviceWait: (_) async {},
+-  deviceLoginClient: MockClient((request) async {
+-    switch (request.url.toString()) {
+-      case _discovery:
+-        return _metadata();
+-      case _device:
+-        return _challenge();
+-      case _token:
+-        return _tokens(auth.subject);
+-      default:
+-        fail('Unexpected URL ${request.url}');
+-    }
+-  }),
+-);
++AuthorizationTokenResponse _accountTokens(String sub) =>
++    AuthorizationTokenResponse(
++      jwt(sub), '$sub-refresh', null, jwt(sub), 'Bearer', null, null, null,
++    );
++
++Login _login(FlutterSecureStorage storage, _Auth auth) =>
++    Login(storage, appAuth: auth);
+ 
+ void main() {
+   TestWidgetsFlutterBinding.ensureInitialized();
+@@ -95,10 +90,11 @@
+   });
+ 
+   for (final restored in [false, true]) {
+-    testWidgets('owner reaches their only store without a browser (restored=$restored)', (tester) async {
++    testWidgets('owner reaches their only store after account login (restored=$restored)', (tester) async {
+       const storeId = '30000000-0000-4000-8000-000000000001';
+       const organizationId = '30000000-0000-4000-8000-000000000002';
+-      final approved = Completer<void>();
++      final approved = Completer<AuthorizationTokenResponse>();
++      var authorizationRequests = 0;
+       final requests = <String>[];
+       if (restored) {
+         FlutterSecureStorage.setMockInitialValues({
+@@ -106,25 +102,21 @@
+         });
+         auth.exchange = (_) async => renewed('owner', 'owner-refresh');
+       }
++      auth.authorizeAccount = (request) {
++        authorizationRequests++;
++        expect(restored, isFalse);
++        expect(request.clientId, clientId);
++        expect(request.redirectUrl, 'uz.qrspace.kassa:/oauth2redirect');
++        expect(request.discoveryUrl, _discovery);
++        expect(request.scopes, ['openid', 'profile', 'email']);
++        return approved.future;
++      };
+       final login = Login(
+         storage,
+         appAuth: auth,
+         useNativeInvitation: true,
+         invitationClient: MockClient((_) async => fail('Unexpected invitation request')),
+-        deviceWait: (_) => approved.future,
+-        deviceLoginClient: MockClient((request) async {
+-          if (restored) fail('A saved session should restore without asking for another code');
+-          switch (request.url.toString()) {
+-            case _discovery:
+-              return _metadata();
+-            case _device:
+-              return _challenge();
+-            case _token:
+-              return _tokens('owner');
+-            default:
+-              fail('Unexpected URL ${request.url}');
+-          }
+-        }),
++        deviceLoginClient: MockClient((_) async => fail('Unexpected device-code request')),
+       );
+       final pos = Pos(
+         storage,
+@@ -143,7 +135,10 @@
+               'storeName': 'Магазин владельца',
+               'timeZone': 'Asia/Tashkent',
+               'isOwner': true,
+-            }]});
++              'active': true,
++              'utcOffsetMinutes': 300,
++              'registers': [],
++            }], 'nextOffset': null});
+           }
+           if (path == '/v1/me/roles') {
+             expect(request.url.queryParameters['storeId'], storeId);
+@@ -163,12 +158,13 @@
+         await tester.pumpAndSettle();
+         await tester.tap(find.text('Войти в аккаунт'));
+         await tester.pump();
+-        await tester.pump(const Duration(milliseconds: 500));
+-        expect(find.text('ABCD-EFGH'), findsOneWidget);
++        expect(authorizationRequests, 1);
+         expect(requests, isEmpty);
+-        approved.complete();
++        expect(find.byType(TextField), findsNothing);
++        approved.complete(_accountTokens('owner'));
+       }
+       await tester.pumpAndSettle();
++      expect(authorizationRequests, restored ? 0 : 1);
+       expect(requests, [
+         '/v1/me/stores',
+         '/v1/me/roles',
+@@ -264,24 +260,14 @@
+       final client = MockClient((request) async {
+         expect(request.followRedirects, isFalse);
+         expect(await storage.read(key: key), isNull);
+-        if (request.method == 'GET') {
+-          return http.Response(
+-            jsonEncode({
+-              'issuer': issuer,
+-              'revocation_endpoint': '$issuer/protocol/openid-connect/revoke',
+-            }),
+-            200,
+-          );
+-        }
+-        expect(
+-          request.url.toString(),
+-          '$issuer/protocol/openid-connect/revoke',
+-        );
++        expect(request.method, 'POST');
++        expect(request.url.toString(), '$issuer/protocol/openid-connect/logout');
+         expect(request.bodyFields, {
+           'client_id': clientId,
+-          'token': 'rotated',
+-          'token_type_hint': 'refresh_token',
++          'refresh_token': 'rotated',
+         });
++        return http.Response('', 204);
++      });
+         return http.Response('', 200);
+       });
+       final logout = login.signOutAndRevoke(client: client);
+@@ -293,19 +279,14 @@
+   );
+ 
+   test(
+-    'untrusted revocation endpoint gets no token and local logout succeeds',
++    'logout does not follow a redirect and clears the local session',
+     () async {
+       final login = _login(storage, auth);
+       await login.signIn();
+       final client = MockClient((request) async {
+-        expect(request.method, 'GET');
+-        return http.Response(
+-          jsonEncode({
+-            'issuer': issuer,
+-            'revocation_endpoint': 'https://other.invalid/revoke',
+-          }),
+-          200,
+-        );
++        expect(request.method, 'POST');
++        expect(request.followRedirects, isFalse);
++        return http.Response('', 307, headers: {'location': 'https://other.invalid'});
+       });
+       expect(await login.signOutAndRevoke(client: client), isFalse);
+       expect(await storage.read(key: key), isNull);
+@@ -341,7 +322,7 @@
+       }),
+     )..onDeviceLoginPrompt = (prompt) { displayed = prompt; };
+ 
+-    await login.signIn();
++    await login.signInByDeviceCode();
+     expect(displayed?.code, 'ABCD-EFGH');
+     expect(displayed?.verificationUri.toString(), '$issuer/device');
+     expect(waits, [5, 5, 10]);
+@@ -360,7 +341,7 @@
+         fail('Cancelled device sent a token request');
+       }),
+     )..onDeviceLoginPrompt = (_) { displaying.complete(); };
+-    final attempt = expectLater(login.signIn(), throwsA(isA<DeviceLoginCancelled>()));
++    final attempt = expectLater(login.signInByDeviceCode(), throwsA(isA<DeviceLoginCancelled>()));
+     await displaying.future;
+     login.cancelDeviceLogin();
+     await attempt;
+@@ -376,7 +357,7 @@
+         return _metadata(tokenUri: 'https://other.invalid/token');
+       }),
+     );
+-    await expectLater(login.signIn(), throwsA(isA<ApiFailure>()));
++    await expectLater(login.signInByDeviceCode(), throwsA(isA<ApiFailure>()));
+     expect(await storage.read(key: key), isNull);
+   });
+ 
+@@ -390,38 +371,25 @@
+         return _reply({'error': 'access_denied'}, status: 400);
+       }),
+     );
+-    await expectLater(login.signIn(), throwsA(isA<ApiFailure>().having(
++    await expectLater(login.signInByDeviceCode(), throwsA(isA<ApiFailure>().having(
+       (failure) => failure.code, 'code', 'device_login_denied',
+     )));
+     expect(await storage.read(key: key), isNull);
+   });
+ 
+-  testWidgets('login code stays inside the application and can be cancelled', (tester) async {
+-    final pause = Completer<void>();
+-    final login = Login(
+-      storage,
+-      deviceWait: (_) => pause.future,
+-      deviceLoginClient: MockClient((request) async {
+-        if (request.url.toString() == _discovery) return _metadata();
+-        if (request.url.toString() == _device) return _challenge();
+-        fail('The token endpoint was reached unexpectedly');
+-      }),
+-    );
++  testWidgets('cancelling Keycloak login returns to the sign-in screen', (tester) async {
++    final authorization = Completer<AuthorizationTokenResponse>();
++    auth.authorizeAccount = (_) => authorization.future;
++    final login = _login(storage, auth);
+     final pos = Pos(storage, login: login, productionContract: true);
+     await tester.pumpWidget(KassaApp(pos: pos));
+     await tester.pumpAndSettle();
+     await tester.tap(find.text('Войти в аккаунт'));
+     await tester.pump();
+-    await tester.pump(const Duration(milliseconds: 500));
+-    expect(find.text('Вход по коду'), findsOneWidget);
+-    expect(find.text('ABCD-EFGH'), findsOneWidget);
+-    expect(find.text('opaque-device-secret'), findsNothing);
+ 
+-    await tester.tap(find.text('Отмена'));
++    authorization.completeError(const DeviceLoginCancelled());
+     await tester.pumpAndSettle();
+-    expect(find.text('Вход по коду'), findsNothing);
+     expect(find.text('Войти в аккаунт'), findsOneWidget);
+-    pause.complete();
++    expect(await storage.read(key: key), isNull);
+   });
+-
+ }
