@@ -1,0 +1,1405 @@
+--- a/apps/mobile-flutter/README.md
++++ b/apps/mobile-flutter/README.md
+@@ -1,4 +1,4 @@
+-# Касса для Android 0.2.72
++# Касса для Android 0.2.75
+ 
+ Исходники Flutter для магазина с персональным входом и назначением кассы. Идентификатор пакета соответствует пилоту 0.2.5 (`uz.qrspace.kassa.mobile.multirolepilot`). Для установки обновления поверх существующего пилота потребуется его исходная подпись.
+ 
+@@ -6,11 +6,11 @@
+ 
+ В релизной сборке используется договор API из авторизованного снимка OpenAPI от 15 ноября 2026 года в `Kassa_Production_Server_Connection_Guide_0.8.1.md`. Основной адрес — `https://kassa.qr-space.uz`. Профиль сверяет метод и путь с 149 защищёнными операциями снимка. Если сервер добавит маршруты, для включения функций по ним обновите профиль. Для стенда 0.7.15 с расширениями используйте прежний профиль отладки.
+ 
+-После входа откройте «Тестовые магазины». Список читается через `GET /v1/platform/test-stores` с токеном текущего пользователя. Сервер выдаёт список с платформенными правами. «Открыть магазин по UUID» подходит для обычного назначения. Перед входом Android проверяет роль через `GET /v1/me/roles?storeId=…`. Кассир вводит UUID назначенной кассы и её ключ. Запрос `GET /v1/shifts/active` проверяет кассу и читает активную смену. Магазины из отдельной локальной базы ПК появятся в Android, когда будут заведены на том же сервере, к которому подключается телефон.
+-
+-Android 0.2.72 показывает одноразовый код внутри приложения. Откройте указанный адрес Keycloak на другом устройстве, подтвердите код своим аккаунтом и подождите, пока Android автоматически откроет выбор магазина. Для подтверждения исключения администратором используется тот же экран, с отдельной сессией.
+-
+-В Keycloak для публичного клиента `kasa-flutter` требуется включить `OAuth 2.0 Device Authorization Grant` в разделе `Capability config`. Для профиля рабочей среды сохраняются audience `kasa-api`, MFA и политика ролей сервера. Адрес подтверждения определяется по OIDC discovery; Android принимает адреса только в настроенном HTTPS realm. Приложение отправляет `acr_values=1` при запуске входа в рабочем профиле. Возврат токенов в Android по этому потоку происходит через token endpoint. Сохранённые сессии обновляются через прежний refresh flow. Порядок входа Windows-клиента описан в отдельном руководстве.
++Основная кнопка «Войти в аккаунт» открывает Keycloak в системном браузере телефона. После входа Android запрашивает назначенные магазины и кассы через `GET /v1/me/stores`. Роли проверяются через `GET /v1/me/roles?storeId=…`. Ключ кассы запрашивается после выбора кассы, если устройство ещё не подключено.
++
++Для клиента `kasa-flutter` в Keycloak требуется стандартный поток Authorization Code с PKCE S256, публичный тип клиента и точный redirect URI `uz.qrspace.kassa:/oauth2redirect`. Сохраняются audience `kasa-api`, настройки MFA и проверки ролей. «Войти по приглашению» доступно при сборке с `KASSA_NATIVE_INVITATION=true`. Кнопка «Войти через другое устройство» и подтверждение администратора используют отдельно настроенный Device Authorization Grant.
++
++При ответе об отсутствии `GET /v1/me/stores` в рабочем API пользователь, вошедший через Keycloak, может открыть назначенный магазин по UUID. Сервер проверяет назначения магазина и кассы.
+ 
+ Для 0.8.1 приложения со старыми расширениями используют только маршруты снимка. Обычное закрытие смены принимает итоговую сумму. Передача наличных, закрытие по номиналам, фильтр сроков по категории, ручная скидка и привязка покупателя доступны в профиле расширенного стенда. Совпадение путей в снимке подтверждает наличие операций, а состав ответов живого API требует проверки после входа.
+ 
+@@ -27,7 +27,7 @@
+ 
+ ## Единый Kassa API
+ 
+-Бизнес-запросы проходят через HTTPS и маршруты `/v1`. Рабочий адрес — `https://kassa.qr-space.uz`. Сборка вне debug принимает только этот адрес. Вход использует публичный OIDC-клиент `kasa-flutter` с Device Authorization Grant. Токен доступа остаётся в памяти. Токен обновления и идентификатор аккаунта сохраняются в защищённом хранилище отдельно для каждого OIDC-сервера и клиента. После перезапуска приложение запрашивает новый токен и предлагает снова выбрать рабочее место. При временном сбое можно повторить восстановление. При явном выходе приложение стирает сохранённую сессию и отправляет запрос на отзыв токена обновления, если OIDC discovery указывает допустимый адрес отзыва. Ключ кассы хранится в защищённом хранилище и отправляется в кассовых запросах.
++Бизнес-запросы проходят через HTTPS и маршруты `/v1`. Рабочий адрес — `https://kassa.qr-space.uz`. Сборка вне debug принимает только этот адрес. Вход в аккаунт использует публичный OIDC-клиент `kasa-flutter` с Authorization Code и PKCE. Токен доступа остаётся в памяти. Токен обновления и идентификатор аккаунта сохраняются в защищённом хранилище отдельно для каждого OIDC-сервера и клиента. После перезапуска приложение запрашивает новый токен и предлагает снова выбрать рабочее место. При временном сбое можно повторить восстановление. При явном выходе приложение стирает сохранённую сессию и отправляет запрос на отзыв токена обновления, если OIDC discovery указывает допустимый адрес отзыва. Ключ кассы хранится в защищённом хранилище и отправляется в кассовых запросах.
+ 
+ Список ролей берётся из `GET /v1/me/roles?storeId={storeId}`. При повторном ответе 401 после обновления токена сессия закрывается. Запрос с 403 остаётся отклонённым в исходной роли. Черновики, корзины, ключи и ожидающие операции разделены по серверу, аккаунту, магазину, роли и, для кассира, кассе.
+ 
+--- a/apps/mobile-flutter/android/app/src/main/AndroidManifest.xml
++++ b/apps/mobile-flutter/android/app/src/main/AndroidManifest.xml
+@@ -12,7 +12,6 @@
+             android:name=".MainActivity"
+             android:exported="true"
+             android:launchMode="singleTop"
+-            android:taskAffinity=""
+             android:theme="@style/LaunchTheme"
+             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+             android:hardwareAccelerated="true"
+--- a/apps/mobile-flutter/lib/checkout_controls.dart
++++ b/apps/mobile-flutter/lib/checkout_controls.dart
+@@ -80,7 +80,7 @@
+         confirmed = false;
+       });
+     } on ApiFailure catch (failure) {
+-      if (mounted) setState(() => error = failure.toString());
++      if (mounted) setState(() => error = _apiMessage(context, failure));
+     } on Exception {
+       if (mounted) setState(() => error = 'Не удалось рассчитать скидку.');
+     } finally {
+--- a/apps/mobile-flutter/lib/device_login_view.dart
++++ b/apps/mobile-flutter/lib/device_login_view.dart
+@@ -61,7 +61,7 @@
+     if (approval) {
+       await login.signInForApproval();
+     } else {
+-      await login.signIn();
++      await login.signInByDeviceCode();
+     }
+   } finally {
+     login.onDeviceLoginPrompt = previous;
+--- a/apps/mobile-flutter/lib/expenses.dart
++++ b/apps/mobile-flutter/lib/expenses.dart
+@@ -137,7 +137,7 @@
+ 
+   @override
+   Widget build(BuildContext context) {
+-    final writeDisabled = busy || _pending != null;
++    final writeDisabled = busy || !_loaded || _pending != null;
+     return Scaffold(
+       appBar: AppBar(
+         title: const _UiText('Расходы магазина', 'Do‘kon xarajatlari'),
+--- a/apps/mobile-flutter/lib/expenses_api.dart
++++ b/apps/mobile-flutter/lib/expenses_api.dart
+@@ -26,6 +26,22 @@
+   String get _path => '${_api.store}/finance/expenses';
+   String get _journal => _api.localKey(Desk.admin, 'operating-expenses');
+ 
++  Future<dynamic> _request(
++    String method,
++    String path, {
++    Map<String, String>? query,
++    Json? body,
++  }) async {
++    try {
++      return await _api.request(method, path, desk: Desk.admin, query: query, body: body);
++    } on ApiFailure catch (failure) {
++      if (failure._routeUnavailable) {
++        throw ApiFailure(failure.status, 'operating_expenses_unavailable');
++      }
++      rethrow;
++    }
++  }
++
+   Future<({List<Json> items, int? nextOffset})> list({
+     required String from,
+     required String to,
+@@ -33,10 +49,9 @@
+     String? category,
+     int offset = 0,
+   }) async {
+-    final response = await _api.request(
++    final response = await _request(
+       'GET',
+       _path,
+-      desk: Desk.admin,
+       query: {
+         'from': from,
+         'to': to,
+@@ -118,10 +133,9 @@
+     final body = request['body'] as Json;
+     final operationId = body['operationId'];
+     try {
+-      final response = await _api.request(
++      final response = await _request(
+         'POST',
+         target == null ? _path : '$_path/$target/reverse',
+-        desk: Desk.admin,
+         body: body,
+       );
+       if (response is! Json ||
+--- a/apps/mobile-flutter/lib/language.dart
++++ b/apps/mobile-flutter/lib/language.dart
+@@ -51,6 +51,7 @@
+     'staff_access_denied' => 'Bu bo‘lim uchun ruxsat yo‘q.',
+     'register_access_denied' => 'Kassaga ruxsat yo‘q. Hisob va kalitni tekshiring.',
+     'register_key_required' => 'Kassa kalitini kiriting.',
++    'shift_route_unavailable' => 'Server smenani tekshira olmadi. Administratorga murojaat qiling.',
+     'store_not_found' => 'Do‘kon topilmadi yoki unga ruxsat yo‘q.',
+     'invalid_customer_consent' => 'Kanal, maqsad va xaridor qarorini tanlang.',
+     'customer_consent_operation_reused' => 'Bu amal raqami boshqa qayd bilan bog‘langan.',
+@@ -75,6 +76,13 @@
+     'mobile_code_format' => 'Taklif kodining 24 ta belgisini kiriting.',
+     'mobile_code_invalid' => 'Kod noto‘g‘ri, eskirgan yoki ishlatilgan. Yangi taklif so‘rang.',
+     'mobile_login_unavailable' => 'Serverda taklif orqali kirish hozircha ishlamayapti.',
++    'mobile_login_server_error' => 'Server taklif orqali kirishni yakunlay olmadi. Qayta urinib ko‘ring.',
++    'mobile_login_denied' => 'Server taklif orqali kirishni rad etdi. Administratorga murojaat qiling.',
++    'account_login_failed' => 'Hisobga kirish yakunlanmadi. Ulanishni tekshirib, qayta urinib ko‘ring.',
++    'account_login_unavailable' => 'Server Android orqali hisobga kirishga ruxsat bermadi. Administratorga murojaat qiling.',
++    'manual_discount_quote_unavailable' => 'Server qo‘lda chegirma hisoblashni hozircha qo‘llamaydi.',
++    'operating_expenses_unavailable' => 'Server do‘kon xarajatlarini hozircha qo‘llamaydi.',
++    'product_proposal_unavailable' => 'Server kartochkalarni tasdiqlash uchun hozircha qabul qilmaydi.',
+     'device_login_unavailable' => 'Serverda kod orqali kirish hozircha yoqilmagan.',
+     'device_login_denied' => 'Kirish rad etildi. Yangi kod so‘rang.',
+     'device_login_expired' => 'Kod muddati tugadi. Yangi kod so‘rang.',
+--- a/apps/mobile-flutter/lib/main.dart
++++ b/apps/mobile-flutter/lib/main.dart
+@@ -226,13 +226,25 @@
+   Future<void> signIn() => run(() async {
+     _session.demo = false;
+     _session.api.origin;
++    await _session.login.signIn();
++    await _enterAccount(openPicker: true);
++  });
++
++  Future<void> signInByDeviceCode() => run(() async {
++    _session.demo = false;
++    _session.api.origin;
+     if (!mounted) return;
+-    if (_session.login.useNativeInvitation) {
+-      if (!await _showMobileInvitation(navigator.currentContext!, _session.login)) return;
+-    } else {
+-      await _signInInsideApp(navigator.currentContext!, _session.login, navigator: navigator.currentState);
+-    }
++    await _signInInsideApp(navigator.currentContext!, _session.login, navigator: navigator.currentState);
+     await _enterAccount(openPicker: true);
++  });
++
++  Future<void> signInWithInvitation() => run(() async {
++    _session.demo = false;
++    _session.api.origin;
++    if (!mounted) return;
++    if (await _showMobileInvitation(navigator.currentContext!, _session.login)) {
++      await _enterAccount(openPicker: true);
++    }
+   });
+ 
+   Future<void> _enterAccount({required bool openPicker}) async {
+@@ -480,7 +492,16 @@
+         FilledButton.icon(
+           onPressed: busy ? null : signIn,
+           icon: const Icon(Icons.login),
+-          label: const _UiText('Войти', 'Kirish'),
++          label: const _UiText('Войти в аккаунт', 'Hisobga kirish'),
++        ),
++        if (_session.login.useNativeInvitation)
++          TextButton(
++            onPressed: busy ? null : signInWithInvitation,
++            child: const _UiText('Войти по приглашению', 'Taklif orqali kirish'),
++          ),
++        TextButton(
++          onPressed: busy ? null : signInByDeviceCode,
++          child: const _UiText('Войти через другое устройство', 'Boshqa qurilma orqali kirish'),
+         ),
+         const SizedBox(height: 12),
+         for (final role in demoDesks)
+@@ -1364,7 +1385,7 @@
+               amount: line.estimated,
+             ),
+         ],
+-        quoteDiscount: pos.demo || pos.api.productionContract
++        quoteDiscount: pos.demo
+             ? null
+             : (discount) =>
+                   pos.checkoutQuote(shiftId, lines, discount: discount),
+@@ -1886,9 +1907,20 @@
+       status = 'Товар уже есть в каталоге магазина.';
+       return;
+     } on ApiFailure catch (failure) {
+-      if (failure.status != 404) rethrow;
+-    }
+-    final suggestion = await pos.sharedProduct(code);
++      if (failure.status != 404 || failure.code != 'product_not_found') rethrow;
++    }
++    final Json? suggestion;
++    try {
++      suggestion = await pos.sharedProduct(code);
++    } on ApiFailure catch (failure) {
++      if (failure.code != 'shared_product_lookup_unavailable') rethrow;
++      if (mounted) {
++        status = _tr(context,
++          'Общий каталог недоступен. Заполните карточку вручную.',
++          'Umumiy katalog ishlamayapti. Kartochkani qo‘lda to‘ldiring.');
++      }
++      return;
++    }
+     if (!mounted) return;
+     if (suggestion == null) {
+       status = 'Подсказки нет. Заполните карточку товара.';
+@@ -1901,7 +1933,9 @@
+     category.text = suggestion['category'] as String? ?? '';
+     brand.text = suggestion['brand'] as String? ?? '';
+     shelfLife.text = suggestion['shelfLifeDays']?.toString() ?? '';
+-    status = 'Найдена карточка по штрихкоду. Проверьте данные и сохраните.';
++    status = _tr(context,
++      'Карточка найдена. Проверьте данные перед отправкой на утверждение.',
++      'Kartochka topildi. Tasdiqlashga yuborishdan oldin ma’lumotlarni tekshiring.');
+   });
+ 
+   Future<void> _retryProduct() => task(() async {
+@@ -1911,10 +1945,10 @@
+     } finally {
+       await _readPending();
+     }
+-    if (saved != null && mounted) _saved();
+-  });
+-
+-  void _saved() {
++    if (saved != null && mounted) _saved(saved['status'] as String);
++  });
++
++  void _saved(String result) {
+     name.clear();
+     barcode.clear();
+     price.clear();
+@@ -1926,9 +1960,13 @@
+     expiry = false;
+     _suggestedBarcode = null;
+     _existingBarcode = null;
+-    status = pos.demo
+-        ? 'Товар добавлен в учебный каталог.'
+-        : 'Товар сохранён в каталоге магазина.';
++    status = switch (result) {
++      'demo' => _tr(context, 'Товар добавлен в учебный каталог.', 'Tovar o‘quv katalogiga qo‘shildi.'),
++      'existing' => _tr(context, 'Товар уже есть в каталоге магазина.', 'Tovar do‘kon katalogida bor.'),
++      'approved' => _tr(context, 'Карточка уже утверждена.', 'Kartochka tasdiqlangan.'),
++      'rejected' => _tr(context, 'Администратор отклонил карточку.', 'Administrator kartochkani rad etdi.'),
++      _ => _tr(context, 'Карточка отправлена администратору на утверждение.', 'Kartochka administratorga tasdiqlash uchun yuborildi.'),
++    };
+   }
+ 
+   Future<void> save() => task(() async {
+@@ -1952,6 +1990,7 @@
+         'Введите цену больше нуля и целое количество.',
+       );
+     }
++    var result = 'demo';
+     if (pos.demo) {
+       await pos.addProduct(title, code, expiry, salePrice, quantity);
+     } else {
+@@ -1963,7 +2002,7 @@
+         );
+       }
+       try {
+-        await pos.createReceivingProduct({
++        final saved = await pos.proposeReceivingProduct({
+           'name': title,
+           'unit': unit,
+           'requiresExpiry': expiry,
+@@ -1974,11 +2013,12 @@
+             {'code': code, 'quantityFactor': 1},
+           ],
+         });
++        result = saved['status'] as String;
+       } finally {
+         await _readPending();
+       }
+     }
+-    if (mounted) _saved();
++    if (mounted) _saved(result);
+   });
+ 
+   @override
+@@ -1986,7 +2026,8 @@
+     padding: const EdgeInsets.all(16),
+     children: [
+       Text(
+-        pos.demo ? 'Учебная приёмка' : 'Приёмка · тестовый магазин',
++        _tr(context, pos.demo ? 'Учебная приёмка' : 'Приёмка',
++          pos.demo ? 'O‘quv qabuli' : 'Tovar qabuli'),
+         style: Theme.of(context).textTheme.headlineSmall,
+       ),
+       const SizedBox(height: 12),
+@@ -1995,7 +2036,7 @@
+       if (pending)
+         OutlinedButton(
+           onPressed: busy ? null : _retryProduct,
+-          child: const _UiText('Проверить сохранение товара', 'Tovar saqlanganini tekshirish'),
++          child: const _UiText('Проверить отправку карточки', 'Kartochka yuborilganini tekshirish'),
+         ),
+       Section(
+         child: Column(
+@@ -2109,7 +2150,9 @@
+               onPressed: busy || pending || _existingBarcode != null
+                   ? null
+                   : save,
+-              child: const _UiText('Сохранить товар', 'Tovarni saqlash'),
++              child: pos.demo
++                  ? const _UiText('Сохранить товар', 'Tovarni saqlash')
++                  : const _UiText('Отправить на утверждение', 'Tasdiqlashga yuborish'),
+             ),
+           ],
+         ),
+--- a/apps/mobile-flutter/lib/mobile_invitation.dart
++++ b/apps/mobile-flutter/lib/mobile_invitation.dart
+@@ -62,9 +62,14 @@
+     if (response.statusCode == 429) {
+       throw ApiFailure(429, 'device_login_rate_limited');
+     }
+-    if (response.statusCode != 200) {
+-      throw ApiFailure(response.statusCode, 'mobile_login_unavailable');
+-    }
++    final error = switch (response.statusCode) {
++      200 => null,
++      403 => 'mobile_login_denied',
++      404 || 405 => 'mobile_login_unavailable',
++      >= 500 => 'mobile_login_server_error',
++      _ => 'invalid_server_response',
++    };
++    if (error != null) throw ApiFailure(response.statusCode, error);
+     try {
+       final data = jsonDecode(utf8.decode(response.bodyBytes));
+       if (data is Json &&
+--- a/apps/mobile-flutter/lib/pos.dart
++++ b/apps/mobile-flutter/lib/pos.dart
+@@ -76,6 +76,8 @@
+   final int? row;
+   bool get uncertain =>
+       status == 0 || status == 408 || status == 429 || status >= 500;
++  bool get _routeUnavailable =>
++      status == 405 || (status == 404 && code == 'request_failed');
+ 
+   @override
+   String toString() {
+@@ -111,6 +113,8 @@
+       'shift_shortage_missing' => 'В закрытой смене нет недостачи.',
+       'invalid_manual_discount' => 'Проверьте размер и причину скидки.',
+       'manual_discounts_disabled' => 'Ручные скидки отключены на сервере.',
++      'manual_discount_quote_unavailable' =>
++        'Сервер пока не поддерживает расчёт ручной скидки.',
+       'manual_discount_outside_limit' => 'Скидка превышает допустимый размер.',
+       'sale_total_changed' => 'Итог изменился. Заново проверьте сумму к оплате.',
+       'quantity_promotion_discount_conflict' =>
+@@ -162,7 +166,11 @@
+       'platform_store_name_unchanged' => 'У магазина уже такое название.',
+       'invalid_platform_store_change' => 'Проверьте название магазина и причину.',
+       'receiving_product_pending' =>
+-        'Проверьте сохранение предыдущей карточки.',
++        'Проверьте отправку предыдущей карточки.',
++      'product_proposal_unavailable' =>
++        'Сервер пока не принимает карточки на утверждение. Повторите отправку после обновления API.',
++      'product_proposal_id_reused' =>
++        'Этот номер уже связан с другой заявкой. Заполните карточку заново.',
+       'invalid_api_origin' =>
+         'Проверьте адрес единого API в конфигурации приложения.',
+       'invalid_api_path' =>
+@@ -170,11 +178,21 @@
+       'mobile_code_format' => 'Введите 24 символа кода приглашения.',
+       'mobile_code_invalid' => 'Код неверный, истёк или уже использован. Запросите новое приглашение.',
+       'mobile_login_unavailable' => 'Вход по приглашению пока недоступен на сервере.',
++      'mobile_login_server_error' =>
++        'Сервер не смог выполнить вход по приглашению. Повторите попытку.',
++      'mobile_login_denied' =>
++        'Сервер отклонил вход по приглашению. Обратитесь к администратору.',
++      'account_login_failed' =>
++        'Не удалось завершить вход в аккаунт. Проверьте связь и повторите попытку.',
++      'account_login_unavailable' =>
++        'Сервер не разрешил вход в аккаунт из Android. Обратитесь к администратору.',
+       'device_login_unavailable' => 'Сервер пока не разрешает вход по коду.',
+       'device_login_denied' => 'Вход отклонён. Запросите новый код.',
+       'device_login_expired' => 'Код истёк. Запросите новый код.',
+       'device_login_rate_limited' => 'Слишком много попыток. Попробуйте позже.',
+       'register_selection_required' => 'Для работы кассира выберите кассу.',
++      'shift_route_unavailable' =>
++        'Сервер не предоставил проверку смены. Обратитесь к администратору.',
+       'invalid_location' => 'Проверьте UUID магазина или кассы.',
+       'operation_unavailable_on_server' =>
+         'Эта операция отсутствует в текущем контракте сервера.',
+@@ -185,6 +203,8 @@
+         'Для рабочего входа центральному API нужен маршрут GET /v1/me/stores.',
+       'product_not_found' => 'Товар не найден.',
+       'operating_expense_pending' => 'Сначала проверьте предыдущий расход.',
++      'operating_expenses_unavailable' =>
++        'Сервер пока не поддерживает расходы магазина.',
+       'invalid_operating_expense' => 'Проверьте поля расхода.',
+       'invalid_operating_expense_reversal' => 'Проверьте причину отмены.',
+       'operating_expense_not_found' => 'Расход не найден. Обновите список.',
+@@ -488,16 +508,41 @@
+ 
+   Future<void> signIn() => _signIn(persist: true);
+ 
+-  Future<void> signInForApproval() => _signIn(persist: false);
+-
+-  Future<void> _signIn({required bool persist}) async {
++  Future<void> signInByDeviceCode() => _signIn(persist: true, deviceCode: true);
++
++  Future<void> signInForApproval() => _signIn(persist: false, deviceCode: true);
++
++  Future<TokenResponse> _accountTokens() async {
++    try {
++      return await _appAuth.authorizeAndExchangeCode(
++        AuthorizationTokenRequest(
++          clientId,
++          redirectUri,
++          discoveryUrl: _discovery,
++          scopes: const ['openid', 'profile'],
++          promptValues: const ['login'],
++          additionalParameters: _productionApiEnabled ? const {'acr_values': '1'} : null,
++        ),
++      );
++    } on FlutterAppAuthUserCancelledException {
++      throw const DeviceLoginCancelled();
++    } on FlutterAppAuthPlatformException catch (failure) {
++      final error = failure.platformErrorDetails.error;
++      if (error == 'unauthorized_client' || error == 'unsupported_response_type') {
++        throw ApiFailure(403, 'account_login_unavailable');
++      }
++      throw ApiFailure(0, 'account_login_failed');
++    }
++  }
++
++  Future<void> _signIn({required bool persist, bool deviceCode = false}) async {
+     if (_deviceCancellation != null) {
+       throw ApiFailure(409, 'device_login_in_progress');
+     }
+     final cancellation = Completer<void>();
+     _deviceCancellation = cancellation;
+     final generation = _generation;
+-    final transport = _deviceLoginClient ?? http.Client();
++    final transport = deviceCode ? _deviceLoginClient ?? http.Client() : null;
+ 
+     void checkCancelled() {
+       if (cancellation.isCompleted || generation != _generation) {
+@@ -506,10 +551,16 @@
+     }
+ 
+     try {
+-      final tokens = await _deviceTokens(transport, cancellation.future, checkCancelled);
++      final tokens = transport == null
++          ? await _accountTokens()
++          : await _deviceTokens(transport, cancellation.future, checkCancelled);
+       checkCancelled();
+-      final access = tokens.accessToken!;
+-      final sub = _tokenSubject(tokens.idToken!);
++      final access = tokens.accessToken;
++      final identity = tokens.idToken;
++      if (access == null || identity == null) {
++        throw ApiFailure(0, 'invalid_server_response');
++      }
++      final sub = _tokenSubject(identity);
+       if (_tokenSubject(access) != sub) throw ApiFailure(401, 'sign_in_required');
+       final refresh = tokens.refreshToken;
+       if (persist) {
+@@ -533,7 +584,7 @@
+       _expiresAt = tokens.accessTokenExpirationDateTime;
+     } finally {
+       if (identical(_deviceCancellation, cancellation)) _deviceCancellation = null;
+-      if (_deviceLoginClient == null) transport.close();
++      if (_deviceLoginClient == null) transport?.close();
+     }
+   }
+ 
+@@ -829,9 +880,10 @@
+   bool get storeOwner => _storeOwner;
+   bool get platformWorkplace => _location?.platformOrganizationId != null;
+   bool _storeOwner = false;
++  String? _workingShiftPath;
+ 
+   Uri get origin => validateKassaOrigin(apiOrigin, debug: kDebugMode);
+-  bool get usesManualWorkplace => productionContract && !login._native;
++  bool get supportsManualWorkplace => productionContract && !login._native;
+   bool get hasLocation => _location != null;
+   KassaLocation get location =>
+       _location ?? (throw ApiFailure(503, 'store_discovery_unavailable'));
+@@ -953,14 +1005,16 @@
+     if (!hasLocation && !discovery && !platform) {
+       throw ApiFailure(403, 'store_selection_required');
+     }
+-    final shiftPath = productionContract ? '/v1/shifts/active' : '/v1/shifts/current';
+     if (registerKeyForVerification != null &&
+-        (!cashier || method != 'GET' || path != shiftPath)) {
++        (!cashier ||
++            method != 'GET' ||
++            (path != _currentShiftPath &&
++                !(productionContract && path == _activeShiftPath)))) {
+       throw ApiFailure(0, 'invalid_api_path');
+     }
+     final url = _uri(path, query);
+     if (productionContract &&
+-        !(discovery && login._native) &&
++        !discovery &&
+         !_supportsProductionRequest(method, url)) {
+       throw ApiFailure(405, 'operation_unavailable_on_server');
+     }
+@@ -1071,29 +1125,44 @@
+   }
+ 
+   Future<Json?> currentShift({String? keyForVerification}) async {
+-    final dynamic response;
+-    try {
+-      response = await request(
+-        'GET',
+-        productionContract ? '/v1/shifts/active' : '/v1/shifts/current',
+-        cashier: true,
+-        registerKeyForVerification: keyForVerification,
+-      );
+-    } on ApiFailure catch (failure) {
+-      if (productionContract && failure.status == 404 &&
+-          failure.code == 'shift_not_found') {
+-        return null;
+-      }
+-      rethrow;
+-    }
+-    if (response is Json && response.containsKey('shift')) {
+-      final shift = response['shift'];
+-      if (shift == null || shift is Json) return shift as Json?;
+-    } else if (productionContract) {
+-      if (response == null) return null;
+-      if (response is Json && _assignedId(response['shiftId'])) return response;
+-    }
+-    throw ApiFailure(0, 'invalid_server_response');
++    final preferred = _workingShiftPath ??
++        (productionContract ? _activeShiftPath : _currentShiftPath);
++    final paths = [
++      preferred,
++      if (productionContract)
++        preferred == _activeShiftPath ? _currentShiftPath : _activeShiftPath,
++    ];
++    for (final path in paths) {
++      final dynamic response;
++      try {
++        response = await request(
++          'GET',
++          path,
++          cashier: true,
++          registerKeyForVerification: keyForVerification,
++        );
++      } on ApiFailure catch (failure) {
++        if (!productionContract) rethrow;
++        if (failure.status == 404 && failure.code == 'shift_not_found') {
++          _workingShiftPath = path;
++          return null;
++        }
++        if (failure._routeUnavailable) continue;
++        rethrow;
++      }
++      final shift = response is Json && response.containsKey('shift')
++          ? response['shift']
++          : response;
++      if ((response is Json && response.containsKey('shift') &&
++              (shift == null || shift is Json)) ||
++          (productionContract &&
++              (shift == null || (shift is Json && _assignedId(shift['shiftId']))))) {
++        _workingShiftPath = path;
++        return shift as Json?;
++      }
++      throw ApiFailure(0, 'invalid_server_response');
++    }
++    throw ApiFailure(503, 'shift_route_unavailable');
+   }
+ 
+   Future<Set<Desk>> allowedDesks() async {
+@@ -1425,29 +1494,42 @@
+         discountRule: null,
+       );
+     }
+-    if (api.productionContract && discount != null) {
+-      throw ApiFailure(405, 'operation_unavailable_on_server');
+-    }
+-    final result = await api.request(
+-      'POST',
+-      '/v1/shifts/$shiftId/quote',
+-      cashier: true,
+-      body: {
+-        'items': lines.map((line) => line.item).toList(),
+-        if (!api.productionContract) 'previewPriceFloor': true,
+-        if (discount != null) 'discount': discount.json,
+-      },
+-    );
++    final dynamic result;
++    try {
++      result = await api.request(
++        'POST',
++        '/v1/shifts/$shiftId/quote',
++        cashier: true,
++        body: {
++          'items': lines.map((line) => line.item).toList(),
++          if (!api.productionContract) 'previewPriceFloor': true,
++          if (discount != null) 'discount': discount.json,
++        },
++      );
++    } on ApiFailure catch (failure) {
++      if (api.productionContract &&
++          discount != null &&
++          (failure._routeUnavailable ||
++              (failure.status == 400 &&
++                  const {'invalid_http_request', 'request_failed'}.contains(failure.code)))) {
++        throw ApiFailure(failure.status, 'manual_discount_quote_unavailable');
++      }
++      rethrow;
++    }
+     if (result is! Json ||
+         result['total'] is! num ||
+         (discount != null && result['discountAmount'] is! num)) {
+       throw ApiFailure(0, 'invalid_server_response');
+     }
+     final applied = (result['discountAmount'] as num?) ?? 0;
++    final rule = result['discountRule'];
++    if (api.productionContract &&
++        discount != null && rule != 'manual' && rule != 'combined') {
++      throw ApiFailure(409, 'manual_discount_quote_unavailable');
++    }
+     if (discount != null && applied <= 0) {
+       throw ApiFailure(0, 'invalid_server_response');
+     }
+-    final rule = result['discountRule'];
+     if (rule != null && !const {'promotion', 'manual', 'combined'}.contains(rule)) {
+       throw ApiFailure(0, 'invalid_server_response');
+     }
+@@ -1587,8 +1669,7 @@
+ 
+   void _checkProductionSaleFields(Json body) {
+     if (api.productionContract &&
+-        (body['discount'] != null || body['customerId'] != null ||
+-            body['priceFloorApproval'] == true)) {
++        (body['customerId'] != null || body['priceFloorApproval'] == true)) {
+       throw ApiFailure(405, 'operation_unavailable_on_server');
+     }
+   }
+--- a/apps/mobile-flutter/lib/production_api.dart
++++ b/apps/mobile-flutter/lib/production_api.dart
+@@ -5,8 +5,10 @@
+   defaultValue: !kDebugMode,
+ );
+ 
+-// Authenticated production OpenAPI snapshot, 15 November 2026.
+-// The public health check is outside the business transport.
++// Production OpenAPI snapshot with compatible operations from the server source.
++const _activeShiftPath = '/v1/shifts/active';
++const _currentShiftPath = '/v1/shifts/current';
++
+ const _productionOperations = [
+   'GET /v1/catalog/barcodes/{barcode}',
+   'GET /v1/catalog/products/{id}',
+@@ -54,7 +56,8 @@
+   'GET /v1/shifts/{shiftId}/cash-movements',
+   'POST /v1/shifts/{shiftId}/cash-movements',
+   'POST /v1/shifts/{shiftId}/quote',
+-  'GET /v1/shifts/active',
++  'GET $_activeShiftPath',
++  'GET $_currentShiftPath',
+   'GET /v1/stores/{storeId}/audit',
+   'POST /v1/stores/{storeId}/catalog/import',
+   'GET /v1/stores/{storeId}/catalog/products',
+@@ -66,6 +69,9 @@
+   'PUT /v1/stores/{storeId}/catalog/products/{id}/promotion',
+   'POST /v1/stores/{storeId}/catalog/proposals/{id}/approve',
+   'POST /v1/stores/{storeId}/catalog/proposals/{id}/reject',
++  'GET /v1/stores/{storeId}/finance/expenses',
++  'POST /v1/stores/{storeId}/finance/expenses',
++  'POST /v1/stores/{storeId}/finance/expenses/{id}/reverse',
+   'GET /v1/stores/{storeId}/procurement/orders',
+   'GET /v1/stores/{storeId}/procurement/orders/{id}',
+   'PUT /v1/stores/{storeId}/procurement/orders/{id}',
+@@ -118,6 +124,7 @@
+   'POST /v1/stores/{storeId}/receipts/{id}/return-to-draft',
+   'POST /v1/stores/{storeId}/receipts/{id}/submit',
+   'GET /v1/stores/{storeId}/receiving/catalog/barcodes/{barcode}',
++  'GET /v1/stores/{storeId}/receiving/catalog/shared-barcodes/{barcode}',
+   'GET /v1/stores/{storeId}/receiving/catalog/proposals',
+   'POST /v1/stores/{storeId}/receiving/catalog/proposals',
+   'POST /v1/stores/{storeId}/refund-approvals',
+--- a/apps/mobile-flutter/lib/receiving_catalog_api.dart
++++ b/apps/mobile-flutter/lib/receiving_catalog_api.dart
+@@ -31,19 +31,24 @@
+         'requiresReview': data['requiresReview'] == true,
+       };
+     } on ApiFailure catch (failure) {
+-      if (failure.status == 404) return null;
++      if (failure.status == 404 && failure.code == 'shared_product_not_found') {
++        return null;
++      }
++      if (failure._routeUnavailable) {
++        throw ApiFailure(failure.status, 'shared_product_lookup_unavailable');
++      }
+       rethrow;
+     }
+   }
+ 
+   Future<Json?> pendingReceivingProduct() => _read(_receivingProductKey);
+ 
+-  Future<Json> createReceivingProduct(Json product) =>
++  Future<Json> proposeReceivingProduct(Json product) =>
+       _receivingProductOperation((key) async {
+         if (await _read(key) != null) {
+           throw ApiFailure(409, 'receiving_product_pending');
+         }
+-        final body = {'productId': newId(), 'product': product};
++        final body = {'proposalId': newId(), 'product': product};
+         await storage.write(key: key, value: jsonEncode(body));
+         return _sendReceivingProduct(key, body);
+       });
+@@ -70,24 +75,46 @@
+   }
+ 
+   Future<Json> _sendReceivingProduct(String key, Json body) async {
++    final barcode = body['product']['barcodes'][0]['code'] as String;
++    final proposalId = (body['proposalId'] ?? body['productId']) as String;
++    if (body.containsKey('productId')) {
++      // The previous operation may have published successfully before its response was lost.
++      try {
++        final existing = await receivingProduct(barcode);
++        if (existing['barcode'] != barcode || !_assignedId(existing['productId'])) {
++          throw ApiFailure(0, 'invalid_server_response');
++        }
++        await storage.delete(key: key);
++        return {'status': 'existing'};
++      } on ApiFailure catch (failure) {
++        if (failure.status != 404 || failure.code != 'product_not_found') rethrow;
++      }
++      body = {'proposalId': proposalId, 'product': body['product']};
++      await storage.write(key: key, value: jsonEncode(body));
++    }
+     try {
+       final saved = await api.request(
+         'POST',
+-        '$_receivingCatalog/products',
++        '$_receivingCatalog/proposals',
+         desk: Desk.receiving,
+         body: body,
+       );
++      final product = saved is Json ? saved['product'] : null;
++      final barcodes = product is Json ? product['barcodes'] : null;
+       if (saved is! Json ||
+-          saved['productId'] is! String ||
+-          saved['barcode'] != body['product']['barcodes'][0]['code']) {
++          saved['proposalId'] != proposalId ||
++          !const {'pending', 'approved', 'rejected'}.contains(saved['status']) ||
++          barcodes is! List ||
++          !barcodes.any((item) => item is Json && item['code'] == barcode)) {
+         throw ApiFailure(0, 'invalid_server_response');
+       }
+       await storage.delete(key: key);
+       return saved;
+     } on ApiFailure catch (failure) {
+-      if (!failure.uncertain &&
+-          failure.status != 401 &&
+-          failure.status != 403) {
++      if (failure._routeUnavailable) {
++        throw ApiFailure(failure.status, 'product_proposal_unavailable');
++      }
++      if (const {400, 409, 422}.contains(failure.status)) {
+         await storage.delete(key: key);
+       }
+       rethrow;
+--- a/apps/mobile-flutter/lib/workplace_api.dart
++++ b/apps/mobile-flutter/lib/workplace_api.dart
+@@ -73,7 +73,7 @@
+         query: {'offset': '$offset'},
+       );
+     } on ApiFailure catch (failure) {
+-      if (failure.status == 404 || failure.status == 405) {
++      if (failure._routeUnavailable) {
+         throw ApiFailure(503, 'store_discovery_unavailable');
+       }
+       rethrow;
+--- a/apps/mobile-flutter/lib/workplaces.dart
++++ b/apps/mobile-flutter/lib/workplaces.dart
+@@ -21,14 +21,13 @@
+   final _stores = <String, AssignedStore>{};
+   int? _nextOffset;
+   bool _loaded = false;
++  bool _usesManualSelection = false;
+ 
+   @override
+   void initState() {
+     super.initState();
+-    if (!_usesManualSelection) task(_load);
+-  }
+-
+-  bool get _usesManualSelection => widget.session.api.usesManualWorkplace;
++    task(_load);
++  }
+ 
+   Future<void> _load({bool more = false}) async {
+     if (_usesManualSelection) {
+@@ -39,9 +38,20 @@
+       _loaded = true;
+       return;
+     }
+-    final page = await widget.session.api.assignedStores(
+-      offset: more ? _nextOffset! : 0,
+-    );
++    final ({List<AssignedStore> items, int? nextOffset}) page;
++    try {
++      page = await widget.session.api.assignedStores(
++        offset: more ? _nextOffset! : 0,
++      );
++    } on ApiFailure catch (failure) {
++      if (failure.code != 'store_discovery_unavailable' ||
++          !widget.session.api.supportsManualWorkplace ||
++          _loaded) {
++        rethrow;
++      }
++      _usesManualSelection = true;
++      return;
++    }
+     if (!more) _stores.clear();
+     for (final store in page.items) {
+       _stores[store.id] = store;
+@@ -67,7 +77,9 @@
+ 
+   Future<void> _open(AssignedStore store) async {
+     final selected = await Navigator.of(context).push<_SelectedWorkplace>(
+-      MaterialPageRoute(builder: (_) => _StoreWorkplace(widget.session, store)),
++      MaterialPageRoute(builder: (_) => _StoreWorkplace(
++        widget.session, store, manualSelection: _usesManualSelection,
++      )),
+     );
+     if (mounted && selected != null) Navigator.pop(context, selected);
+   }
+@@ -125,10 +137,11 @@
+ }
+ 
+ class _StoreWorkplace extends StatefulWidget {
+-  const _StoreWorkplace(this.session, this.store);
++  const _StoreWorkplace(this.session, this.store, {this.manualSelection = false});
+ 
+   final Pos session;
+   final AssignedStore store;
++  final bool manualSelection;
+ 
+   @override
+   State<_StoreWorkplace> createState() => _StoreWorkplaceState();
+@@ -185,7 +198,7 @@
+   }
+ 
+   Future<void> _connect(AssignedRegister register) async {
+-    final location = widget.session.api.usesManualWorkplace
++    final location = widget.manualSelection
+         ? KassaLocation(widget.store.id, register.id)
+         : widget.store.location(register);
+     final selected = widget.session.forWorkplace(location);
+@@ -255,7 +268,7 @@
+                 _tr(context, 'Назначенные кассы', 'Biriktirilgan kassalar'),
+                 style: Theme.of(context).textTheme.titleMedium,
+               ),
+-              if (widget.session.api.usesManualWorkplace)
++              if (widget.manualSelection)
+                 OutlinedButton(
+                   onPressed: busy ? null : _connectById,
+                   child: const _UiText('Подключить кассу по UUID', 'Kassani UUID orqali ulash'),
+--- a/apps/mobile-flutter/pubspec.yaml
++++ b/apps/mobile-flutter/pubspec.yaml
+@@ -1,7 +1,7 @@
+ name: kassa_mobile
+ description: Android POS pilot for Kassa.
+ publish_to: none
+-version: 0.2.73+2093
++version: 0.2.75+2095
+ environment:
+   sdk: ">=3.10.0 <4.0.0"
+ dependencies:
+--- a/apps/mobile-flutter/test/expenses_test.dart
++++ b/apps/mobile-flutter/test/expenses_test.dart
+@@ -33,6 +33,7 @@
+     final session = Pos(
+       _storage,
+       login: _Login('admin'),
++      productionContract: true,
+       client: MockClient((request) async {
+         expect(request.method, 'POST');
+         expect(request.headers['X-Active-Role'], 'admin');
+@@ -115,6 +116,7 @@
+     final session = Pos(
+       _storage,
+       login: _Login('admin'),
++      productionContract: true,
+       client: MockClient((request) async {
+         expect(request.url.path, '/v1/stores/$testStore/finance/expenses');
+         expect(request.headers['X-Active-Role'], 'admin');
+--- a/apps/mobile-flutter/test/mobile_invitation_test.dart
++++ b/apps/mobile-flutter/test/mobile_invitation_test.dart
+@@ -37,7 +37,12 @@
+       return proofs.length == 1 ? response({}, status: 503) : tokens();
+     });
+     final login = Login(storage, invitationClient: client, useNativeInvitation: true);
+-    await expectLater(login.signInWithInvitation(code), throwsA(isA<ApiFailure>()));
++    await expectLater(
++      login.signInWithInvitation(code),
++      throwsA(isA<ApiFailure>().having(
++        (failure) => failure.code, 'code', 'mobile_login_server_error',
++      )),
++    );
+     expect(await storage.readAll(), isEmpty);
+     await login.signInWithInvitation('abcdef-0123456789-abcdef01');
+     expect(proofs.last, proofs.first);
+@@ -96,7 +101,7 @@
+     }));
+     await tester.pumpWidget(KassaApp(pos: app));
+     await tester.pumpAndSettle();
+-    await tester.tap(find.text('Войти'));
++    await tester.tap(find.text('Войти по приглашению'));
+     await tester.pump();
+     await tester.pump(const Duration(milliseconds: 500));
+     expect(find.text('Вход по приглашению'), findsOneWidget);
+--- a/apps/mobile-flutter/test/platform_workflow_test.dart
++++ b/apps/mobile-flutter/test/platform_workflow_test.dart
+@@ -145,7 +145,7 @@
+       await tester.pumpWidget(KassaApp(pos: session));
+       expect(find.text('Кабинет разработчика'), findsNothing);
+       await tester.pumpAndSettle();
+-      await tap(find.text('Войти'));
++      await tap(find.text('Войти в аккаунт'));
+       await tap(find.text('Кабинет разработчика'));
+       expect(find.text('Магазин А'), findsOneWidget);
+       expect(find.text('Магазин Б'), findsOneWidget);
+--- a/apps/mobile-flutter/test/production_api_test.dart
++++ b/apps/mobile-flutter/test/production_api_test.dart
+@@ -83,7 +83,7 @@
+       await workplace.api.bindRegister(key);
+       expect(await workplace.activeShift(), isNull);
+       await expectLater(
+-        workplace.api.request('GET', '/v1/shifts/current', cashier: true),
++        workplace.api.request('POST', '/v1/shifts/current', cashier: true),
+         throwsA(
+           isA<ApiFailure>().having(
+             (e) => e.code,
+@@ -113,6 +113,63 @@
+     },
+   );
+ 
++  test('register binding falls back to the server snapshot shift route', () async {
++    final paths = <String>[];
++    final key = 'b' * 64;
++    final session = _session((request) async {
++      paths.add(request.url.path);
++      expect(request.headers['X-Register-Id'], _register);
++      expect(request.headers['X-Register-Key'], key);
++      expect(request.headers['X-Active-Role'], 'cashier');
++      if (request.url.path == '/v1/shifts/active') return http.Response('', 404);
++      expect(request.url.path, '/v1/shifts/current');
++      return _json({'shift': null});
++    });
++    addTearDown(session.api.close);
++    final workplace = session.forWorkplace(KassaLocation(_store, _register));
++    await workplace.api.bindRegister(key);
++    expect(await workplace.activeShift(), isNull);
++    expect(paths, [
++      '/v1/shifts/active',
++      '/v1/shifts/current',
++      '/v1/shifts/current',
++    ]);
++  });
++
++  test('production sale uses the server-confirmed manual discount total', () async {
++    const discount = SaleDiscount('amount', 1000, 'Скидка покупателю');
++    var quoteAttempts = 0;
++    final session = _session((request) async {
++      if (request.url.path == '/v1/shifts/active') return _json({'shift': null});
++      final body = jsonDecode(request.body) as Json;
++      expect(body['discount'], discount.json);
++      if (request.url.path == '/v1/shifts/$_otherStore/quote') {
++        return _json({
++          'total': 9000,
++          'discountAmount': 1000,
++          if (++quoteAttempts > 1) 'discountRule': 'manual',
++        });
++      }
++      expect(request.url.path, '/v1/sales');
++      expect(body['expectedTotal'], 9000);
++      return _json({'operationId': body['operationId'], 'total': 9000});
++    });
++    addTearDown(session.api.close);
++    final workplace = session.forWorkplace(KassaLocation(_store, _register));
++    await workplace.api.bindRegister('c' * 64);
++    await expectLater(
++      workplace.checkoutQuote(_otherStore, [], discount: discount),
++      throwsA(isA<ApiFailure>().having(
++        (failure) => failure.code, 'code', 'manual_discount_quote_unavailable',
++      )),
++    );
++    final quote = await workplace.checkoutQuote(_otherStore, [], discount: discount);
++    final sale = await workplace.sell(
++      _otherStore, [], quote.total, null, discount: discount,
++    );
++    expect(sale['total'], quote.total);
++  });
++
+   testWidgets('lists platform test stores and checks roles before opening', (
+     tester,
+   ) async {
+@@ -122,6 +179,7 @@
+       expect(request.headers['X-Register-Key'], isNull);
+       final path = request.url.path;
+       paths.add(path);
++      if (path == '/v1/me/stores') return _json({}, 404);
+       if (path == '/v1/platform/test-stores') {
+         return _json({
+           'items': [
+@@ -135,9 +193,9 @@
+     });
+     await tester.pumpWidget(KassaApp(pos: session));
+     await tester.pumpAndSettle();
+-    await tester.tap(find.text('Войти'));
+-    await tester.pumpAndSettle();
+-    expect(paths, isEmpty);
++    await tester.tap(find.text('Войти в аккаунт'));
++    await tester.pumpAndSettle();
++    expect(paths, ['/v1/me/stores']);
+     await tester.tap(find.text('Тестовые магазины'));
+     await tester.pumpAndSettle();
+     expect(find.text('Учебный магазин'), findsOneWidget);
+@@ -145,7 +203,7 @@
+     await tester.pumpAndSettle();
+     expect(find.text('Войти без кассы'), findsNothing);
+     expect(find.textContaining('нет доступа к магазину'), findsOneWidget);
+-    expect(paths, ['/v1/platform/test-stores', '/v1/me/roles']);
++    expect(paths, ['/v1/me/stores', '/v1/platform/test-stores', '/v1/me/roles']);
+   });
+ 
+   testWidgets('ordinary assigned store works without platform permission', (
+@@ -155,6 +213,7 @@
+     final session = _session((request) async {
+       final path = request.url.path;
+       paths.add(path);
++      if (path == '/v1/me/stores') return _json({}, 404);
+       if (path == '/v1/platform/test-stores') return _json({}, 403);
+       expect(path, '/v1/me/roles');
+       expect(request.url.queryParameters['storeId'], _store);
+@@ -165,7 +224,7 @@
+     });
+     await tester.pumpWidget(KassaApp(pos: session));
+     await tester.pumpAndSettle();
+-    await tester.tap(find.text('Войти'));
++    await tester.tap(find.text('Войти в аккаунт'));
+     await tester.pumpAndSettle();
+     await tester.tap(find.text('Тестовые магазины'));
+     await tester.pumpAndSettle();
+@@ -176,6 +235,6 @@
+     await tester.tap(find.text('Подтвердить'));
+     await tester.pumpAndSettle();
+     expect(find.text('Войти без кассы'), findsOneWidget);
+-    expect(paths, ['/v1/platform/test-stores', '/v1/me/roles']);
++    expect(paths, ['/v1/me/stores', '/v1/platform/test-stores', '/v1/me/roles']);
+   });
+ }
+--- a/apps/mobile-flutter/test/session_test.dart
++++ b/apps/mobile-flutter/test/session_test.dart
+@@ -20,6 +20,13 @@
+   String subject = 'cashier';
+   final refreshes = <String?>[];
+   Future<TokenResponse> Function(String?)? exchange;
++  Future<AuthorizationTokenResponse> Function(AuthorizationTokenRequest)?
++      authorizeAccount;
++
++  @override
++  Future<AuthorizationTokenResponse> authorizeAndExchangeCode(
++    AuthorizationTokenRequest request,
++  ) => authorizeAccount!(request);
+ 
+   @override
+   Future<TokenResponse> token(TokenRequest request) {
+@@ -86,8 +93,70 @@
+     auth = _Auth();
+   });
+ 
++  testWidgets('account login precedes the assigned store picker even with invitations enabled', (tester) async {
++    final browser = Completer<AuthorizationTokenResponse>();
++    var browserCalls = 0;
++    final requests = <String>[];
++    auth.authorizeAccount = (request) {
++      browserCalls++;
++      expect(request.clientId, clientId);
++      expect(request.redirectUrl, redirectUri);
++      expect(request.discoveryUrl, _discovery);
++      expect(request.scopes, contains('openid'));
++      return browser.future;
++    };
++    final login = Login(
++      storage,
++      appAuth: auth,
++      useNativeInvitation: true,
++      invitationClient: MockClient((_) async => fail('Unexpected invitation request')),
++      deviceLoginClient: MockClient((_) async => fail('Unexpected device-code request')),
++    );
++    final pos = Pos(
++      storage,
++      login: login,
++      productionContract: true,
++      client: MockClient((request) async {
++        requests.add(request.url.path);
++        expect(request.url.path, '/v1/me/stores');
++        expect(request.headers['Authorization'], 'Bearer ${jwt('cashier')}');
++        expect(request.headers['X-Register-Key'], isNull);
++        return _reply({
++          'items': [{
++            'storeId': '30000000-0000-4000-8000-000000000001',
++            'name': 'Назначенный магазин',
++            'timeZone': 'Asia/Tashkent',
++            'utcOffsetMinutes': 300,
++            'registers': [],
++          }],
++          'nextOffset': null,
++        });
++      }),
++    );
++    await tester.pumpWidget(KassaApp(pos: pos));
++    await tester.pumpAndSettle();
++    await tester.tap(find.text('Войти в аккаунт'));
++    await tester.pump();
++    expect(browserCalls, 1);
++    expect(requests, isEmpty);
++    expect(find.text('Код приглашения'), findsNothing);
++    expect(find.byType(TextField), findsNothing);
++
++    browser.complete(AuthorizationTokenResponse(
++      jwt('cashier'), 'browser-refresh', null, jwt('cashier'),
++      'Bearer', null, null, null,
++    ));
++    await tester.pumpAndSettle();
++    expect(requests, ['/v1/me/stores']);
++    expect(find.text('Назначенный магазин'), findsOneWidget);
++    expect(jsonDecode((await storage.read(key: key))!), {
++      'sub': 'cashier',
++      'refresh': 'browser-refresh',
++    });
++  });
++
+   test('restores only after exchange and saves the rotated token', () async {
+-    await _login(storage, auth).signIn();
++    await _login(storage, auth).signInByDeviceCode();
+     auth.exchange = (_) async => renewed('cashier', 'rotated');
+     final restarted = _login(storage, auth);
+     expect(await restarted.restore(), isTrue);
+@@ -102,7 +171,7 @@
+   test(
+     'preserves session on network error and removes an invalid grant',
+     () async {
+-      await _login(storage, auth).signIn();
++      await _login(storage, auth).signInByDeviceCode();
+       auth.exchange = (_) async => throw TimeoutException('test');
+       final restarted = _login(storage, auth);
+       await expectLater(
+@@ -129,7 +198,7 @@
+   );
+ 
+   test('rejects a restored token issued to a different account', () async {
+-    await _login(storage, auth).signIn();
++    await _login(storage, auth).signInByDeviceCode();
+     auth.exchange = (_) async => renewed('other', 'wrong');
+     final restarted = _login(storage, auth);
+     expect(await restarted.restore(), isFalse);
+@@ -139,7 +208,7 @@
+   test(
+     'temporary administrator login leaves the cashier credential alone',
+     () async {
+-      await _login(storage, auth).signIn();
++      await _login(storage, auth).signInByDeviceCode();
+       final cashierRecord = await storage.read(key: key);
+       auth.subject = 'admin';
+       final approval = _login(storage, auth);
+@@ -156,7 +225,7 @@
+     'logout revokes a token rotated during logout and cannot restore it',
+     () async {
+       final login = _login(storage, auth);
+-      await login.signIn();
++      await login.signInByDeviceCode();
+       final rotation = Completer<TokenResponse>();
+       auth.exchange = (_) => rotation.future;
+       final refresh = expectLater(
+@@ -198,7 +267,7 @@
+     'untrusted revocation endpoint gets no token and local logout succeeds',
+     () async {
+       final login = _login(storage, auth);
+-      await login.signIn();
++      await login.signInByDeviceCode();
+       final client = MockClient((request) async {
+         expect(request.method, 'GET');
+         return http.Response(
+@@ -243,7 +312,7 @@
+       }),
+     )..onDeviceLoginPrompt = (prompt) { displayed = prompt; };
+ 
+-    await login.signIn();
++    await login.signInByDeviceCode();
+     expect(displayed?.code, 'ABCD-EFGH');
+     expect(displayed?.verificationUri.toString(), '$issuer/device');
+     expect(waits, [5, 5, 10]);
+@@ -262,7 +331,7 @@
+         fail('Cancelled device sent a token request');
+       }),
+     )..onDeviceLoginPrompt = (_) { displaying.complete(); };
+-    final attempt = expectLater(login.signIn(), throwsA(isA<DeviceLoginCancelled>()));
++    final attempt = expectLater(login.signInByDeviceCode(), throwsA(isA<DeviceLoginCancelled>()));
+     await displaying.future;
+     login.cancelDeviceLogin();
+     await attempt;
+@@ -278,7 +347,7 @@
+         return _metadata(tokenUri: 'https://other.invalid/token');
+       }),
+     );
+-    await expectLater(login.signIn(), throwsA(isA<ApiFailure>()));
++    await expectLater(login.signInByDeviceCode(), throwsA(isA<ApiFailure>()));
+     expect(await storage.read(key: key), isNull);
+   });
+ 
+@@ -292,7 +361,7 @@
+         return _reply({'error': 'access_denied'}, status: 400);
+       }),
+     );
+-    await expectLater(login.signIn(), throwsA(isA<ApiFailure>().having(
++    await expectLater(login.signInByDeviceCode(), throwsA(isA<ApiFailure>().having(
+       (failure) => failure.code, 'code', 'device_login_denied',
+     )));
+     expect(await storage.read(key: key), isNull);
+@@ -312,7 +381,7 @@
+     final pos = Pos(storage, login: login, productionContract: true);
+     await tester.pumpWidget(KassaApp(pos: pos));
+     await tester.pumpAndSettle();
+-    await tester.tap(find.text('Войти'));
++    await tester.tap(find.text('Войти через другое устройство'));
+     await tester.pump();
+     await tester.pump(const Duration(milliseconds: 500));
+     expect(find.text('Вход по коду'), findsOneWidget);
+@@ -322,7 +391,7 @@
+     await tester.tap(find.text('Отмена'));
+     await tester.pumpAndSettle();
+     expect(find.text('Вход по коду'), findsNothing);
+-    expect(find.text('Войти'), findsOneWidget);
++    expect(find.text('Войти в аккаунт'), findsOneWidget);
+     pause.complete();
+   });
+ 
+--- a/apps/mobile-flutter/test/stage4_live_test.dart
++++ b/apps/mobile-flutter/test/stage4_live_test.dart
+@@ -152,7 +152,7 @@
+       expect(shared['barcode'], '000944');
+       expect(await receiver.sharedProduct('944'), isNull);
+       expect(await receiver.sharedProduct('999999'), isNull);
+-      final created = await receiver.createReceivingProduct({
++      final proposal = await receiver.proposeReceivingProduct({
+         'name': shared['name'],
+         'unit': shared['unit'],
+         'requiresExpiry': shared['requiresExpiry'],
+@@ -163,7 +163,18 @@
+           {'code': shared['barcode'], 'quantityFactor': 1},
+         ],
+       });
+-      final productId = created['productId'] as String;
++      expect(proposal['status'], 'pending');
++      await expectLater(
++        receiver.receivingProduct(shared['barcode'] as String),
++        _failure(404, 'product_not_found'),
++      );
++      final productId = proposal['proposalId'] as String;
++      await admin.api.request(
++        'POST',
++        '${admin.api.store}/catalog/proposals/$productId/approve',
++        desk: Desk.admin,
++        body: {},
++      );
+       expect(
+         (await CatalogApi(admin).product(productId))['name'],
+         shared['name'],
+--- a/apps/mobile-flutter/test/unified_api_test.dart
++++ b/apps/mobile-flutter/test/unified_api_test.dart
+@@ -233,14 +233,15 @@
+   );
+ 
+   test(
+-    'receiving keeps safe suggestion fields and retries the same product registration',
++    'production receiving keeps safe suggestion fields and retries the same proposal',
+     () async {
+       const barcode = '4780012345678';
+       Json? posted;
+       var writes = 0;
+-      final pos = Pos(
++      final session = Pos(
+         storage,
+         login: _Login(storage, 'worker'),
++        productionContract: true,
+         client: MockClient((request) async {
+           expect(request.headers['X-Active-Role'], 'receiver');
+           expect(request.headers['X-Register-Key'], isNull);
+@@ -270,7 +271,7 @@
+           }
+           expect(
+             request.url.path,
+-            '/v1/stores/$testStore/receiving/catalog/products',
++            '/v1/stores/$testStore/receiving/catalog/proposals',
+           );
+           final body = jsonDecode(request.body) as Json;
+           writes++;
+@@ -280,12 +281,17 @@
+           }
+           expect(body, posted);
+           return http.Response(
+-            jsonEncode({'productId': body['productId'], 'barcode': barcode}),
++            jsonEncode({
++              'proposalId': body['proposalId'],
++              'status': 'pending',
++              'product': body['product'],
++            }),
+             200,
+           );
+         }),
+       );
+-      addTearDown(pos.api.close);
++      addTearDown(session.api.close);
++      final pos = session.forWorkplace(KassaLocation(testStore, null));
+       final suggestion = (await pos.sharedProduct(barcode))!;
+       expect(
+         suggestion.keys,
+@@ -309,13 +315,13 @@
+         ],
+       };
+       await expectLater(
+-        pos.createReceivingProduct(product),
++        pos.proposeReceivingProduct(product),
+         throwsA(isA<ApiFailure>()),
+       );
+       expect(await pos.pendingReceivingProduct(), posted);
+       expect(
+-        (await pos.retryReceivingProduct())?['productId'],
+-        posted?['productId'],
++        (await pos.retryReceivingProduct())?['proposalId'],
++        posted?['proposalId'],
+       );
+       expect(await pos.pendingReceivingProduct(), isNull);
+       expect(writes, 2);
+--- a/apps/mobile-flutter/test/widget_test.dart
++++ b/apps/mobile-flutter/test/widget_test.dart
+@@ -147,7 +147,7 @@
+ 
+     await tester.pumpWidget(KassaApp(pos: pos, debugPilot: true));
+     await tester.pumpAndSettle();
+-    await tester.tap(find.text('Войти'));
++    await tester.tap(find.text('Войти в аккаунт'));
+     await tester.pumpAndSettle();
+     expect(roleButton('Администратор'), findsOneWidget);
+ 
+--- a/apps/mobile-flutter/test/workplace_workflow_test.dart
++++ b/apps/mobile-flutter/test/workplace_workflow_test.dart
+@@ -102,7 +102,7 @@
+ 
+       await tester.pumpWidget(KassaApp(pos: session));
+       await tester.pumpAndSettle();
+-      await tap(find.text('Войти'));
++      await tap(find.text('Войти в аккаунт'));
+       expect(find.text('Доступные магазины'), findsOneWidget);
+       expect(find.text('Магазин Б'), findsNothing);
+       await tap(find.text('Показать ещё'));
+@@ -161,14 +161,14 @@
+       );
+       await tester.pumpWidget(KassaApp(pos: session));
+       await tester.pumpAndSettle();
+-      await tester.tap(find.text('Войти'));
++      await tester.tap(find.text('Войти в аккаунт'));
+       await tester.pumpAndSettle();
+       expect(find.textContaining('GET /v1/me/stores'), findsOneWidget);
+       await tester.pageBack();
+       await tester.pumpAndSettle();
+       expect(find.text('Выбрать магазин и кассу'), findsOneWidget);
+       expect(find.text('Кабинет разработчика'), findsNothing);
+-      expect(find.text('Войти'), findsNothing);
++      expect(find.text('Войти в аккаунт'), findsNothing);
+     },
+   );
+ 

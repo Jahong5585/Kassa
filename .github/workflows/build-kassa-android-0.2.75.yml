@@ -1,0 +1,110 @@
+name: Build Kassa Android 0.2.75
+
+on:
+  push:
+    branches: ['codex/android-account-login-0.2.75']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.0'
+          channel: stable
+
+      - name: Restore Android source
+        shell: bash
+        run: |
+          cat build/kassa-android-0.2.72/source.zip.part.* > source.zip
+          echo 'e5cd036e3eae92aa1b3b2c8424220b9b685c26e3324c4c28ba29551ea162f522  source.zip' | sha256sum --check
+          unzip -q source.zip -d compiled-source
+          patch --batch -p1 -d compiled-source < build/kassa-first-login/android.patch
+          echo 'c85a91183db09fd25ddd5dffc20ecab278531b35c371040bbf06766c43a70615  build/kassa-account-login/android.patch' | sha256sum --check
+          patch --batch --fuzz=0 -p1 -d compiled-source < build/kassa-account-login/android.patch
+
+      - name: Install Android build components
+        shell: bash
+        run: |
+          sdk="$RUNNER_TEMP/kassa-android-sdk"
+          tools="$RUNNER_TEMP/kassa-android-tools.zip"
+          curl --fail --location --silent --show-error --retry 3 \
+            https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip -o "$tools"
+          echo "4e4c464f145a7512b57d088ac6c278c03c9eea610886b35a5e0804e74eedf583  $tools" | sha256sum --check
+          mkdir -p "$sdk/cmdline-tools"
+          unzip -q "$tools" -d "$sdk/cmdline-tools"
+          mv "$sdk/cmdline-tools/cmdline-tools" "$sdk/cmdline-tools/latest"
+          manager="$sdk/cmdline-tools/latest/bin/sdkmanager"
+          set +o pipefail
+          yes | "$manager" --sdk_root="$sdk" --licenses >/dev/null
+          set -o pipefail
+          "$manager" --sdk_root="$sdk" --install 'platform-tools' 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358'
+          printf 'ANDROID_HOME=%s\nANDROID_SDK_ROOT=%s\n' "$sdk" "$sdk" >> "$GITHUB_ENV"
+          echo "$sdk/platform-tools" >> "$GITHUB_PATH"
+
+      - name: Test Android client
+        working-directory: compiled-source/apps/mobile-flutter
+        shell: bash
+        run: |
+          flutter pub get --enforce-lockfile
+          flutter test --no-pub --reporter expanded
+
+      - name: Compile and sign the test APK
+        working-directory: compiled-source/apps/mobile-flutter
+        shell: bash
+        run: |
+          sed -i 's/applicationId = "uz.qrspace.kassa.mobile.multirolepilot"/applicationId = "uz.qrspace.kassa.mobile.multirolepilot.accountpreview"/' android/app/build.gradle.kts
+          store_password="$(openssl rand -hex 20)"
+          echo "::add-mask::$store_password"
+          keytool -genkeypair -noprompt -storetype PKCS12 \
+            -keystore "$RUNNER_TEMP/kassa-test.p12" \
+            -storepass "$store_password" -keypass "$store_password" \
+            -alias kassa-test -keyalg RSA -keysize 2048 -validity 3650 \
+            -dname 'CN=Kassa Android Test Build'
+          printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=kassa-test\nkeyPassword=%s\n' \
+            "$RUNNER_TEMP/kassa-test.p12" "$store_password" "$store_password" > android/key.properties
+          flutter build apk --release --no-pub --target-platform android-arm,android-arm64 \
+            --dart-define=KASSA_PRODUCTION_API=true --dart-define=KASSA_NATIVE_INVITATION=true
+
+      - name: Verify test APK
+        shell: bash
+        run: |
+          mkdir -p apk-delivery
+          cd apk-delivery
+          apk=Kassa_Android_0.2.75_TEST.apk
+          cp ../compiled-source/apps/mobile-flutter/build/app/outputs/flutter-apk/app-release.apk "$apk"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$apk" | tee APK-SIGNATURE.txt
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" > badging.txt
+          grep -F "package: name='uz.qrspace.kassa.mobile.multirolepilot.accountpreview' versionCode='2095' versionName='0.2.75'" badging.txt
+          grep -Fx "application-label:'Касса · Роли 0.2.75'" badging.txt
+          unzip -Z1 "$apk" | grep -Fx 'lib/arm64-v8a/libapp.so'
+          unzip -Z1 "$apk" | grep -Fx 'lib/armeabi-v7a/libapp.so'
+          unzip -p "$apk" lib/arm64-v8a/libapp.so > "$RUNNER_TEMP/kassa-libapp.so"
+          grep -aFo 'https://kassa.qr-space.uz' "$RUNNER_TEMP/kassa-libapp.so" | sort -u
+          grep -aFo '/v1/mobile/auth/' "$RUNNER_TEMP/kassa-libapp.so" | sort -u
+          sha256sum "$apk" | tee SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kassa-Android-0.2.75-TEST
+          path: |
+            apk-delivery/Kassa_Android_0.2.75_TEST.apk
+            apk-delivery/SHA256SUMS.txt
+            apk-delivery/APK-SIGNATURE.txt
+            apk-delivery/badging.txt
+          if-no-files-found: error
+          retention-days: 7
+
