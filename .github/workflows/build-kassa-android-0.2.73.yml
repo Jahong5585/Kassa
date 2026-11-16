@@ -64,7 +64,7 @@ jobs:
         working-directory: compiled-source/apps/mobile-flutter
         shell: bash
         run: |
-          sed -i 's/applicationId = "uz.qrspace.kassa.mobile.multirolepilot"/applicationId = "uz.qrspace.kassa.mobile.multirolepilot.invitepreview"/' android/app/build.gradle.kts
+          sed -i 's/applicationId = "uz.qrspace.kassa.mobile.multirolepilot"/applicationId = "uz.qrspace.kassa.mobile.multirolepilot.invitepreview2"/' android/app/build.gradle.kts
           store_password="$(openssl rand -hex 20)"
           echo "::add-mask::$store_password"
           keytool -genkeypair -noprompt -storetype PKCS12 \
@@ -82,11 +82,12 @@ jobs:
         run: |
           mkdir -p apk-delivery
           cd apk-delivery
-          apk=Kassa_Android_0.2.73_TEST.apk
+          apk=Kassa_Android_0.2.73_FIXED.apk
           cp ../compiled-source/apps/mobile-flutter/build/app/outputs/flutter-apk/app-release.apk "$apk"
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$apk"
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" > badging.txt
-          grep -F "package: name='uz.qrspace.kassa.mobile.multirolepilot.invitepreview' versionCode='2093' versionName='0.2.73'" badging.txt
+          grep -F "package: name='uz.qrspace.kassa.mobile.multirolepilot.invitepreview2' versionCode='2093' versionName='0.2.73'" badging.txt
+          grep -Fx "application-label:'Касса · Роли 0.2.73'" badging.txt
           unzip -Z1 "$apk" | grep -Fx 'lib/arm64-v8a/libapp.so'
           unzip -Z1 "$apk" | grep -Fx 'lib/armeabi-v7a/libapp.so'
           unzip -p "$apk" lib/arm64-v8a/libapp.so > "$RUNNER_TEMP/kassa-libapp.so"
@@ -96,9 +97,9 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Kassa-Android-0.2.73-TEST
+          name: Kassa-Android-0.2.73-FIXED
           path: |
-            apk-delivery/Kassa_Android_0.2.73_TEST.apk
+            apk-delivery/Kassa_Android_0.2.73_FIXED.apk
             apk-delivery/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 7

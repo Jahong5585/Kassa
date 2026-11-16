@@ -1,3 +1,24 @@
+--- a/apps/mobile-flutter/android/app/build.gradle.kts
++++ b/apps/mobile-flutter/android/app/build.gradle.kts
+@@ -28,6 +28,7 @@
+         targetSdk = flutter.targetSdkVersion
+         versionCode = flutter.versionCode
+         versionName = flutter.versionName
++        manifestPlaceholders["kassaAppVersion"] = flutter.versionName
+         manifestPlaceholders["appAuthRedirectScheme"] = "uz.qrspace.kassa"
+     }
+ 
+--- a/apps/mobile-flutter/android/app/src/main/AndroidManifest.xml
++++ b/apps/mobile-flutter/android/app/src/main/AndroidManifest.xml
+@@ -5,7 +5,7 @@
+     <application
+         android:allowBackup="false"
+         android:usesCleartextTraffic="false"
+-        android:label="Касса · Роли 0.2.72"
++        android:label="Касса · Роли ${kassaAppVersion}"
+         android:name="${applicationName}"
+         android:icon="@mipmap/ic_launcher">
+         <activity
 --- a/apps/mobile-flutter/lib/language.dart
 +++ b/apps/mobile-flutter/lib/language.dart
 @@ -72,6 +72,9 @@
