@@ -33,8 +33,8 @@ public sealed record ConnectStoreStaff(string Subject, string Role, Guid? Regist
 public sealed record MyRoleSelection(Guid OrganizationId, Guid StaffId, Guid StoreId, string TimeZone,
     IReadOnlyList<string> Roles, bool Owner);
 public sealed record MyStoreItem(Guid OrganizationId, string OrganizationName, Guid StoreId, string StoreName,
-    string TimeZone, bool IsOwner, bool Active);
-public sealed record MyStorePage(IReadOnlyList<MyStoreItem> Items);
+    string TimeZone, int UtcOffsetMinutes, bool IsOwner, bool Active);
+public sealed record MyStorePage(IReadOnlyList<MyStoreItem> Items, int? NextOffset);
 public sealed record OperatorItem(Guid OperatorId, string? FirstName, string? LastName, string DisplayName,
     IReadOnlyList<string> Roles, bool IsOwner, bool PasswordRequired, bool Active);
 public sealed record StoreOperatorPage(Guid StoreId, IReadOnlyList<OperatorItem> Items);

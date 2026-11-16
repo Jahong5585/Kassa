@@ -419,8 +419,8 @@ platformApi.MapPatch("/test-stores/{id:guid}", async (Guid id, RenamePlatformTes
     TypedResults.Ok(await platform.Rename(context, id, request, ct))).WithName("RenamePlatformTestStore");
 api.MapGet("/me/roles", async (Guid storeId, PosService pos, HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await pos.ReadMyRoles(context, storeId, ct))).WithName("ReadMyRoles");
-api.MapGet("/me/stores", async (OperatorService operators, HttpContext context, CancellationToken ct) =>
-    TypedResults.Ok(await operators.ListMyStores(context, ct))).WithName("ListMyStores");
+api.MapGet("/me/stores", async (int? offset, OperatorService operators, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await operators.ListMyStores(context, offset ?? 0, ct))).WithName("ListMyStores");
 api.MapGet("/stores/{storeId:guid}/operators", async (Guid storeId, OperatorService operators,
     HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await operators.ListOperators(context, storeId, ct))).WithName("ListStoreOperators");

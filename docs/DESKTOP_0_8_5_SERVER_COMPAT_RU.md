@@ -50,10 +50,12 @@ Accept: application/json
       "storeId": "<store_uuid>",
       "storeName": "Магазин",
       "timeZone": "Asia/Tashkent",
+      "utcOffsetMinutes": 300,
       "isOwner": true,
       "active": true
     }
-  ]
+  ],
+  "nextOffset": null
 }
 ```
 

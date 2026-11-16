@@ -86,9 +86,13 @@ def main():
         required, _ = call(f"/v1/me/roles?storeId={STORE}", expected=403)
         assert required["code"] == "operator_session_required"
 
-    stores, _ = call("/v1/me/stores")
+    stores, _ = call("/v1/me/stores?offset=0")
     assert {item["storeId"] for item in stores["items"]} == {STORE, SECOND_STORE}
     assert all(item["isOwner"] is True for item in stores["items"])
+    assert all(item["utcOffsetMinutes"] == 300 for item in stores["items"])
+    assert stores["nextOffset"] is None
+    invalid_stores, _ = call("/v1/me/stores?offset=-1", expected=400)
+    assert invalid_stores["code"] == "validation_failed"
     operators, _ = call(f"/v1/stores/{STORE}/operators")
     assert len(operators["items"]) == 1 and operators["items"][0]["isOwner"] is True
     empty_store, _ = call(f"/v1/stores/{SECOND_STORE}/operators")

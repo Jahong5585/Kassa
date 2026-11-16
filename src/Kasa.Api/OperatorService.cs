@@ -14,8 +14,10 @@ internal sealed class OperatorService(NpgsqlDataSource source, OperatorPasswordH
     private sealed record HostScope(Guid Organization, Guid Store, Guid Owner, string OrganizationName,
         string StoreName, string TimeZone, string Issuer, string Subject);
 
-    public async Task<MyStorePage> ListMyStores(HttpContext context, CancellationToken ct)
+    public async Task<MyStorePage> ListMyStores(HttpContext context, int offset, CancellationToken ct)
     {
+        if (offset < 0)
+            throw new PosError(400, "validation_failed");
         var (_, subject) = Access.ReadHost(context);
         await using var db = await source.OpenConnectionAsync(ct);
         await using var command = new NpgsqlCommand("""
@@ -29,15 +31,23 @@ internal sealed class OperatorService(NpgsqlDataSource source, OperatorPasswordH
             JOIN organizations o ON o.id = st.org_id
             WHERE s.subject = $1 AND s.identity_kind = 'oidc' AND s.active AND ss.active
             ORDER BY lower(o.name), o.id, lower(st.name), st.id
+            LIMIT 51 OFFSET $2
             """, db);
         command.Parameters.AddWithValue(subject);
+        command.Parameters.AddWithValue(offset);
         await using var rows = await command.ExecuteReaderAsync(ct);
         var items = new List<MyStoreItem>();
         while (await rows.ReadAsync(ct))
             items.Add(new(rows.GetGuid(0), rows.GetString(1), rows.GetGuid(2), rows.GetString(3), rows.GetString(4),
-                rows.GetBoolean(5), rows.GetBoolean(6)));
-        return new(items);
+                UtcOffsetMinutes(rows.GetString(4)), rows.GetBoolean(5), rows.GetBoolean(6)));
+        var nextOffset = items.Count > 50 ? offset + 50 : (int?)null;
+        if (nextOffset.HasValue)
+            items.RemoveAt(items.Count - 1);
+        return new(items, nextOffset);
     }
+
+    private static int UtcOffsetMinutes(string timeZone) => checked((int)TimeZoneInfo
+        .FindSystemTimeZoneById(timeZone).GetUtcOffset(DateTimeOffset.UtcNow).TotalMinutes);
 
     public async Task<StoreOperatorPage> ListOperators(HttpContext context, Guid store, CancellationToken ct)
     {
