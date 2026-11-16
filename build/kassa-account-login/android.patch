@@ -1080,6 +1080,28 @@
 +    expect(paths, ['/v1/me/stores', '/v1/platform/test-stores', '/v1/me/roles']);
    });
  }
+--- a/apps/mobile-flutter/test/receipt_workflow_test.dart
++++ b/apps/mobile-flutter/test/receipt_workflow_test.dart
+@@ -288,7 +288,7 @@
+ 
+         await tester.pumpWidget(KassaApp(pos: pos, debugPilot: true));
+         await tester.pumpAndSettle();
+-        await tap('Войти');
++        await tap('Войти в аккаунт');
+         await switchTo('Администратор', 'Приёмщик');
+         await tap('Черновик накладной');
+         if (linked) {
+--- a/apps/mobile-flutter/test/refund_test.dart
++++ b/apps/mobile-flutter/test/refund_test.dart
+@@ -262,7 +262,7 @@
+         await tester.pumpAndSettle();
+       }
+ 
+-      await tap('Войти');
++      await tap('Войти в аккаунт');
+       expect(
+         find.text('Расчётные наличные появятся после закрытия смены.'),
+         findsOneWidget,
 --- a/apps/mobile-flutter/test/session_test.dart
 +++ b/apps/mobile-flutter/test/session_test.dart
 @@ -20,6 +20,13 @@
@@ -1096,7 +1118,20 @@
  
    @override
    Future<TokenResponse> token(TokenRequest request) {
-@@ -86,8 +93,70 @@
+@@ -33,7 +40,11 @@
+ const _discovery = '$issuer/.well-known/openid-configuration';
+ 
+ http.Response _reply(Map<String, Object?> data, {int status = 200}) =>
+-    http.Response(jsonEncode(data), status);
++    http.Response.bytes(
++      utf8.encode(jsonEncode(data)),
++      status,
++      headers: {'content-type': 'application/json; charset=utf-8'},
++    );
+ 
+ http.Response _metadata({String tokenUri = _token}) => _reply({
+   'issuer': issuer,
+@@ -86,8 +97,70 @@
      auth = _Auth();
    });
  
@@ -1168,7 +1203,7 @@
      auth.exchange = (_) async => renewed('cashier', 'rotated');
      final restarted = _login(storage, auth);
      expect(await restarted.restore(), isTrue);
-@@ -102,7 +171,7 @@
+@@ -102,7 +175,7 @@
    test(
      'preserves session on network error and removes an invalid grant',
      () async {
@@ -1177,7 +1212,7 @@
        auth.exchange = (_) async => throw TimeoutException('test');
        final restarted = _login(storage, auth);
        await expectLater(
-@@ -129,7 +198,7 @@
+@@ -129,7 +202,7 @@
    );
  
    test('rejects a restored token issued to a different account', () async {
@@ -1186,7 +1221,7 @@
      auth.exchange = (_) async => renewed('other', 'wrong');
      final restarted = _login(storage, auth);
      expect(await restarted.restore(), isFalse);
-@@ -139,7 +208,7 @@
+@@ -139,7 +212,7 @@
    test(
      'temporary administrator login leaves the cashier credential alone',
      () async {
@@ -1195,7 +1230,7 @@
        final cashierRecord = await storage.read(key: key);
        auth.subject = 'admin';
        final approval = _login(storage, auth);
-@@ -156,7 +225,7 @@
+@@ -156,7 +229,7 @@
      'logout revokes a token rotated during logout and cannot restore it',
      () async {
        final login = _login(storage, auth);
@@ -1204,7 +1239,7 @@
        final rotation = Completer<TokenResponse>();
        auth.exchange = (_) => rotation.future;
        final refresh = expectLater(
-@@ -198,7 +267,7 @@
+@@ -198,7 +271,7 @@
      'untrusted revocation endpoint gets no token and local logout succeeds',
      () async {
        final login = _login(storage, auth);
@@ -1213,7 +1248,7 @@
        final client = MockClient((request) async {
          expect(request.method, 'GET');
          return http.Response(
-@@ -243,7 +312,7 @@
+@@ -243,7 +316,7 @@
        }),
      )..onDeviceLoginPrompt = (prompt) { displayed = prompt; };
  
@@ -1222,7 +1257,7 @@
      expect(displayed?.code, 'ABCD-EFGH');
      expect(displayed?.verificationUri.toString(), '$issuer/device');
      expect(waits, [5, 5, 10]);
-@@ -262,7 +331,7 @@
+@@ -262,7 +335,7 @@
          fail('Cancelled device sent a token request');
        }),
      )..onDeviceLoginPrompt = (_) { displaying.complete(); };
@@ -1231,7 +1266,7 @@
      await displaying.future;
      login.cancelDeviceLogin();
      await attempt;
-@@ -278,7 +347,7 @@
+@@ -278,7 +351,7 @@
          return _metadata(tokenUri: 'https://other.invalid/token');
        }),
      );
@@ -1240,7 +1275,7 @@
      expect(await storage.read(key: key), isNull);
    });
  
-@@ -292,7 +361,7 @@
+@@ -292,7 +365,7 @@
          return _reply({'error': 'access_denied'}, status: 400);
        }),
      );
@@ -1249,7 +1284,7 @@
        (failure) => failure.code, 'code', 'device_login_denied',
      )));
      expect(await storage.read(key: key), isNull);
-@@ -312,7 +381,7 @@
+@@ -312,7 +385,7 @@
      final pos = Pos(storage, login: login, productionContract: true);
      await tester.pumpWidget(KassaApp(pos: pos));
      await tester.pumpAndSettle();
@@ -1258,7 +1293,7 @@
      await tester.pump();
      await tester.pump(const Duration(milliseconds: 500));
      expect(find.text('Вход по коду'), findsOneWidget);
-@@ -322,7 +391,7 @@
+@@ -322,7 +395,7 @@
      await tester.tap(find.text('Отмена'));
      await tester.pumpAndSettle();
      expect(find.text('Вход по коду'), findsNothing);
@@ -1327,17 +1362,20 @@
            );
            final body = jsonDecode(request.body) as Json;
            writes++;
-@@ -280,12 +281,17 @@
+@@ -279,13 +280,19 @@
+             throw http.ClientException('lost response');
            }
            expect(body, posted);
-           return http.Response(
+-          return http.Response(
 -            jsonEncode({'productId': body['productId'], 'barcode': barcode}),
-+            jsonEncode({
++          return http.Response.bytes(
++            utf8.encode(jsonEncode({
 +              'proposalId': body['proposalId'],
 +              'status': 'pending',
 +              'product': body['product'],
-+            }),
++            })),
              200,
++            headers: {'content-type': 'application/json; charset=utf-8'},
            );
          }),
        );
@@ -1347,7 +1385,7 @@
        final suggestion = (await pos.sharedProduct(barcode))!;
        expect(
          suggestion.keys,
-@@ -309,13 +315,13 @@
+@@ -309,13 +316,13 @@
          ],
        };
        await expectLater(
@@ -1366,6 +1404,15 @@
        expect(writes, 2);
 --- a/apps/mobile-flutter/test/widget_test.dart
 +++ b/apps/mobile-flutter/test/widget_test.dart
+@@ -38,7 +38,7 @@
+     await tester.tap(find.text('O‘zbekcha'));
+     await tester.pumpAndSettle();
+     expect(find.text('Ish joyi'), findsOneWidget);
+-    expect(find.text('Kirish'), findsOneWidget);
++    expect(find.text('Hisobga kirish'), findsOneWidget);
+     expect(await storage.read(key: 'kassa.ui.language'), 'uz');
+ 
+     await tester.pumpWidget(const SizedBox.shrink());
 @@ -147,7 +147,7 @@
  
      await tester.pumpWidget(KassaApp(pos: pos, debugPilot: true));

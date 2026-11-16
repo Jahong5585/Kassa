@@ -33,7 +33,7 @@ jobs:
           echo 'e5cd036e3eae92aa1b3b2c8424220b9b685c26e3324c4c28ba29551ea162f522  source.zip' | sha256sum --check
           unzip -q source.zip -d compiled-source
           patch --batch -p1 -d compiled-source < build/kassa-first-login/android.patch
-          echo 'c85a91183db09fd25ddd5dffc20ecab278531b35c371040bbf06766c43a70615  build/kassa-account-login/android.patch' | sha256sum --check
+          echo '5289966787cc40e1e3e74fcdc00f5ba9588258dea619404393214e84cc8d4627  build/kassa-account-login/android.patch' | sha256sum --check
           patch --batch --fuzz=0 -p1 -d compiled-source < build/kassa-account-login/android.patch
 
       - name: Install Android build components
