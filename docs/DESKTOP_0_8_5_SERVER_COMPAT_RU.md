@@ -179,7 +179,7 @@ Content-Type: application/json
 Операционный запрос сотрудника:
 
 ```http
-POST /v1/stores/<store_uuid>/shifts/open HTTP/1.1
+POST /v1/shifts HTTP/1.1
 Authorization: Bearer <oidc_access_token>
 X-Operator-Session: <employee_operator_session_token>
 X-Active-Role: cashier
@@ -188,6 +188,7 @@ X-Register-Key: <register_key>
 Content-Type: application/json
 
 {
+  "shiftId": "<shift_uuid>",
   "openingCash": 0
 }
 ```

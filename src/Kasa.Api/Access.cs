@@ -67,17 +67,16 @@ internal static class Access
             rows.GetDateTime(11));
         await rows.DisposeAsync();
         var idleMinutes = identity.AssignedRoles.Contains("admin", StringComparer.Ordinal) || identity.Owner ? 15 : 30;
-        var source = context.RequestServices.GetRequiredService<NpgsqlDataSource>();
-        await using var touchDb = await source.OpenConnectionAsync(ct);
-        await using var touch = new NpgsqlCommand("""
+        await using var touch = db.Sql(tx, """
             UPDATE operator_sessions
-            SET last_seen_at = now(), idle_expires_at = LEAST(now() + make_interval(mins => $2), absolute_expires_at)
-            WHERE id = $1 RETURNING idle_expires_at
-            """, touchDb);
-        touch.Parameters.AddWithValue(identity.SessionId);
-        touch.Parameters.AddWithValue(idleMinutes);
+            SET last_seen_at = statement_timestamp(),
+                idle_expires_at = LEAST(statement_timestamp() + make_interval(mins => $2), absolute_expires_at)
+            WHERE id = $1 AND revoked_at IS NULL
+              AND idle_expires_at > statement_timestamp() AND absolute_expires_at > statement_timestamp()
+            RETURNING idle_expires_at
+            """, identity.SessionId, idleMinutes);
         var idleExpiresAt = (DateTime)(await touch.ExecuteScalarAsync(ct)
-            ?? throw new PosError(401, "operator_session_invalid"));
+            ?? throw new PosError(401, "operator_session_expired"));
         identity = identity with { IdleExpiresAt = idleExpiresAt };
         context.Items[OperatorSessionItem] = identity;
         return identity;
@@ -87,6 +86,8 @@ internal static class Access
         HttpContext context, Guid store, CancellationToken ct)
     {
         var principal = await ReadPrincipal(db, tx, context, ct);
+        if (principal.Store is { } sessionStore && sessionStore != store)
+            throw new PosError(409, "operator_store_mismatch");
         var assignment = await ReadStoreAssignment(db, tx, principal, store, ct);
         return new StaffRoleSelection(principal.Organization, principal.Staff, store, assignment.TimeZone,
             AvailableRoles(assignment.Roles, assignment.Owner), assignment.Owner);

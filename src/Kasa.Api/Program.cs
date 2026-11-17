@@ -364,6 +364,7 @@ app.Use(async (context, next) =>
             .OpenConnectionAsync(context.RequestAborted);
         await using var tx = await db.BeginTransactionAsync(context.RequestAborted);
         await Access.RequireOperatorSession(db, tx, context, context.RequestAborted);
+        await tx.CommitAsync(context.RequestAborted);
     }
     await next(context);
 });

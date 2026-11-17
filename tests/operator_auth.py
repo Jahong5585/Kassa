@@ -105,6 +105,11 @@ def main():
     assert owner_session["operator"]["roles"] == ["admin", "cashier", "receiver"]
     call("/v1/operator-sessions/current", session=owner_token, role="admin")
     call(f"/v1/stores/{FOREIGN_STORE}/employees", expected=409, session=owner_token, role="admin")
+    same_store_roles, _ = call(f"/v1/me/roles?storeId={STORE}", session=owner_token, role="admin")
+    assert same_store_roles["owner"] is True
+    wrong_store, _ = call(f"/v1/me/roles?storeId={SECOND_STORE}", expected=409,
+                          session=owner_token, role="admin")
+    assert wrong_store["code"] == "operator_store_mismatch"
 
     create = {"employeeId": EMPLOYEE, "firstName": "Саида", "lastName": "Каримова",
               "roles": ["cashier", "receiver"], "password": PASSWORD,
@@ -185,8 +190,27 @@ def main():
     assert active_shift["shiftId"] == desktop_shift_id and active_shift["closedAt"] is None
     if capture_contract:
         print("CAPTURE shift-active-open 200 " + json.dumps(active_shift, ensure_ascii=False, sort_keys=True))
-    call(f"/v1/shifts/{desktop_shift_id}/close", {"countedCash": 1000}, session=desktop_token,
-         role="cashier", headers={"X-Register-Id": NEW_REGISTER, "X-Register-Key": new_register_key})
+    cashier = {"session": desktop_token, "role": "cashier",
+               "headers": {"X-Register-Id": NEW_REGISTER, "X-Register-Key": new_register_key}}
+    barcode_path = "/v1/catalog/barcodes/2100000090231"
+    product, _ = call(barcode_path, **cashier)
+    lot, = product["lots"]
+    assert lot["quantity"] == 10 and product["unitPrice"] == 1000
+    items = [{"productId": product["productId"], "lotId": lot["lotId"],
+              "priceVersion": product["priceVersion"], "quantity": 1}]
+    quote, _ = call(f"/v1/shifts/{desktop_shift_id}/quote", {"items": items}, **cashier)
+    assert quote["total"] == 1000
+    sale_body = {"operationId": str(uuid.uuid4()), "shiftId": desktop_shift_id, "method": "cash",
+                 "tendered": 1200, "items": items}
+    sale, _ = call("/v1/sales", sale_body, **cashier)
+    assert sale["total"] == 1000 and sale["changeDue"] == 200
+    recovered, _ = call(f"/v1/sales/{sale_body['operationId']}", **cashier)
+    replayed, _ = call("/v1/sales", sale_body, **cashier)
+    assert recovered == replayed == sale
+    after_sale, _ = call(barcode_path, **cashier)
+    assert after_sale["lots"][0]["quantity"] == 9
+    closed, _ = call(f"/v1/shifts/{desktop_shift_id}/close", {"countedCash": 2000}, **cashier)
+    assert closed["expectedCash"] == 2000 and closed["cashDifference"] == 0
     no_active_shift, _ = call("/v1/shifts/active", expected=204, session=desktop_token, role="cashier",
                               headers={"X-Register-Id": NEW_REGISTER, "X-Register-Key": new_register_key})
     assert no_active_shift is None
