@@ -173,16 +173,19 @@
        'shortage_already_reviewed' => 'Недостача уже подтверждена. Обновите итог смены.',
        'shift_shortage_missing' => 'В закрытой смене нет недостачи.',
        'invalid_manual_discount' => 'Проверьте размер и причину скидки.',
-@@ -1099,6 +1108,8 @@
+@@ -1099,6 +1108,11 @@
        }
        if (success) return data;
        final code = data is Json ? data['code'] : null;
-+      final requestId = response.headers['x-request-id'] ??
++      final requestId = response.headers.entries
++              .where((header) => header.key.toLowerCase() == 'x-request-id')
++              .firstOrNull
++              ?.value ??
 +          (data is Json ? data['traceId'] : null);
        throw ApiFailure(
          response.statusCode,
          code is String && RegExp(r'^[a-z][a-z0-9_]{0,70}$').hasMatch(code)
-@@ -1106,6 +1117,10 @@
+@@ -1106,6 +1120,10 @@
              : 'request_failed',
          emptyResponse: response.bodyBytes.isEmpty,
          row: data is Json && data['row'] is int ? data['row'] as int : null,
