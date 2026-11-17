@@ -1,0 +1,782 @@
+--- a/apps/mobile-flutter/README.md
++++ b/apps/mobile-flutter/README.md
+@@ -1,4 +1,4 @@
+-# Касса для Android 0.2.78
++# Касса для Android 0.2.79
+ 
+ Исходники Flutter для магазина с персональным входом и назначением кассы. Идентификатор пакета соответствует пилоту 0.2.5 (`uz.qrspace.kassa.mobile.multirolepilot`). Для установки обновления поверх существующего пилота потребуется его исходная подпись.
+ 
+--- a/apps/mobile-flutter/lib/main.dart
++++ b/apps/mobile-flutter/lib/main.dart
+@@ -52,6 +52,7 @@
+ part 'purchase_receiving.dart';
+ part 'supplier_returns.dart';
+ part 'workplaces.dart';
++part 'workplace_ui.dart';
+ part 'store_management.dart';
+ part 'platform.dart';
+ part 'platform_store_commands.dart';
+@@ -573,20 +574,7 @@
+         child: child ?? const SizedBox.shrink(),
+       ),
+       debugShowCheckedModeBanner: false,
+-      theme: ThemeData(
+-        colorScheme: ColorScheme.fromSeed(seedColor: _blue, primary: _blue),
+-        scaffoldBackgroundColor: const Color(0xfff3f6fa),
+-        appBarTheme: const AppBarTheme(
+-          backgroundColor: _navy,
+-          foregroundColor: Colors.white,
+-        ),
+-        inputDecorationTheme: const InputDecorationTheme(
+-          filled: true,
+-          fillColor: Colors.white,
+-          border: OutlineInputBorder(),
+-        ),
+-        useMaterial3: true,
+-      ),
++      theme: _kassaTheme(),
+       home: Builder(
+         builder: (context) => Scaffold(
+           appBar: AppBar(
+@@ -687,14 +675,7 @@
+ 
+   @override
+   Widget build(BuildContext context) => Card(
+-    color: Colors.white,
+-    elevation: 0,
+-    margin: const EdgeInsets.only(bottom: 12),
+-    shape: RoundedRectangleBorder(
+-      borderRadius: BorderRadius.circular(14),
+-      side: const BorderSide(color: Color(0xffdbe3ee)),
+-    ),
+-    child: Padding(padding: const EdgeInsets.all(14), child: child),
++    child: Padding(padding: const EdgeInsets.all(16), child: child),
+   );
+ }
+ 
+@@ -1541,51 +1522,6 @@
+           icon: const Icon(Icons.download_done),
+           label: const _UiText('Карточки на устройстве', 'Qurilmadagi kartochkalar'),
+         ),
+-      if (!pos.demo)
+-        OutlinedButton.icon(
+-          onPressed: busy ? null : () async {
+-            await Navigator.of(context).push<void>(MaterialPageRoute(
+-              builder: (_) => _SyncOverview(pos, desk: Desk.cashier),
+-            ));
+-            if (mounted) await task(reload);
+-          },
+-          icon: const Icon(Icons.sync),
+-          label: const _UiText('Ожидают подтверждения', 'Tasdiq kutilmoqda'),
+-        ),
+-      if (!pos.demo && (ready || pendingRefund != null))
+-        OutlinedButton.icon(
+-          onPressed: busy ? null : openHistory,
+-          icon: const Icon(Icons.receipt_long_outlined),
+-          label: Text(
+-            pendingRefund == null
+-                ? 'История чеков'
+-                : 'История чеков · проверить возврат',
+-          ),
+-        ),
+-      if (!pos.demo && ready)
+-        OutlinedButton.icon(
+-          onPressed: busy
+-              ? null
+-              : () => Navigator.of(context).push<void>(
+-                  MaterialPageRoute(
+-                    builder: (_) => _ShiftArchiveScreen(pos.api, pos: pos),
+-                  ),
+-                ),
+-          icon: const Icon(Icons.history),
+-          label: const _UiText('Архив смен', 'Smenalar arxivi'),
+-        ),
+-      if (!pos.demo)
+-        OutlinedButton.icon(
+-          onPressed: busy
+-              ? null
+-              : () => Navigator.of(context).push<void>(
+-                  MaterialPageRoute(
+-                    builder: (_) => ExpiryScreen(pos, admin: false),
+-                  ),
+-                ),
+-          icon: const Icon(Icons.event_outlined),
+-          label: const _UiText('Сроки годности', 'Yaroqlilik muddatlari'),
+-        ),
+       if (pendingShift != null)
+         OutlinedButton(
+           onPressed: busy ? null : _retryShift,
+@@ -1609,11 +1545,19 @@
+           child: Column(
+             crossAxisAlignment: CrossAxisAlignment.start,
+             children: [
+-              Text(
+-                shift == null
+-                    ? _tr(context, 'Смена закрыта', 'Smena yopilgan')
+-                    : _tr(context, 'Смена открыта', 'Smena ochiq'),
+-                style: Theme.of(context).textTheme.titleMedium,
++              Row(
++                children: [
++                  _RegisterStatusDot(active: shift != null),
++                  const SizedBox(width: 8),
++                  Expanded(
++                    child: Text(
++                      shift == null
++                          ? _tr(context, 'Смена закрыта', 'Smena yopilgan')
++                          : _tr(context, 'Смена открыта', 'Smena ochiq'),
++                      style: Theme.of(context).textTheme.titleMedium,
++                    ),
++                  ),
++                ],
+               ),
+               if (shift case final current?) ...[
+                 if (current['businessDate'] case final String date)
+@@ -1632,17 +1576,20 @@
+                 spacing: 8,
+                 runSpacing: 8,
+                 children: [
+-                  OutlinedButton(
+-                    onPressed: busy || locked || lines.isNotEmpty
+-                        ? null
+-                        : () => changeShift(),
+-                    child: Text(
+-                      shift == null
+-                            ? _tr(context, 'Открыть смену', 'Smenani ochish')
+-                            : _tr(context, 'Закрыть смену', 'Smenani yopish'),
++                  if (shift == null)
++                    FilledButton(
++                      onPressed: busy || locked || lines.isNotEmpty
++                          ? null
++                          : () => changeShift(),
++                      child: const _UiText('Открыть смену', 'Smenani ochish'),
++                    )
++                  else ...[
++                    OutlinedButton(
++                      onPressed: busy || locked || lines.isNotEmpty
++                          ? null
++                          : () => changeShift(),
++                      child: const _UiText('Закрыть смену', 'Smenani yopish'),
+                     ),
+-                  ),
+-                  if (shift != null) ...[
+                     if (!pos.demo && !pos.api.productionContract)
+                       OutlinedButton(
+                         onPressed: busy || locked || lines.isNotEmpty
+@@ -1793,6 +1740,51 @@
+             ],
+           ),
+         ),
++      if (!pos.demo)
++        OutlinedButton.icon(
++          onPressed: busy ? null : () async {
++            await Navigator.of(context).push<void>(MaterialPageRoute(
++              builder: (_) => _SyncOverview(pos, desk: Desk.cashier),
++            ));
++            if (mounted) await task(reload);
++          },
++          icon: const Icon(Icons.sync),
++          label: const _UiText('Ожидают подтверждения', 'Tasdiq kutilmoqda'),
++        ),
++      if (!pos.demo && (ready || pendingRefund != null))
++        OutlinedButton.icon(
++          onPressed: busy ? null : openHistory,
++          icon: const Icon(Icons.receipt_long_outlined),
++          label: Text(
++            pendingRefund == null
++                ? 'История чеков'
++                : 'История чеков · проверить возврат',
++          ),
++        ),
++      if (!pos.demo && ready)
++        OutlinedButton.icon(
++          onPressed: busy
++              ? null
++              : () => Navigator.of(context).push<void>(
++                  MaterialPageRoute(
++                    builder: (_) => _ShiftArchiveScreen(pos.api, pos: pos),
++                  ),
++                ),
++          icon: const Icon(Icons.history),
++          label: const _UiText('Архив смен', 'Smenalar arxivi'),
++        ),
++      if (!pos.demo)
++        OutlinedButton.icon(
++          onPressed: busy
++              ? null
++              : () => Navigator.of(context).push<void>(
++                  MaterialPageRoute(
++                    builder: (_) => ExpiryScreen(pos, admin: false),
++                  ),
++                ),
++          icon: const Icon(Icons.event_outlined),
++          label: const _UiText('Сроки годности', 'Yaroqlilik muddatlari'),
++        ),
+       if (receipt case final result?)
+         Section(
+           child: Column(
+--- a/apps/mobile-flutter/lib/store_management.dart
++++ b/apps/mobile-flutter/lib/store_management.dart
+@@ -318,7 +318,7 @@
+     });
+   }
+ 
+-  Widget _staffTile(StoreStaffMember member) {
++  ListTile _staffTile(StoreStaffMember member) {
+     final owner = member.roles.contains('owner');
+     final roles = [
+       if (owner) 'Владелец',
+@@ -334,7 +334,7 @@
+         const PopupMenuItem(value: 'revoke', child: _UiText('Отозвать доступ', 'Ruxsatni bekor qilish')),
+     ];
+     return ListTile(
+-      contentPadding: EdgeInsets.zero,
++      leading: const Icon(Icons.person_outline, size: 20),
+       title: Text(member.subject),
+       subtitle: Text([
+         roles.join(', '),
+@@ -355,12 +355,24 @@
+     );
+   }
+ 
+-  Widget _registerTile(StoreRegister register) => ListTile(
+-    contentPadding: EdgeInsets.zero,
++  ListTile _registerTile(StoreRegister register) => ListTile(
++    leading: const Icon(Icons.point_of_sale_outlined, size: 20),
+     title: Text(register.name),
+-    subtitle: Text(register.active
+-        ? 'Активна · Кассиров: ${register.cashiers.length}'
+-        : 'Отключена'),
++    subtitle: Row(
++      children: [
++        _RegisterStatusDot(active: register.active),
++        const SizedBox(width: 8),
++        Flexible(
++          child: Text(register.active
++              ? _tr(
++                  context,
++                  'Активна · Кассиров: ${register.cashiers.length}',
++                  'Faol · Kassirlar: ${register.cashiers.length}',
++                )
++              : _tr(context, 'Отключена', 'O‘chirilgan')),
++        ),
++      ],
++    ),
+     trailing: register.active ? PopupMenuButton<String>(
+       enabled: !busy && _loaded && _journalReady && !_pendingKey,
+       tooltip: _tr(context, 'Действия кассы', 'Kassa amallari'),
+@@ -377,66 +389,82 @@
+   @override
+   Widget build(BuildContext context) => PopScope(
+     canPop: !busy,
+-    child: Scaffold(
+-      appBar: AppBar(
+-        title: const _UiText('Сотрудники и кассы', 'Xodimlar va kassalar'),
+-        actions: [
+-          IconButton(
+-            onPressed: busy ? null : () => task(_load),
+-            tooltip: _tr(context, 'Обновить', 'Yangilash'),
+-            icon: const Icon(Icons.refresh),
+-          ),
+-        ],
+-      ),
+-      body: ListView(
+-        padding: const EdgeInsets.all(16),
+-        children: [
+-          SegmentedButton<bool>(
+-            showSelectedIcon: false,
+-            segments: const [
+-              ButtonSegment(value: false, label: _UiText('Сотрудники', 'Xodimlar')),
+-              ButtonSegment(value: true, label: _UiText('Кассы', 'Kassalar')),
+-            ],
+-            selected: {_showRegisters},
+-            onSelectionChanged: busy ? null : (selected) {
+-              if (selected.single == _showRegisters) return;
+-              _showRegisters = selected.single;
+-              _loaded = false;
+-              task(_load);
+-            },
+-          ),
+-          const SizedBox(height: 12),
+-          if (busy) const LinearProgressIndicator(),
+-          if (status != null) StatusBox(status!, error: failed),
+-          if (_showRegisters) ...[
+-            if (_pendingKey)
+-              OutlinedButton(
+-                onPressed: busy ? null : () => _issueKey(_api.retryKey),
+-                child: const _UiText('Получить ключ кассы', 'Kassa kalitini olish'),
+-              ),
+-            FilledButton(
+-              onPressed: busy || !_loaded || !_journalReady || _pendingKey ? null : _addRegister,
+-              child: const _UiText('Зарегистрировать кассу', 'Kassani ro‘yxatdan o‘tkazish'),
++    child: _WorkplacePage(
++      title: const _UiText('Сотрудники и кассы', 'Xodimlar va kassalar'),
++      actions: [
++        IconButton(
++          onPressed: busy ? null : () => task(_load),
++          tooltip: _tr(context, 'Обновить', 'Yangilash'),
++          icon: const Icon(Icons.refresh),
++        ),
++      ],
++      children: [
++        SegmentedButton<bool>(
++          showSelectedIcon: false,
++          style: ButtonStyle(
++            minimumSize: const WidgetStatePropertyAll(Size(0, 44)),
++            shape: const WidgetStatePropertyAll(
++              RoundedRectangleBorder(borderRadius: _workplaceControlRadius),
+             ),
+-            if (_loaded && _registers.isEmpty)
+-              const _UiStatus('Кассы ещё не зарегистрированы.', 'Kassalar hali ro‘yxatga olinmagan.'),
+-            for (final register in _registers.values) _registerTile(register),
+-          ] else ...[
+-            FilledButton(
+-              onPressed: busy || !_loaded ? null : _addStaff,
+-              child: const _UiText('Подключить сотрудника', 'Xodimni ulash'),
++            side: const WidgetStatePropertyAll(BorderSide(color: _workplaceLine)),
++            foregroundColor: WidgetStateProperty.resolveWith((states) {
++              if (states.contains(WidgetState.disabled)) return _workplaceMeta;
++              return states.contains(WidgetState.selected) ? _blue : _workplaceInk;
++            }),
++            backgroundColor: WidgetStateProperty.resolveWith((states) =>
++              states.contains(WidgetState.selected) ? const Color(0xffe9eefb) : Colors.white,
+             ),
+-            if (_loaded && _staff.isEmpty)
+-              const _UiStatus('Сотрудники пока не подключены.', 'Xodimlar hali ulanmagan.'),
+-            for (final member in _staff.values) _staffTile(member),
++          ),
++          segments: const [
++            ButtonSegment(value: false, label: _UiText('Сотрудники', 'Xodimlar')),
++            ButtonSegment(value: true, label: _UiText('Кассы', 'Kassalar')),
+           ],
+-          if ((_showRegisters ? _registerOffset : _staffOffset) != null)
++          selected: {_showRegisters},
++          onSelectionChanged: busy ? null : (selected) {
++            if (selected.single == _showRegisters) return;
++            _showRegisters = selected.single;
++            _loaded = false;
++            task(_load);
++          },
++        ),
++        const SizedBox(height: 12),
++        if (busy) const LinearProgressIndicator(),
++        if (status != null) StatusBox(status!, error: failed),
++        if (_showRegisters) ...[
++          if (_pendingKey)
+             OutlinedButton(
+-              onPressed: busy ? null : () => task(() => _load(more: true)),
+-              child: const _UiText('Показать ещё', 'Yana ko‘rsatish'),
++              onPressed: busy ? null : () => _issueKey(_api.retryKey),
++              child: const _UiText('Получить ключ кассы', 'Kassa kalitini olish'),
+             ),
++          if (_pendingKey) const SizedBox(height: 4),
++          FilledButton.icon(
++            onPressed: busy || !_loaded || !_journalReady || _pendingKey ? null : _addRegister,
++            icon: const Icon(Icons.add, size: 20),
++            label: const _UiText('Зарегистрировать кассу', 'Kassani ro‘yxatdan o‘tkazish'),
++          ),
++          const SizedBox(height: 12),
++          if (_loaded && _registers.isEmpty)
++            const _UiStatus('Кассы ещё не зарегистрированы', 'Kassalar hali ro‘yxatga olinmagan'),
++          for (final register in _registers.values)
++            _WorkplaceRow(child: _registerTile(register)),
++        ] else ...[
++          FilledButton.icon(
++            onPressed: busy || !_loaded ? null : _addStaff,
++            icon: const Icon(Icons.add, size: 20),
++            label: const _UiText('Подключить сотрудника', 'Xodimni ulash'),
++          ),
++          const SizedBox(height: 12),
++          if (_loaded && _staff.isEmpty)
++            const _UiStatus('Сотрудники пока не подключены', 'Xodimlar hali ulanmagan'),
++          for (final member in _staff.values)
++            _WorkplaceRow(child: _staffTile(member)),
+         ],
+-      ),
++        if ((_showRegisters ? _registerOffset : _staffOffset) != null)
++          OutlinedButton(
++            onPressed: busy ? null : () => task(() => _load(more: true)),
++            child: const _UiText('Показать ещё', 'Yana ko‘rsatish'),
++          ),
++      ],
+     ),
+   );
+ }
+--- /dev/null
++++ b/apps/mobile-flutter/lib/workplace_ui.dart
+@@ -0,0 +1,161 @@
++part of 'main.dart';
++
++const _workplaceSurface = Color(0xfff7f8fa);
++const _workplaceLine = Color(0xffdfe4ec);
++const _workplaceInk = Color(0xff1b2536);
++const _workplaceMeta = Color(0xff536075);
++const _workplaceControlRadius = BorderRadius.all(Radius.circular(10));
++
++ThemeData _kassaTheme() {
++  final scheme = ColorScheme.fromSeed(
++    seedColor: _blue,
++    primary: _blue,
++    onPrimary: Colors.white,
++    primaryContainer: const Color(0xffe9eefb),
++    onPrimaryContainer: const Color(0xff20378f),
++    surface: Colors.white,
++    onSurface: _workplaceInk,
++    onSurfaceVariant: _workplaceMeta,
++    outline: const Color(0xff7a879b),
++    outlineVariant: _workplaceLine,
++  );
++  const button = RoundedRectangleBorder(borderRadius: _workplaceControlRadius);
++  const field = OutlineInputBorder(borderRadius: _workplaceControlRadius);
++  const panel = RoundedRectangleBorder(
++    borderRadius: BorderRadius.all(Radius.circular(16)),
++    side: BorderSide(color: _workplaceLine),
++  );
++  return ThemeData(
++    colorScheme: scheme,
++    scaffoldBackgroundColor: _workplaceSurface,
++    fontFamily: 'Roboto',
++    appBarTheme: const AppBarTheme(
++      backgroundColor: _navy,
++      foregroundColor: Colors.white,
++      surfaceTintColor: Colors.transparent,
++      titleTextStyle: TextStyle(
++        color: Colors.white,
++        fontSize: 20,
++        fontWeight: FontWeight.w500,
++      ),
++    ),
++    filledButtonTheme: FilledButtonThemeData(
++      style: FilledButton.styleFrom(minimumSize: const Size(0, 48), shape: button),
++    ),
++    outlinedButtonTheme: OutlinedButtonThemeData(
++      style: OutlinedButton.styleFrom(
++        minimumSize: const Size(0, 48),
++        foregroundColor: _workplaceInk,
++        side: const BorderSide(color: _workplaceLine),
++        shape: button,
++      ),
++    ),
++    textButtonTheme: TextButtonThemeData(
++      style: TextButton.styleFrom(shape: button),
++    ),
++    inputDecorationTheme: const InputDecorationTheme(
++      filled: true,
++      fillColor: Colors.white,
++      border: field,
++      enabledBorder: OutlineInputBorder(
++        borderRadius: _workplaceControlRadius,
++        borderSide: BorderSide(color: Color(0xffaeb9c9)),
++      ),
++      focusedBorder: OutlineInputBorder(
++        borderRadius: _workplaceControlRadius,
++        borderSide: BorderSide(color: _blue, width: 2),
++      ),
++    ),
++    cardTheme: const CardThemeData(
++      color: Colors.white,
++      surfaceTintColor: Colors.transparent,
++      elevation: 0,
++      margin: EdgeInsets.only(bottom: 12),
++      shape: panel,
++    ),
++    dialogTheme: const DialogThemeData(
++      backgroundColor: Colors.white,
++      surfaceTintColor: Colors.transparent,
++      shape: panel,
++    ),
++    dividerTheme: const DividerThemeData(color: _workplaceLine, thickness: 1),
++    useMaterial3: true,
++  );
++}
++
++class _WorkplacePage extends StatelessWidget {
++  const _WorkplacePage({
++    required this.title,
++    required this.children,
++    this.actions = const [],
++  });
++
++  final Widget title;
++  final List<Widget> children;
++  final List<Widget> actions;
++
++  @override
++  Widget build(BuildContext context) => Scaffold(
++    appBar: AppBar(title: title, actions: actions),
++    body: SafeArea(
++      top: false,
++      child: ListView(
++        padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
++        children: children,
++      ),
++    ),
++  );
++}
++
++class _WorkplaceRow extends StatelessWidget {
++  const _WorkplaceRow({required this.child});
++
++  final ListTile child;
++
++  @override
++  Widget build(BuildContext context) => Padding(
++    padding: const EdgeInsets.only(bottom: 4),
++    child: Material(
++      color: Colors.white,
++      clipBehavior: Clip.antiAlias,
++      shape: const RoundedRectangleBorder(
++        borderRadius: _workplaceControlRadius,
++        side: BorderSide(color: _workplaceLine),
++      ),
++      child: ListTileTheme(
++        data: const ListTileThemeData(
++          contentPadding: EdgeInsets.symmetric(horizontal: 12),
++          minVerticalPadding: 12,
++          horizontalTitleGap: 12,
++          iconColor: _workplaceMeta,
++          titleTextStyle: TextStyle(
++            color: _workplaceInk,
++            fontSize: 16,
++            fontWeight: FontWeight.w500,
++          ),
++          subtitleTextStyle: TextStyle(
++            color: _workplaceMeta,
++            fontSize: 13,
++            height: 1.4,
++          ),
++        ),
++        child: child,
++      ),
++    ),
++  );
++}
++
++class _RegisterStatusDot extends StatelessWidget {
++  const _RegisterStatusDot({required this.active});
++
++  final bool active;
++
++  @override
++  Widget build(BuildContext context) => DecoratedBox(
++    decoration: BoxDecoration(
++      color: active ? const Color(0xff26734e) : _workplaceMeta,
++      shape: BoxShape.circle,
++    ),
++    child: const SizedBox.square(dimension: 8),
++  );
++}
+--- a/apps/mobile-flutter/lib/workplaces.dart
++++ b/apps/mobile-flutter/lib/workplaces.dart
+@@ -113,58 +113,56 @@
+   }
+ 
+   @override
+-  Widget build(BuildContext context) => Scaffold(
+-    appBar: AppBar(
+-      title: const _UiText('Доступные магазины', 'Mavjud do‘konlar'),
+-      actions: [
+-        if (!_usesManualSelection || _loaded)
+-          IconButton(
+-            onPressed: busy ? null : () => task(_load),
+-            tooltip: _tr(context, 'Обновить магазины', 'Do‘konlarni yangilash'),
+-            icon: const Icon(Icons.refresh),
+-          ),
++  Widget build(BuildContext context) => _WorkplacePage(
++    title: const _UiText('Доступные магазины', 'Mavjud do‘konlar'),
++    actions: [
++      if (!_usesManualSelection || _loaded)
++        IconButton(
++          onPressed: busy ? null : () => task(_load),
++          tooltip: _tr(context, 'Обновить магазины', 'Do‘konlarni yangilash'),
++          icon: const Icon(Icons.refresh),
++        ),
++    ],
++    children: [
++      if (busy) const LinearProgressIndicator(),
++      if (status != null) StatusBox(status!, error: failed),
++      if (_usesManualSelection) ...[
++        const _UiStatus(
++          'Сервер не вернул список доступных магазинов.',
++          'Server mavjud do‘konlar ro‘yxatini yubormadi.',
++        ),
++        FilledButton(
++          onPressed: busy ? null : _openById,
++          child: const _UiText('Открыть магазин по UUID', 'Do‘konni UUID orqali ochish'),
++        ),
++        const SizedBox(height: 4),
++        OutlinedButton(
++          onPressed: busy ? null : () => task(_load),
++          child: const _UiText('Тестовые магазины', 'Sinov do‘konlari'),
++        ),
++        const SizedBox(height: 12),
+       ],
+-    ),
+-    body: ListView(
+-      padding: const EdgeInsets.all(16),
+-      children: [
+-        if (busy) const LinearProgressIndicator(),
+-        if (status != null) StatusBox(status!, error: failed),
+-        if (_usesManualSelection) ...[
+-          const _UiStatus(
+-            'Сервер не вернул список доступных магазинов.',
+-            'Server mavjud do‘konlar ro‘yxatini yubormadi.',
+-          ),
+-          FilledButton(
+-            onPressed: busy ? null : _openById,
+-            child: const _UiText('Открыть магазин по UUID', 'Do‘konni UUID orqali ochish'),
+-          ),
+-          OutlinedButton(
+-            onPressed: busy ? null : () => task(_load),
+-            child: const _UiText('Тестовые магазины', 'Sinov do‘konlari'),
+-          ),
+-        ],
+-        if (_loaded && !failed && _stores.isEmpty)
+-          if (_usesManualSelection)
+-            const _UiStatus('В списке нет тестовых магазинов.', 'Ro‘yxatda sinov do‘konlari yo‘q.')
+-          else
+-            const _UiStatus('К аккаунту пока не подключён ни один магазин.', 'Hisobga hali hech bir do‘kon biriktirilmagan.'),
+-        for (final store in _stores.values)
+-          ListTile(
+-            contentPadding: EdgeInsets.zero,
+-            leading: const Icon(Icons.store_outlined),
++      if (_loaded && !failed && _stores.isEmpty)
++        if (_usesManualSelection)
++          const _UiStatus('В списке нет тестовых магазинов.', 'Ro‘yxatda sinov do‘konlari yo‘q.')
++        else
++          const _UiStatus('К аккаунту пока не подключён ни один магазин.', 'Hisobga hali hech bir do‘kon biriktirilmagan.'),
++      for (final store in _stores.values)
++        _WorkplaceRow(
++          child: ListTile(
++            leading: const Icon(Icons.store_outlined, size: 20),
+             title: Text(store.name),
+             subtitle: Text(_usesManualSelection ? store.id : store.timeZone),
+-            trailing: const Icon(Icons.chevron_right),
++            trailing: const Icon(Icons.chevron_right, size: 20),
+             onTap: busy ? null : () => _open(store),
+           ),
+-        if (_nextOffset != null)
+-          OutlinedButton(
+-            onPressed: busy ? null : () => task(() => _load(more: true)),
+-            child: const _UiText('Показать ещё', 'Yana ko‘rsatish'),
+-          ),
+-      ],
+-    ),
++        ),
++      if (_nextOffset != null)
++        OutlinedButton(
++          onPressed: busy ? null : () => task(() => _load(more: true)),
++          child: const _UiText('Показать ещё', 'Yana ko‘rsatish'),
++        ),
++    ],
+   );
+ }
+ 
+@@ -313,54 +311,60 @@
+         roles?.where((role) => role != Desk.cashier).toList() ?? [];
+     return PopScope(
+       canPop: !busy,
+-      child: Scaffold(
+-        appBar: AppBar(title: Text(widget.store.name)),
+-        body: ListView(
+-          padding: const EdgeInsets.all(16),
+-          children: [
+-            if (busy && !_askingKey) const LinearProgressIndicator(),
+-            if (status != null) StatusBox(status!, error: failed),
+-            if (roles == null && !busy)
+-              OutlinedButton(
+-                onPressed: () => task(_load),
+-                child: const _UiText('Проверить доступ', 'Ruxsatni tekshirish'),
+-              ),
+-            if (roles?.isEmpty == true)
+-              StatusBox(_tr(context, 'Сервер не подтвердил роли в этом магазине.', 'Server bu do‘kondagi rollarni tasdiqlamadi.')),
+-            if (cashier) ...[
+-              Text(
+-                _tr(context, 'Назначенные кассы', 'Biriktirilgan kassalar'),
+-                style: Theme.of(context).textTheme.titleMedium,
++      child: _WorkplacePage(
++        title: Text(widget.store.name, overflow: TextOverflow.ellipsis),
++        children: [
++          if (busy && !_askingKey) const LinearProgressIndicator(),
++          if (status != null) StatusBox(status!, error: failed),
++          if (roles == null && !busy)
++            OutlinedButton(
++              onPressed: () => task(_load),
++              child: const _UiText('Проверить доступ', 'Ruxsatni tekshirish'),
++            ),
++          if (roles?.isEmpty == true)
++            StatusBox(_tr(context, 'Сервер не подтвердил роли в этом магазине.', 'Server bu do‘kondagi rollarni tasdiqlamadi.')),
++          if (cashier) ...[
++            Text(
++              _tr(context, 'Назначенные кассы', 'Biriktirilgan kassalar'),
++              style: const TextStyle(
++                color: _workplaceInk,
++                fontSize: 16,
++                fontWeight: FontWeight.w500,
+               ),
+-              if (widget.manualSelection && _ownerRegisters == null)
+-                OutlinedButton(
+-                  onPressed: busy ? null : _connectById,
+-                  child: const _UiText('Подключить кассу по UUID', 'Kassani UUID orqali ulash'),
+-                )
+-              else if (registers.isEmpty)
+-                StatusBox(_tr(context, 'В этом магазине вам пока не назначена касса.', 'Bu do‘konda sizga hali kassa biriktirilmagan.')),
+-              for (final register in registers)
+-                ListTile(
+-                  contentPadding: EdgeInsets.zero,
+-                  leading: const Icon(Icons.point_of_sale_outlined),
++            ),
++            const SizedBox(height: 8),
++            if (widget.manualSelection && _ownerRegisters == null)
++              OutlinedButton(
++                onPressed: busy ? null : _connectById,
++                child: const _UiText('Подключить кассу по UUID', 'Kassani UUID orqali ulash'),
++              )
++            else if (registers.isEmpty)
++              StatusBox(_tr(context, 'В этом магазине вам пока не назначена касса.', 'Bu do‘konda sizga hali kassa biriktirilmagan.')),
++            for (final register in registers)
++              _WorkplaceRow(
++                child: ListTile(
++                  leading: const Icon(Icons.point_of_sale_outlined, size: 20),
+                   title: Text(register.name),
+-                  trailing: const Icon(Icons.chevron_right),
++                  trailing: const Icon(Icons.chevron_right, size: 20),
+                   onTap: busy ? null : () => task(() => _connect(register)),
+                 ),
+-            ],
+-            if (storeRoles.isNotEmpty)
+-              ListTile(
+-                contentPadding: EdgeInsets.zero,
+-                leading: const Icon(Icons.storefront_outlined),
++              ),
++          ],
++          if (storeRoles.isNotEmpty) ...[
++            if (cashier) const SizedBox(height: 16),
++            _WorkplaceRow(
++              child: ListTile(
++                leading: const Icon(Icons.storefront_outlined, size: 20),
+                 title: const _UiText('Войти без кассы', 'Kassasiz kirish'),
+                 subtitle: Text(
+                   storeRoles.map((role) => role.nameFor(context)).join(', '),
+                 ),
+-                trailing: const Icon(Icons.chevron_right),
++                trailing: const Icon(Icons.chevron_right, size: 20),
+                 onTap: busy ? null : () => task(() => _enterStore(roles!)),
+               ),
++            ),
+           ],
+-        ),
++        ],
+       ),
+     );
+   }
+--- a/apps/mobile-flutter/pubspec.yaml
++++ b/apps/mobile-flutter/pubspec.yaml
+@@ -1,7 +1,7 @@
+ name: kassa_mobile
+ description: Android POS pilot for Kassa.
+ publish_to: none
+-version: 0.2.78+2098
++version: 0.2.79+2099
+ environment:
+   sdk: ">=3.10.0 <4.0.0"
+ dependencies:
