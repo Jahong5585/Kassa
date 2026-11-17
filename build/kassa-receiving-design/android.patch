@@ -1,0 +1,639 @@
+--- a/apps/mobile-flutter/lib/main.dart
++++ b/apps/mobile-flutter/lib/main.dart
+@@ -1901,6 +1901,7 @@
+   String unit = 'piece';
+   bool expiry = false;
+   bool pending = false;
++  bool _showDetails = false;
+   String? _suggestedBarcode;
+   String? _existingBarcode;
+ 
+@@ -1986,6 +1987,7 @@
+     category.text = suggestion['category'] as String? ?? '';
+     brand.text = suggestion['brand'] as String? ?? '';
+     shelfLife.text = suggestion['shelfLifeDays']?.toString() ?? '';
++    _showDetails = category.text.isNotEmpty || brand.text.isNotEmpty || expiry;
+     status = _tr(context,
+       'Карточка найдена. Проверьте данные перед отправкой на утверждение.',
+       'Kartochka topildi. Tasdiqlashga yuborishdan oldin ma’lumotlarni tekshiring.');
+@@ -2011,6 +2013,7 @@
+     shelfLife.clear();
+     unit = 'piece';
+     expiry = false;
++    _showDetails = false;
+     _suggestedBarcode = null;
+     _existingBarcode = null;
+     status = switch (result) {
+@@ -2023,6 +2026,7 @@
+   }
+ 
+   Future<void> save() => task(() async {
++    FocusScope.of(context).unfocus();
+     final title = name.text.trim();
+     final code = barcode.text.trim();
+     final salePrice = parseAmount(price.text);
+@@ -2047,7 +2051,7 @@
+     if (pos.demo) {
+       await pos.addProduct(title, code, expiry, salePrice, quantity);
+     } else {
+-      final daysText = shelfLife.text.trim();
++      final daysText = expiry ? shelfLife.text.trim() : '';
+       final days = int.tryParse(daysText);
+       if (daysText.isNotEmpty && (days == null || days < 1 || days > 3650)) {
+         throw const FormatException(
+@@ -2067,6 +2071,28 @@
+           ],
+         });
+         result = saved['status'] as String;
++      } on ApiFailure catch (failure) {
++        if (failure.status != 400) rethrow;
++        if (mounted) {
++          status = switch (failure.code) {
++            'invalid_product_card' => _tr(
++              context, 'Проверьте данные карточки товара.',
++              'Tovar kartochkasidagi ma’lumotlarni tekshiring.',
++            ),
++            'invalid_product_barcode' => _tr(
++              context, 'Проверьте штрихкод товара.', 'Tovar shtrixkodini tekshiring.',
++            ),
++            _ => _tr(
++              context, 'Сервер отклонил карточку товара.',
++              'Server tovar kartochkasini rad etdi.',
++            ),
++          };
++          if (failure.requestId case final id?) {
++            status = '$status\n${_tr(context, 'Запрос', 'So‘rov')} $id';
++          }
++          failed = true;
++        }
++        return;
+       } finally {
+         await _readPending();
+       }
+@@ -2074,155 +2100,257 @@
+     if (mounted) _saved(result);
+   });
+ 
+-  @override
+-  Widget build(BuildContext context) => ListView(
+-    padding: const EdgeInsets.all(16),
+-    children: [
+-      Text(
+-        _tr(context, pos.demo ? 'Учебная приёмка' : 'Приёмка',
+-          pos.demo ? 'O‘quv qabuli' : 'Tovar qabuli'),
+-        style: Theme.of(context).textTheme.headlineSmall,
++  Widget _submitButton() => SizedBox(
++    width: double.infinity,
++    child: FilledButton(
++      onPressed: busy || pending || _existingBarcode != null ? null : save,
++      child: pos.demo
++          ? const _UiText('Сохранить товар', 'Tovarni saqlash')
++          : const _UiText('Отправить на утверждение', 'Tasdiqlashga yuborish'),
++    ),
++  );
++
++  Widget _expiryField() => CheckboxListTile(
++    value: expiry,
++    contentPadding: EdgeInsets.zero,
++    title: const _UiText(
++      'Обязательный срок годности', 'Yaroqlilik muddati majburiy',
++    ),
++    onChanged: busy ? null : (value) => setState(() => expiry = value == true),
++  );
++
++  Widget _barcodePanel(BuildContext context) {
++    final theme = Theme.of(context);
++    final scheme = theme.colorScheme;
++    final scanLabel = _tr(context, 'Сканировать штрихкод', 'Shtrixkodni skanerlash');
++    return DecoratedBox(
++      decoration: BoxDecoration(
++        color: scheme.primaryContainer,
++        borderRadius: BorderRadius.circular(16),
+       ),
+-      const SizedBox(height: 12),
+-      if (busy) const LinearProgressIndicator(),
+-      if (status != null) StatusBox(status!, error: failed),
+-      if (pending)
+-        OutlinedButton(
+-          onPressed: busy ? null : _retryProduct,
+-          child: const _UiText('Проверить отправку карточки', 'Kartochka yuborilganini tekshirish'),
+-        ),
+-      Section(
++      child: Padding(
++        padding: const EdgeInsets.all(16),
+         child: Column(
+           crossAxisAlignment: CrossAxisAlignment.stretch,
+           children: [
+             _UiText(
+-              'Добавить товар', 'Mahsulot qo‘shish',
+-              style: Theme.of(context).textTheme.titleLarge,
+-            ),
+-            const SizedBox(height: 12),
+-            TextField(
+-              controller: name,
+-              enabled: !busy,
+-              maxLength: 160,
+-              decoration: InputDecoration(
+-                labelText: _tr(context, 'Название', 'Nomi'),
+-                counterText: '',
++              'Штрихкод товара', 'Tovar shtrixkodi',
++              style: theme.textTheme.titleMedium?.copyWith(
++                color: scheme.onPrimaryContainer,
++                fontWeight: FontWeight.w600,
+               ),
+             ),
+-            const SizedBox(height: 8),
+-            TextField(
+-              controller: barcode,
+-              enabled: !busy,
+-              maxLength: 64,
+-              onChanged: pos.demo
+-                  ? null
+-                  : (value) => setState(() => _changeBarcode(value)),
+-              decoration: InputDecoration(
+-                labelText: _tr(context, 'Штрихкод', 'Shtrixkod'),
+-                counterText: '',
+-                suffixIcon: IconButton(
++            const SizedBox(height: 12),
++            Row(
++              children: [
++                Expanded(
++                  child: TextField(
++                    controller: barcode,
++                    enabled: !busy,
++                    maxLength: pos.demo ? 64 : 48,
++                    keyboardType: pos.demo ? TextInputType.text : TextInputType.number,
++                    textInputAction: pos.demo ? TextInputAction.next : TextInputAction.search,
++                    onSubmitted: pos.demo ? null : (_) => _lookup(),
++                    onChanged: pos.demo ? null : (value) => setState(() => _changeBarcode(value)),
++                    decoration: InputDecoration(
++                      labelText: _tr(context, 'Штрихкод', 'Shtrixkod'),
++                      counterText: '',
++                    ),
++                  ),
++                ),
++                const SizedBox(width: 12),
++                IconButton.filled(
+                   onPressed: busy ? null : scan,
+-                  tooltip: _tr(context, 'Сканировать штрихкод', 'Shtrixkodni skanerlash'),
++                  tooltip: scanLabel,
+                   icon: const Icon(Icons.qr_code_scanner),
++                  style: IconButton.styleFrom(
++                    minimumSize: const Size(56, 56),
++                    shape: const RoundedRectangleBorder(borderRadius: _workplaceControlRadius),
++                  ),
+                 ),
+-              ),
++              ],
+             ),
+             if (!pos.demo) ...[
+-              OutlinedButton(
+-                onPressed: busy ? null : _lookup,
+-                child: const _UiText('Найти карточку по штрихкоду', 'Kartochkani shtrixkod bo‘yicha qidirish'),
+-              ),
+-              DropdownButtonFormField<String>(
+-                key: ValueKey(unit),
+-                initialValue: unit,
+-                decoration: InputDecoration(labelText: _tr(context, 'Единица', 'Birlik')),
+-                items: const [
+-                  DropdownMenuItem(value: 'piece', child: _UiText('Штука', 'Dona')),
+-                  DropdownMenuItem(value: 'kg', child: _UiText('Килограмм', 'Kilogramm')),
+-                ],
+-                onChanged: busy
+-                    ? null
+-                    : (value) => setState(() => unit = value!),
+-              ),
+-              TextField(
+-                controller: category,
+-                enabled: !busy,
+-                maxLength: 120,
+-                decoration: InputDecoration(
+-                  labelText: _tr(context, 'Категория', 'Toifa'),
+-                  counterText: '',
++              const SizedBox(height: 4),
++              Align(
++                alignment: AlignmentDirectional.centerStart,
++                child: TextButton.icon(
++                  onPressed: busy ? null : () {
++                    FocusScope.of(context).unfocus();
++                    _lookup();
++                  },
++                  icon: const Icon(Icons.search, size: 20),
++                  label: const _UiText('Найти в каталоге', 'Katalogdan qidirish'),
+                 ),
+               ),
+-              TextField(
+-                controller: brand,
+-                enabled: !busy,
+-                maxLength: 120,
+-                decoration: InputDecoration(
+-                  labelText: _tr(context, 'Бренд', 'Brend'),
+-                  counterText: '',
+-                ),
++            ],
++          ],
++        ),
++      ),
++    );
++  }
++
++  Widget _productFields(BuildContext context) => Section(
++    child: Column(
++      crossAxisAlignment: CrossAxisAlignment.stretch,
++      children: [
++        _UiText(
++          'Добавить товар', 'Mahsulot qo‘shish',
++          style: Theme.of(context).textTheme.titleMedium,
++        ),
++        const SizedBox(height: 12),
++        TextField(
++          controller: name,
++          enabled: !busy,
++          maxLength: 160,
++          textCapitalization: TextCapitalization.sentences,
++          textInputAction: TextInputAction.next,
++          decoration: InputDecoration(
++            labelText: _tr(context, 'Название', 'Nomi'),
++            counterText: '',
++          ),
++        ),
++        const SizedBox(height: 12),
++        if (pos.demo) ...[
++          TextField(
++            controller: price,
++            enabled: !busy,
++            keyboardType: const TextInputType.numberWithOptions(decimal: true),
++            decoration: InputDecoration(labelText: _tr(context, 'Цена', 'Narx')),
++          ),
++          const SizedBox(height: 12),
++          TextField(
++            controller: stock,
++            enabled: !busy,
++            keyboardType: TextInputType.number,
++            decoration: InputDecoration(
++              labelText: _tr(context, 'Начальный остаток', 'Boshlang‘ich qoldiq'),
++            ),
++          ),
++          _expiryField(),
++        ] else
++          DropdownButtonFormField<String>(
++            key: ValueKey(unit),
++            initialValue: unit,
++            decoration: InputDecoration(labelText: _tr(context, 'Единица', 'Birlik')),
++            items: const [
++              DropdownMenuItem(value: 'piece', child: _UiText('Штука', 'Dona')),
++              DropdownMenuItem(value: 'kg', child: _UiText('Килограмм', 'Kilogramm')),
++            ],
++            onChanged: busy ? null : (value) => setState(() => unit = value!),
++          ),
++      ],
++    ),
++  );
++
++  Widget _productDetails(BuildContext context) => Section(
++    child: Column(
++      crossAxisAlignment: CrossAxisAlignment.stretch,
++      children: [
++        ListTile(
++          contentPadding: EdgeInsets.zero,
++          leading: const Icon(Icons.tune),
++          title: const _UiText('Категория, бренд и срок', 'Toifa, brend va muddat'),
++          trailing: Icon(_showDetails ? Icons.expand_less : Icons.expand_more),
++          onTap: busy ? null : () => setState(() => _showDetails = !_showDetails),
++        ),
++        if (_showDetails) ...[
++          const SizedBox(height: 8),
++          TextField(
++            controller: category,
++            enabled: !busy,
++            maxLength: 120,
++            textInputAction: TextInputAction.next,
++            decoration: InputDecoration(
++              labelText: _tr(context, 'Категория', 'Toifa'),
++              counterText: '',
++            ),
++          ),
++          const SizedBox(height: 12),
++          TextField(
++            controller: brand,
++            enabled: !busy,
++            maxLength: 120,
++            decoration: InputDecoration(
++              labelText: _tr(context, 'Бренд', 'Brend'),
++              counterText: '',
++            ),
++          ),
++          _expiryField(),
++          if (expiry)
++            TextField(
++              controller: shelfLife,
++              enabled: !busy,
++              keyboardType: TextInputType.number,
++              decoration: InputDecoration(
++                labelText: _tr(context, 'Срок хранения, дней', 'Saqlash muddati, kun'),
+               ),
+-              TextField(
+-                controller: shelfLife,
+-                enabled: !busy,
+-                keyboardType: TextInputType.number,
+-                decoration: InputDecoration(
+-                  labelText: _tr(context, 'Типовой срок хранения, дней', 'Saqlash muddati, kun'),
+-                ),
++            ),
++        ],
++      ],
++    ),
++  );
++
++  @override
++  Widget build(BuildContext context) {
++    final keyboardOpen = MediaQuery.viewInsetsOf(context).bottom > 0;
++    return Column(
++      children: [
++        Expanded(
++          child: ListView(
++            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
++            padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
++            children: [
++              _UiText(
++                pos.demo ? 'Учебная приёмка' : 'Приёмка',
++                pos.demo ? 'O‘quv qabuli' : 'Tovar qabuli',
++                style: Theme.of(context).textTheme.headlineSmall,
+               ),
+-            ],
+-            if (pos.demo) ...[
+-              const SizedBox(height: 8),
+-              TextField(
+-                controller: price,
+-                enabled: !busy,
+-                keyboardType: const TextInputType.numberWithOptions(
+-                  decimal: true,
++              const SizedBox(height: 4),
++              Align(
++                alignment: AlignmentDirectional.centerStart,
++                child: TextButton.icon(
++                  onPressed: busy ? null : () => Navigator.of(context).push(
++                    MaterialPageRoute<void>(builder: (_) => DraftScreen(pos)),
++                  ),
++                  icon: const Icon(Icons.receipt_long_outlined, size: 20),
++                  label: const _UiText('Черновик накладной', 'Yukxat qoralamasi'),
+                 ),
+-                decoration: InputDecoration(labelText: _tr(context, 'Цена', 'Narx')),
+               ),
+-              const SizedBox(height: 8),
+-              TextField(
+-                controller: stock,
+-                enabled: !busy,
+-                keyboardType: TextInputType.number,
+-                decoration: InputDecoration(
+-                  labelText: _tr(context, 'Начальный остаток', 'Boshlang‘ich qoldiq'),
++              const SizedBox(height: 12),
++              if (busy) const LinearProgressIndicator(),
++              if (status != null) StatusBox(status!, error: failed),
++              if (pending) ...[
++                OutlinedButton(
++                  onPressed: busy ? null : _retryProduct,
++                  child: const _UiText(
++                    'Проверить отправку карточки', 'Kartochka yuborilganini tekshirish',
++                  ),
+                 ),
+-              ),
++                const SizedBox(height: 12),
++              ],
++              _barcodePanel(context),
++              const SizedBox(height: 16),
++              _productFields(context),
++              if (!pos.demo) _productDetails(context),
++              if (keyboardOpen) _submitButton(),
+             ],
+-            CheckboxListTile(
+-              value: expiry,
+-              contentPadding: EdgeInsets.zero,
+-              title: const _UiText('Обязательный срок годности', 'Yaroqlilik muddati majburiy'),
+-              onChanged: busy
+-                  ? null
+-                  : (value) => setState(() => expiry = value == true),
+-            ),
+-            FilledButton(
+-              onPressed: busy || pending || _existingBarcode != null
+-                  ? null
+-                  : save,
+-              child: pos.demo
+-                  ? const _UiText('Сохранить товар', 'Tovarni saqlash')
+-                  : const _UiText('Отправить на утверждение', 'Tasdiqlashga yuborish'),
+-            ),
+-          ],
+-        ),
+-      ),
+-      Section(
+-        child: OutlinedButton.icon(
+-          onPressed: busy
+-              ? null
+-              : () => Navigator.of(context).push(
+-                  MaterialPageRoute<void>(builder: (_) => DraftScreen(pos)),
+-                ),
+-          icon: const Icon(Icons.receipt_long),
+-          label: const _UiText('Черновик накладной', 'Yukxat qoralamasi'),
++          ),
+         ),
+-      ),
+-    ],
+-  );
++        if (!keyboardOpen)
++          DecoratedBox(
++            decoration: const BoxDecoration(
++              color: _workplaceSurface,
++              border: Border(top: BorderSide(color: _workplaceLine)),
++            ),
++            child: Padding(
++              padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
++              child: _submitButton(),
++            ),
++          ),
++      ],
++    );
++  }
+ }
+ 
+ class AdminScreen extends StatefulWidget {
+--- a/apps/mobile-flutter/pubspec.yaml
++++ b/apps/mobile-flutter/pubspec.yaml
+@@ -1,7 +1,7 @@
+ name: kassa_mobile
+ description: Android POS pilot for Kassa.
+ publish_to: none
+-version: 0.2.80+2100
++version: 0.2.81+2101
+ environment:
+   sdk: ">=3.10.0 <4.0.0"
+ dependencies:
+--- /dev/null
++++ b/apps/mobile-flutter/test/receiving_design_test.dart
+@@ -0,0 +1,167 @@
++import 'dart:convert';
++import 'dart:io';
++import 'dart:ui' as ui;
++
++import 'package:flutter/material.dart';
++import 'package:flutter/rendering.dart';
++import 'package:flutter/services.dart';
++import 'package:flutter_secure_storage/flutter_secure_storage.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:http/http.dart' as http;
++import 'package:http/testing.dart';
++import 'package:kassa_mobile/main.dart';
++import 'package:kassa_mobile/pos.dart';
++
++class _ReceiverLogin extends Login {
++  _ReceiverLogin(super.storage);
++
++  @override
++  String get subject => 'receiver-test';
++
++  @override
++  Future<void> signIn() async {}
++
++  @override
++  Future<String> accessToken({bool force = false}) async => 'test-token';
++}
++
++Future<void> _loadPreviewFont(String family, String variable) async {
++  final path = Platform.environment[variable];
++  if (path == null || path.isEmpty) return;
++  final loader = FontLoader(family)
++    ..addFont(Future.value(ByteData.sublistView(File(path).readAsBytesSync())));
++  await loader.load();
++}
++
++void main() {
++  TestWidgetsFlutterBinding.ensureInitialized();
++  final previewDir = Platform.environment['KASSA_RECEIVING_PREVIEW'];
++
++  setUpAll(() async {
++    if (previewDir == null) return;
++    await _loadPreviewFont('Roboto', 'KASSA_PREVIEW_TEXT_FONT');
++    await _loadPreviewFont('MaterialIcons', 'KASSA_PREVIEW_ICONS');
++  });
++
++  testWidgets('compact receiving layout keeps search and submission usable', (tester) async {
++    tester.view.devicePixelRatio = 1;
++    tester.view.physicalSize = const Size(360, 720);
++    addTearDown(tester.view.resetDevicePixelRatio);
++    addTearDown(tester.view.resetPhysicalSize);
++    const storage = FlutterSecureStorage();
++    FlutterSecureStorage.setMockInitialValues({});
++
++    const barcode = '4780012345678';
++    const catalog = '/v1/stores/$testStore/receiving/catalog';
++    Json? submitted;
++    http.Response response(Object data, {int status = 200, String? requestId}) =>
++        http.Response.bytes(
++          utf8.encode(jsonEncode(data)),
++          status,
++          headers: {
++            'content-type': 'application/json; charset=utf-8',
++            if (requestId != null) 'x-request-id': requestId,
++          },
++        );
++
++    final pos = Pos(
++      storage,
++      login: _ReceiverLogin(storage),
++      productionContract: true,
++      client: MockClient((request) async {
++        switch (request.url.path) {
++          case '/v1/me/stores':
++            return response({
++              'items': [
++                {
++                  'storeId': testStore,
++                  'storeName': 'Korzinka',
++                  'timeZone': 'Asia/Tashkent',
++                  'utcOffsetMinutes': 300,
++                  'isOwner': false,
++                  'registers': <Object>[],
++                },
++              ],
++              'nextOffset': null,
++            });
++          case '/v1/me/roles':
++            return response({'storeId': testStore, 'roles': ['receiver']});
++          case '$catalog/barcodes/$barcode':
++            return response({'code': 'product_not_found'}, status: 404);
++          case '$catalog/shared-barcodes/$barcode':
++            return response({
++              'barcode': barcode,
++              'name': 'Чай зелёный',
++              'unit': 'piece',
++              'requiresExpiry': true,
++              'shelfLifeDays': 180,
++              'category': 'Напитки',
++              'brand': 'Демо',
++            });
++          case '$catalog/proposals':
++            expect(request.method, 'POST');
++            submitted = (jsonDecode(request.body) as Json)['product'] as Json;
++            return response({'code': 'invalid_product_card'}, status: 400, requestId: 'receiving-test');
++          default:
++            fail('Unexpected request ${request.url.path}');
++        }
++      }),
++    );
++    addTearDown(pos.api.close);
++
++    final boundaryKey = GlobalKey();
++    Future<void> tap(Finder target) async {
++      await tester.ensureVisible(target);
++      await tester.tap(target);
++      await tester.pumpAndSettle();
++    }
++
++    await tester.pumpWidget(RepaintBoundary(key: boundaryKey, child: KassaApp(pos: pos)));
++    await tester.pumpAndSettle();
++    await tap(find.text('Войти в аккаунт'));
++    await tap(find.text('Korzinka'));
++    await tap(find.text('Войти без кассы'));
++
++    final scan = find.byTooltip('Сканировать штрихкод');
++    final title = find.text('Добавить товар');
++    final details = find.text('Категория, бренд и срок');
++    final submit = find.text('Отправить на утверждение');
++    expect(tester.getTopLeft(scan).dy, lessThan(tester.getTopLeft(title).dy));
++    expect(submit.hitTestable(), findsOneWidget);
++    expect(find.text('Бренд'), findsNothing);
++
++    if (previewDir != null) {
++      await tester.runAsync(() async {
++        final boundary = boundaryKey.currentContext!.findRenderObject()! as RenderRepaintBoundary;
++        final image = await boundary.toImage(pixelRatio: 2);
++        try {
++          final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
++          final file = File('$previewDir/Kassa_Android_0.2.81_Priemka.png');
++          file.parent.createSync(recursive: true);
++          file.writeAsBytesSync(bytes!.buffer.asUint8List());
++        } finally {
++          image.dispose();
++        }
++      });
++    }
++
++    await tester.enterText(find.widgetWithText(TextField, 'Штрихкод'), barcode);
++    await tap(find.text('Найти в каталоге'));
++    expect(find.text('Чай зелёный'), findsOneWidget);
++    final shelfLife = find.widgetWithText(TextField, 'Срок хранения, дней');
++    await tester.ensureVisible(details);
++    expect(tester.widget<TextField>(shelfLife).controller!.text, '180');
++    await tap(find.text('Обязательный срок годности'));
++    expect(shelfLife, findsNothing);
++    expect(submit.hitTestable(), findsOneWidget);
++    await tap(submit);
++
++    expect(submitted?['requiresExpiry'], isFalse);
++    expect(submitted?.containsKey('shelfLifeDays'), isFalse);
++    expect(submitted?['brand'], 'Демо');
++    await tester.ensureVisible(find.textContaining('Запрос receiving-test'));
++    expect(find.textContaining('Проверьте данные карточки товара.'), findsOneWidget);
++    expect(find.text('Чай зелёный'), findsOneWidget);
++    expect(tester.takeException(), isNull);
++  });
++}
