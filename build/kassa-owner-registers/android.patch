@@ -1,0 +1,207 @@
+--- a/apps/mobile-flutter/README.md
++++ b/apps/mobile-flutter/README.md
+@@ -1,4 +1,4 @@
+-# Касса для Android 0.2.77
++# Касса для Android 0.2.78
+ 
+ Исходники Flutter для магазина с персональным входом и назначением кассы. Идентификатор пакета соответствует пилоту 0.2.5 (`uz.qrspace.kassa.mobile.multirolepilot`). Для установки обновления поверх существующего пилота потребуется его исходная подпись.
+ 
+@@ -12,6 +12,8 @@
+ 
+ При ответе об отсутствии `GET /v1/me/stores` в рабочем API пользователь, вошедший через Keycloak, может открыть назначенный магазин по UUID. Сервер проверяет назначения магазина и кассы.
+ 
++Если в ответе списка магазинов отсутствует поле `registers`, Android загружает список касс для подтверждённого владельца через управление этим магазином. В режиме кассира отображаются активные кассы, назначенные его учётной записи.
++
+ Для 0.8.1 приложения со старыми расширениями используют только маршруты снимка. Обычное закрытие смены принимает итоговую сумму. Передача наличных, закрытие по номиналам, фильтр сроков по категории, ручная скидка и привязка покупателя доступны в профиле расширенного стенда. Совпадение путей в снимке подтверждает наличие операций, а состав ответов живого API требует проверки после входа.
+ 
+ ### Сборка проверочного APK
+--- a/apps/mobile-flutter/lib/workplaces.dart
++++ b/apps/mobile-flutter/lib/workplaces.dart
+@@ -183,6 +183,7 @@
+     with Tasks<_StoreWorkplace> {
+   late final Pos _store = widget.session.forWorkplace(widget.store.location());
+   Set<Desk>? _roles;
++  List<AssignedRegister>? _ownerRegisters;
+   bool _useStore = false;
+   bool _askingKey = false;
+ 
+@@ -193,7 +194,32 @@
+   }
+ 
+   Future<void> _load() async {
+-    _roles = await _store.api.allowedDesks();
++    final roles = await _store.api.allowedDesks();
++    _roles = roles;
++    final staffId = _store.api.staffId;
++    if (!widget.manualSelection ||
++        !_store.api.storeOwner ||
++        staffId == null ||
++        !roles.contains(Desk.admin) ||
++        !roles.contains(Desk.cashier)) {
++      return;
++    }
++
++    // Older servers omit register assignments from the personal store list.
++    // The owner can read device assignments for this store with their admin role.
++    final management = StoreManagementApi(_store);
++    final registers = <String, AssignedRegister>{};
++    int? offset = 0;
++    while (offset != null) {
++      final page = await management.registers(offset);
++      for (final device in page.items) {
++        if (device.active && device.cashiers.contains(staffId)) {
++          registers[device.id] = AssignedRegister(device.id, device.name);
++        }
++      }
++      offset = page.nextOffset;
++    }
++    _ownerRegisters = List.unmodifiable(registers.values);
+   }
+ 
+   @override
+@@ -231,7 +257,12 @@
+ 
+   Future<void> _connect(AssignedRegister register) async {
+     final location = widget.manualSelection
+-        ? KassaLocation(widget.store.id, register.id)
++        ? KassaLocation(
++            widget.store.id,
++            register.id,
++            utcOffsetMinutes: widget.store.utcOffsetMinutes,
++            platformOrganizationId: widget.store.platformOrganizationId,
++          )
+         : widget.store.location(register);
+     final selected = widget.session.forWorkplace(location);
+     var accepted = false;
+@@ -277,6 +308,7 @@
+   Widget build(BuildContext context) {
+     final roles = _roles;
+     final cashier = roles?.contains(Desk.cashier) ?? false;
++    final registers = _ownerRegisters ?? widget.store.registers;
+     final storeRoles =
+         roles?.where((role) => role != Desk.cashier).toList() ?? [];
+     return PopScope(
+@@ -300,14 +332,14 @@
+                 _tr(context, 'Назначенные кассы', 'Biriktirilgan kassalar'),
+                 style: Theme.of(context).textTheme.titleMedium,
+               ),
+-              if (widget.manualSelection)
++              if (widget.manualSelection && _ownerRegisters == null)
+                 OutlinedButton(
+                   onPressed: busy ? null : _connectById,
+                   child: const _UiText('Подключить кассу по UUID', 'Kassani UUID orqali ulash'),
+                 )
+-              else if (widget.store.registers.isEmpty)
++              else if (registers.isEmpty)
+                 StatusBox(_tr(context, 'В этом магазине вам пока не назначена касса.', 'Bu do‘konda sizga hali kassa biriktirilmagan.')),
+-              for (final register in widget.store.registers)
++              for (final register in registers)
+                 ListTile(
+                   contentPadding: EdgeInsets.zero,
+                   leading: const Icon(Icons.point_of_sale_outlined),
+--- a/apps/mobile-flutter/pubspec.yaml
++++ b/apps/mobile-flutter/pubspec.yaml
+@@ -1,7 +1,7 @@
+ name: kassa_mobile
+ description: Android POS pilot for Kassa.
+ publish_to: none
+-version: 0.2.77+2097
++version: 0.2.78+2098
+ environment:
+   sdk: ">=3.10.0 <4.0.0"
+ dependencies:
+--- a/apps/mobile-flutter/test/workplace_workflow_test.dart
++++ b/apps/mobile-flutter/test/workplace_workflow_test.dart
+@@ -149,6 +149,92 @@
+   );
+ 
+   testWidgets(
++    'owner sees their assigned active registers when discovery omits the list',
++    (tester) async {
++      const staff = '30000000-0000-4000-8000-000000000005';
++      const otherStaff = '30000000-0000-4000-8000-000000000006';
++      const disabled = '30000000-0000-4000-8000-000000000007';
++      const organization = '30000000-0000-4000-8000-000000000008';
++      var registerRequests = 0;
++      Map<String, Object> device(String id, String name, String cashier, {bool active = true}) =>
++          {'registerId': id, 'name': name, 'active': active, 'version': 1, 'cashierIds': [cashier]};
++      final session = Pos(
++        _storage,
++        login: _Login('owner'),
++        productionContract: true,
++        client: MockClient((request) async {
++          expect(request.headers['Authorization'], 'Bearer token-owner');
++          switch (request.url.path) {
++            case '/v1/me/stores':
++              return _response({
++                'items': [{
++                  'storeId': _storeA,
++                  'storeName': 'Korzinka',
++                  'organizationId': organization,
++                  'timeZone': 'Asia/Tashkent',
++                  'isOwner': true,
++                }],
++                'nextOffset': null,
++              });
++            case '/v1/me/roles':
++              expect(request.url.queryParameters['storeId'], _storeA);
++              return _response({
++                'storeId': _storeA,
++                'organizationId': organization,
++                'staffId': staff,
++                'owner': true,
++                'roles': ['admin', 'cashier', 'receiver'],
++              });
++            case '/v1/stores/$_storeA/registers':
++              registerRequests++;
++              expect(request.url.queryParameters['offset'], '0');
++              expect(request.headers['X-Active-Role'], 'admin');
++              expect(request.headers['X-Register-Key'], isNull);
++              return _response([
++                device(_registerA, 'Моя новая касса', staff),
++                device(_registerB, 'Касса сотрудника', otherStaff),
++                device(disabled, 'Отключённая касса', staff, active: false),
++              ]);
++            case '/v1/stores/$_storeA/receiving/catalog/proposals':
++              return _response([]);
++            case '/v1/shifts/active':
++              expect(request.headers['X-Active-Role'], 'cashier');
++              expect(request.headers['X-Register-Id'], _registerA);
++              expect(request.headers['X-Register-Key'], _validKey);
++              return _response({'shift': null});
++            default:
++              fail('Unexpected request ${request.url}');
++          }
++        }),
++      );
++
++      Future<void> tap(Finder finder) async {
++        await tester.tap(finder);
++        await tester.pumpAndSettle();
++      }
++
++      await tester.pumpWidget(KassaApp(pos: session));
++      await tester.pumpAndSettle();
++      await tap(find.text('Войти в аккаунт'));
++      await tap(find.widgetWithText(TextButton, 'Администратор'));
++      await tap(find.text('Кассир'));
++      await tap(find.text('Выбрать кассу'));
++      await tap(find.text('Korzinka'));
++
++      expect(registerRequests, 1);
++      expect(find.text('Моя новая касса'), findsOneWidget);
++      expect(find.text('Касса сотрудника'), findsNothing);
++      expect(find.text('Отключённая касса'), findsNothing);
++      expect(find.text('Подключить кассу по UUID'), findsNothing);
++      await tap(find.text('Моя новая касса'));
++      await tester.enterText(find.byType(TextFormField), _validKey);
++      await tap(find.text('Подтвердить'));
++      expect(find.text('Смена закрыта'), findsOneWidget);
++      expect(tester.takeException(), isNull);
++    },
++  );
++
++  testWidgets(
+     'a server without discovery leaves the signed-in choice retryable',
+     (tester) async {
+       final session = Pos(
