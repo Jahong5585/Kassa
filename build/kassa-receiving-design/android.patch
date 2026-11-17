@@ -501,7 +501,7 @@
  dependencies:
 --- /dev/null
 +++ b/apps/mobile-flutter/test/receiving_design_test.dart
-@@ -0,0 +1,167 @@
+@@ -0,0 +1,174 @@
 +import 'dart:convert';
 +import 'dart:io';
 +import 'dart:ui' as ui;
@@ -653,7 +653,14 @@
 +    await tap(find.text('Найти в каталоге'));
 +    expect(find.text('Чай зелёный'), findsOneWidget);
 +    final shelfLife = find.widgetWithText(TextField, 'Срок хранения, дней');
-+    await tester.ensureVisible(details);
++    await tester.scrollUntilVisible(
++      details,
++      180,
++      scrollable: find.descendant(
++        of: find.byType(ReceivingScreen),
++        matching: find.byType(Scrollable),
++      ).first,
++    );
 +    expect(tester.widget<TextField>(shelfLife).controller!.text, '180');
 +    await tap(find.text('Обязательный срок годности'));
 +    expect(shelfLife, findsNothing);
