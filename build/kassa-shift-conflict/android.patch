@@ -206,7 +206,7 @@
  dependencies:
 --- a/apps/mobile-flutter/test/shift_cash_count_test.dart
 +++ b/apps/mobile-flutter/test/shift_cash_count_test.dart
-@@ -27,6 +27,78 @@
+@@ -27,6 +27,79 @@
  void main() {
    setUp(() => FlutterSecureStorage.setMockInitialValues({}));
  
@@ -257,7 +257,8 @@
 +        await tester.pumpAndSettle();
 +        expect(find.text('Смена закрыта'), findsOneWidget);
 +        await tester.tap(find.text('Открыть смену'));
-+        await tester.pumpAndSettle();
++        await tester.pump();
++        await tester.pump(const Duration(milliseconds: 300));
 +        await tester.tap(find.text('Подтвердить'));
 +        await tester.pumpAndSettle();
 +
