@@ -70,7 +70,7 @@
        final days = int.tryParse(daysText);
        if (daysText.isNotEmpty && (days == null || days < 1 || days > 3650)) {
          throw const FormatException(
-@@ -2067,162 +2084,288 @@
+@@ -2067,162 +2084,295 @@
            ],
          });
          result = saved['status'] as String;
@@ -150,7 +150,7 @@
 -        ),
 -      Section(
 +      child: Padding(
-+        padding: const EdgeInsets.all(16),
++        padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
          child: Column(
            crossAxisAlignment: CrossAxisAlignment.stretch,
            children: [
@@ -166,7 +166,7 @@
 -              decoration: InputDecoration(
 -                labelText: _tr(context, 'Название', 'Nomi'),
 -                counterText: '',
-+              'Штрихкод товара', 'Tovar shtrixkodi',
++              'Поиск товара', 'Tovar qidirish',
 +              style: theme.textTheme.titleMedium?.copyWith(
 +                color: scheme.onPrimaryContainer,
 +                fontWeight: FontWeight.w600,
@@ -240,6 +240,23 @@
 -                decoration: InputDecoration(
 -                  labelText: _tr(context, 'Категория', 'Toifa'),
 -                  counterText: '',
+-                ),
+-              ),
+-              TextField(
+-                controller: brand,
+-                enabled: !busy,
+-                maxLength: 120,
+-                decoration: InputDecoration(
+-                  labelText: _tr(context, 'Бренд', 'Brend'),
+-                  counterText: '',
+-                ),
+-              ),
+-              TextField(
+-                controller: shelfLife,
+-                enabled: !busy,
+-                keyboardType: TextInputType.number,
+-                decoration: InputDecoration(
+-                  labelText: _tr(context, 'Типовой срок хранения, дней', 'Saqlash muddati, kun'),
 +              const SizedBox(height: 4),
 +              Align(
 +                alignment: AlignmentDirectional.centerStart,
@@ -252,18 +269,55 @@
 +                  label: const _UiText('Найти в каталоге', 'Katalogdan qidirish'),
                  ),
                ),
+             ],
+-            if (pos.demo) ...[
+-              const SizedBox(height: 8),
 -              TextField(
--                controller: brand,
+-                controller: price,
 -                enabled: !busy,
--                maxLength: 120,
--                decoration: InputDecoration(
--                  labelText: _tr(context, 'Бренд', 'Brend'),
--                  counterText: '',
+-                keyboardType: const TextInputType.numberWithOptions(
+-                  decimal: true,
 -                ),
-+            ],
-+          ],
-+        ),
-+      ),
+-                decoration: InputDecoration(labelText: _tr(context, 'Цена', 'Narx')),
+-              ),
+-              const SizedBox(height: 8),
+-              TextField(
+-                controller: stock,
+-                enabled: !busy,
+-                keyboardType: TextInputType.number,
+-                decoration: InputDecoration(
+-                  labelText: _tr(context, 'Начальный остаток', 'Boshlang‘ich qoldiq'),
+-                ),
+-              ),
+-            ],
+-            CheckboxListTile(
+-              value: expiry,
+-              contentPadding: EdgeInsets.zero,
+-              title: const _UiText('Обязательный срок годности', 'Yaroqlilik muddati majburiy'),
+-              onChanged: busy
+-                  ? null
+-                  : (value) => setState(() => expiry = value == true),
+-            ),
+-            FilledButton(
+-              onPressed: busy || pending || _existingBarcode != null
+-                  ? null
+-                  : save,
+-              child: pos.demo
+-                  ? const _UiText('Сохранить товар', 'Tovarni saqlash')
+-                  : const _UiText('Отправить на утверждение', 'Tasdiqlashga yuborish'),
+-            ),
+           ],
+         ),
+       ),
+-      Section(
+-        child: OutlinedButton.icon(
+-          onPressed: busy
+-              ? null
+-              : () => Navigator.of(context).push(
+-                  MaterialPageRoute<void>(builder: (_) => DraftScreen(pos)),
+-                ),
+-          icon: const Icon(Icons.receipt_long),
+-          label: const _UiText('Черновик накладной', 'Yukxat qoralamasi'),
 +    );
 +  }
 +
@@ -274,7 +328,9 @@
 +        _UiText(
 +          'Добавить товар', 'Mahsulot qo‘shish',
 +          style: Theme.of(context).textTheme.titleMedium,
-+        ),
+         ),
+-      ),
+-    ],
 +        const SizedBox(height: 12),
 +        TextField(
 +          controller: name,
@@ -327,7 +383,7 @@
 +        ListTile(
 +          contentPadding: EdgeInsets.zero,
 +          leading: const Icon(Icons.tune),
-+          title: const _UiText('Категория, бренд и срок', 'Toifa, brend va muddat'),
++          title: const _UiText('Категория, бренд, срок', 'Toifa, brend, muddat'),
 +          trailing: Icon(_showDetails ? Icons.expand_less : Icons.expand_more),
 +          onTap: busy ? null : () => setState(() => _showDetails = !_showDetails),
 +        ),
@@ -361,19 +417,12 @@
 +              keyboardType: TextInputType.number,
 +              decoration: InputDecoration(
 +                labelText: _tr(context, 'Срок хранения, дней', 'Saqlash muddati, kun'),
-               ),
--              TextField(
--                controller: shelfLife,
--                enabled: !busy,
--                keyboardType: TextInputType.number,
--                decoration: InputDecoration(
--                  labelText: _tr(context, 'Типовой срок хранения, дней', 'Saqlash muddati, kun'),
--                ),
++              ),
 +            ),
 +        ],
 +      ],
 +    ),
-+  );
+   );
 +
 +  @override
 +  Widget build(BuildContext context) {
@@ -386,38 +435,29 @@
 +            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
 +            padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
 +            children: [
-+              _UiText(
-+                pos.demo ? 'Учебная приёмка' : 'Приёмка',
-+                pos.demo ? 'O‘quv qabuli' : 'Tovar qabuli',
-+                style: Theme.of(context).textTheme.headlineSmall,
-               ),
--            ],
--            if (pos.demo) ...[
--              const SizedBox(height: 8),
--              TextField(
--                controller: price,
--                enabled: !busy,
--                keyboardType: const TextInputType.numberWithOptions(
--                  decimal: true,
-+              const SizedBox(height: 4),
-+              Align(
-+                alignment: AlignmentDirectional.centerStart,
-+                child: TextButton.icon(
-+                  onPressed: busy ? null : () => Navigator.of(context).push(
-+                    MaterialPageRoute<void>(builder: (_) => DraftScreen(pos)),
++              Wrap(
++                alignment: WrapAlignment.spaceBetween,
++                crossAxisAlignment: WrapCrossAlignment.center,
++                runSpacing: 4,
++                spacing: 8,
++                children: [
++                  _UiText(
++                    pos.demo ? 'Учебная приёмка' : 'Приёмка',
++                    pos.demo ? 'O‘quv qabuli' : 'Tovar qabuli',
++                    style: Theme.of(context).textTheme.headlineSmall,
 +                  ),
-+                  icon: const Icon(Icons.receipt_long_outlined, size: 20),
-+                  label: const _UiText('Черновик накладной', 'Yukxat qoralamasi'),
-                 ),
--                decoration: InputDecoration(labelText: _tr(context, 'Цена', 'Narx')),
-               ),
--              const SizedBox(height: 8),
--              TextField(
--                controller: stock,
--                enabled: !busy,
--                keyboardType: TextInputType.number,
--                decoration: InputDecoration(
--                  labelText: _tr(context, 'Начальный остаток', 'Boshlang‘ich qoldiq'),
++                  TextButton.icon(
++                    style: TextButton.styleFrom(
++                      padding: const EdgeInsets.symmetric(horizontal: 4),
++                    ),
++                    onPressed: busy ? null : () => Navigator.of(context).push(
++                      MaterialPageRoute<void>(builder: (_) => DraftScreen(pos)),
++                    ),
++                    icon: const Icon(Icons.receipt_long_outlined, size: 20),
++                    label: const _UiText('Черновик накладной', 'Yukxat qoralamasi'),
++                  ),
++                ],
++              ),
 +              const SizedBox(height: 12),
 +              if (busy) const LinearProgressIndicator(),
 +              if (status != null)
@@ -428,8 +468,7 @@
 +                  child: const _UiText(
 +                    'Проверить отправку карточки', 'Kartochka yuborilganini tekshirish',
 +                  ),
-                 ),
--              ),
++                ),
 +                const SizedBox(height: 12),
 +              ],
 +              _barcodePanel(context),
@@ -437,40 +476,9 @@
 +              _productFields(context),
 +              if (!pos.demo) _productDetails(context),
 +              if (keyboardOpen) _submitButton(),
-             ],
--            CheckboxListTile(
--              value: expiry,
--              contentPadding: EdgeInsets.zero,
--              title: const _UiText('Обязательный срок годности', 'Yaroqlilik muddati majburiy'),
--              onChanged: busy
--                  ? null
--                  : (value) => setState(() => expiry = value == true),
--            ),
--            FilledButton(
--              onPressed: busy || pending || _existingBarcode != null
--                  ? null
--                  : save,
--              child: pos.demo
--                  ? const _UiText('Сохранить товар', 'Tovarni saqlash')
--                  : const _UiText('Отправить на утверждение', 'Tasdiqlashga yuborish'),
--            ),
--          ],
++            ],
 +          ),
-         ),
--      ),
--      Section(
--        child: OutlinedButton.icon(
--          onPressed: busy
--              ? null
--              : () => Navigator.of(context).push(
--                  MaterialPageRoute<void>(builder: (_) => DraftScreen(pos)),
--                ),
--          icon: const Icon(Icons.receipt_long),
--          label: const _UiText('Черновик накладной', 'Yukxat qoralamasi'),
--        ),
--      ),
--    ],
--  );
++        ),
 +        if (!keyboardOpen)
 +          DecoratedBox(
 +            decoration: const BoxDecoration(
@@ -501,7 +509,7 @@
  dependencies:
 --- /dev/null
 +++ b/apps/mobile-flutter/test/receiving_design_test.dart
-@@ -0,0 +1,176 @@
+@@ -0,0 +1,178 @@
 +import 'dart:convert';
 +import 'dart:io';
 +import 'dart:ui' as ui;
@@ -630,10 +638,12 @@
 +
 +    final scan = find.byTooltip('Сканировать штрихкод');
 +    final title = find.text('Добавить товар');
-+    final details = find.text('Категория, бренд и срок');
++    final details = find.text('Категория, бренд, срок');
 +    final submit = find.text('Отправить на утверждение');
 +    expect(tester.getTopLeft(scan).dy, lessThan(tester.getTopLeft(title).dy));
 +    expect(submit.hitTestable(), findsOneWidget);
++    expect(details.hitTestable(), findsOneWidget);
++    expect(tester.getBottomRight(details).dy, lessThan(tester.getTopLeft(submit).dy));
 +    expect(find.text('Бренд'), findsNothing);
 +
 +    if (previewDir != null) {
