@@ -54,6 +54,7 @@ services:
       - ../db/036_platform_desktop_contract.sql:/docker-entrypoint-initdb.d/036_platform_desktop_contract.sql:ro
       - ../db/037_platform_owner_accounts.sql:/docker-entrypoint-initdb.d/037_platform_owner_accounts.sql:ro
       - ../db/038_store_operator_auth.sql:/docker-entrypoint-initdb.d/038_store_operator_auth.sql:ro
+      - ../db/039_mobile_catalog_and_expenses.sql:/docker-entrypoint-initdb.d/039_mobile_catalog_and_expenses.sql:ro
       - ./init-keycloak-db.sh:/docker-entrypoint-initdb.d/100_init_keycloak.sh:ro
       - ./init-kasa-bootstrap.sh:/docker-entrypoint-initdb.d/900_init_kasa_bootstrap.sh:ro
     healthcheck:
