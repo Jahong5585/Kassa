@@ -1,0 +1,287 @@
+--- a/apps/mobile-flutter/README.md
++++ b/apps/mobile-flutter/README.md
+@@ -1,4 +1,4 @@
+-# Касса для Android 0.2.79
++# Касса для Android 0.2.80
+ 
+ Исходники Flutter для магазина с персональным входом и назначением кассы. Идентификатор пакета соответствует пилоту 0.2.5 (`uz.qrspace.kassa.mobile.multirolepilot`). Для установки обновления поверх существующего пилота потребуется его исходная подпись.
+ 
+--- a/apps/mobile-flutter/lib/language.dart
++++ b/apps/mobile-flutter/lib/language.dart
+@@ -52,6 +52,7 @@
+     'register_access_denied' => 'Kassaga ruxsat yo‘q. Hisob va kalitni tekshiring.',
+     'register_key_required' => 'Kassa kalitini kiriting.',
+     'shift_route_unavailable' => 'Server smenani tekshira olmadi. Administratorga murojaat qiling.',
++    'open_shift_conflict' => 'Administratordan ushbu kassadagi ochiq smenani va hisobingizning boshqa kassalardagi smenalarini tekshirishni so‘rang.',
+     'store_not_found' => 'Do‘kon topilmadi yoki unga ruxsat yo‘q.',
+     'invalid_customer_consent' => 'Kanal, maqsad va xaridor qarorini tanlang.',
+     'customer_consent_operation_reused' => 'Bu amal raqami boshqa qayd bilan bog‘langan.',
+--- a/apps/mobile-flutter/lib/main.dart
++++ b/apps/mobile-flutter/lib/main.dart
+@@ -867,6 +867,7 @@
+   Json? _customer;
+   PendingRefund? pendingRefund;
+   bool ready = false;
++  bool _openingBlocked = false;
+ 
+   String get shiftId => shift!['shiftId'] as String;
+   bool get locked =>
+@@ -898,6 +899,7 @@
+     final refreshed = await pos.activeShift();
+     if (refreshed?['shiftId'] != shift?['shiftId']) _customer = null;
+     shift = refreshed;
++    _openingBlocked = false;
+     ready = true;
+     unawaited(pos.syncRegisterDiagnostics());
+   }
+@@ -962,7 +964,12 @@
+             ) || !mounted)) {
+           return;
+         }
+-        await pos.openShift(amount, fromShift: incoming?['shiftId'] as String?);
++        if (await _openShift(() => pos.openShift(
++          amount,
++          fromShift: incoming?['shiftId'] as String?,
++        )) == null) {
++          return;
++        }
+       } else {
+         final count = await showDialog<_ShiftCashCount>(
+           context: context,
+@@ -990,7 +997,13 @@
+     if (command == null) return;
+     final Json result;
+     try {
+-      result = await pos.retryShiftChange(command);
++      if (command['kind'] == 'open') {
++        final opened = await _openShift(() => pos.retryShiftChange(command));
++        if (opened == null) return;
++        result = opened;
++      } else {
++        result = await pos.retryShiftChange(command);
++      }
+     } finally {
+       pendingShift = await pos.pendingShiftChange();
+     }
+@@ -1000,6 +1013,53 @@
+     }
+   });
+ 
++  Future<Json?> _openShift(Future<Json> Function() send) async {
++    try {
++      return await send();
++    } on ApiFailure catch (failure) {
++      if (failure.status != 409) rethrow;
++      _openingBlocked = true;
++      // The open request was rejected. Read the current shift without sending
++      // another write or adopting a shift from a different workplace.
++      String? message;
++      try {
++        final refreshed = await pos.activeShift();
++        if (refreshed?['shiftId'] != shift?['shiftId']) _customer = null;
++        shift = refreshed;
++        if (refreshed != null) {
++          _openingBlocked = false;
++          if (mounted) {
++            status = _tr(context, 'Открытая смена найдена', 'Ochiq smena topildi');
++          }
++          return null;
++        }
++      } on ApiFailure {
++        if (mounted) {
++          message = _tr(
++            context,
++            'Не удалось проверить состояние смены. Нажмите «Проверить смену».',
++            'Smena holatini tekshirib bo‘lmadi. «Smenani tekshirish» tugmasini bosing.',
++          );
++        }
++      }
++      if (mounted) {
++        message ??= failure.code == 'open_shift_conflict'
++            ? _apiMessage(context, failure)
++            : _tr(
++                context,
++                'Сервер отклонил открытие смены. Обратитесь к администратору.',
++                'Server smenani ochishni rad etdi. Administratorga murojaat qiling.',
++              );
++        final requestId = failure.requestId;
++        status = requestId == null
++            ? message
++            : '$message\n${_tr(context, 'Запрос', 'So‘rov')} $requestId';
++        failed = true;
++      }
++      return null;
++    }
++  }
++
+   void _openShiftReport(String id) => Navigator.of(context).push<void>(
+     MaterialPageRoute(
+       builder: (_) => _ShiftReportScreen(
+@@ -1551,7 +1611,9 @@
+                   const SizedBox(width: 8),
+                   Expanded(
+                     child: Text(
+-                      shift == null
++                      _openingBlocked
++                          ? _tr(context, 'Открытие смены заблокировано', 'Smena ochish bloklangan')
++                          : shift == null
+                           ? _tr(context, 'Смена закрыта', 'Smena yopilgan')
+                           : _tr(context, 'Смена открыта', 'Smena ochiq'),
+                       style: Theme.of(context).textTheme.titleMedium,
+@@ -1576,7 +1638,12 @@
+                 spacing: 8,
+                 runSpacing: 8,
+                 children: [
+-                  if (shift == null)
++                  if (_openingBlocked)
++                    OutlinedButton(
++                      onPressed: busy ? null : () => task(reload),
++                      child: const _UiText('Проверить смену', 'Smenani tekshirish'),
++                    )
++                  else if (shift == null)
+                     FilledButton(
+                       onPressed: busy || locked || lines.isNotEmpty
+                           ? null
+--- a/apps/mobile-flutter/lib/pos.dart
++++ b/apps/mobile-flutter/lib/pos.dart
+@@ -69,11 +69,18 @@
+ String dateText(DateTime date) => date.toIso8601String().substring(0, 10);
+ 
+ class ApiFailure implements Exception {
+-  ApiFailure(this.status, this.code, {this.emptyResponse = false, this.row});
++  ApiFailure(
++    this.status,
++    this.code, {
++    this.emptyResponse = false,
++    this.row,
++    this.requestId,
++  });
+   final int status;
+   final String code;
+   final bool emptyResponse;
+   final int? row;
++  final String? requestId;
+   bool get uncertain =>
+       status == 0 || status == 408 || status == 429 || status >= 500;
+   bool get _routeUnavailable =>
+@@ -109,6 +116,8 @@
+       'invalid_cash_denominations' => 'Проверьте количество по каждому номиналу и итоговую сумму.',
+       'shift_handover_conflict' =>
+         'Передача наличных изменилась. Заново откройте смену и проверьте сумму.',
++      'open_shift_conflict' =>
++        'Попросите администратора проверить открытую смену на этой кассе и смены вашего аккаунта на других кассах.',
+       'shortage_already_reviewed' => 'Недостача уже подтверждена. Обновите итог смены.',
+       'shift_shortage_missing' => 'В закрытой смене нет недостачи.',
+       'invalid_manual_discount' => 'Проверьте размер и причину скидки.',
+@@ -1099,6 +1108,8 @@
+       }
+       if (success) return data;
+       final code = data is Json ? data['code'] : null;
++      final requestId = response.headers['x-request-id'] ??
++          (data is Json ? data['traceId'] : null);
+       throw ApiFailure(
+         response.statusCode,
+         code is String && RegExp(r'^[a-z][a-z0-9_]{0,70}$').hasMatch(code)
+@@ -1106,6 +1117,10 @@
+             : 'request_failed',
+         emptyResponse: response.bodyBytes.isEmpty,
+         row: data is Json && data['row'] is int ? data['row'] as int : null,
++        requestId: requestId is String &&
++            RegExp(r'^[a-zA-Z0-9:._-]{1,100}$').hasMatch(requestId)
++            ? requestId
++            : null,
+       );
+     }
+     throw ApiFailure(401, 'sign_in_required');
+--- a/apps/mobile-flutter/pubspec.yaml
++++ b/apps/mobile-flutter/pubspec.yaml
+@@ -1,7 +1,7 @@
+ name: kassa_mobile
+ description: Android POS pilot for Kassa.
+ publish_to: none
+-version: 0.2.79+2099
++version: 0.2.80+2100
+ environment:
+   sdk: ">=3.10.0 <4.0.0"
+ dependencies:
+--- a/apps/mobile-flutter/test/shift_cash_count_test.dart
++++ b/apps/mobile-flutter/test/shift_cash_count_test.dart
+@@ -27,6 +27,78 @@
+ void main() {
+   setUp(() => FlutterSecureStorage.setMockInitialValues({}));
+ 
++  for (final existing in [true, false]) {
++    testWidgets(
++      'opening conflict refreshes the active shift without another write (existing=$existing)',
++      (tester) async {
++        var openings = 0;
++        var reads = 0;
++        final session = Pos(
++          _storage,
++          login: _Cashier(),
++          productionContract: true,
++          client: MockClient((request) async {
++            expect(request.headers['X-Register-Id'], testRegister);
++            switch (request.url.path) {
++              case '/v1/shifts/active':
++                expect(request.method, 'GET');
++                reads++;
++                return http.Response(jsonEncode({
++                  'shift': existing && openings > 0 ? {
++                    'shiftId': _shiftId,
++                    'openedAt': '2026-11-15T02:00:00+05:00',
++                    'openingCash': 500000,
++                  } : null,
++                }), 200);
++              case '/v1/shifts':
++                expect(request.method, 'POST');
++                openings++;
++                return http.Response(
++                  jsonEncode({'code': 'open_shift_conflict'}),
++                  409,
++                  headers: {'X-Request-Id': 'SHIFT:00000001'},
++                );
++              default:
++                fail('Unexpected request ${request.url}');
++            }
++          }),
++        );
++        addTearDown(session.api.close);
++        final pos = session.forWorkplace(KassaLocation(testStore, testRegister));
++        await _storage.write(
++          key: pos.api.localKey(Desk.cashier, 'register-key'),
++          value: 'a' * 64,
++        );
++
++        await tester.pumpWidget(MaterialApp(home: Scaffold(body: CashierScreen(pos))));
++        await tester.pumpAndSettle();
++        expect(find.text('Смена закрыта'), findsOneWidget);
++        await tester.tap(find.text('Открыть смену'));
++        await tester.pumpAndSettle();
++        await tester.tap(find.text('Подтвердить'));
++        await tester.pumpAndSettle();
++
++        expect(openings, 1);
++        expect(reads, 2);
++        expect(await pos.pendingShiftChange(), isNull);
++        expect(find.text('Смена закрыта'), findsNothing);
++        expect(find.text('Открыть смену'), findsNothing);
++        if (existing) {
++          expect(find.text('Смена открыта'), findsOneWidget);
++          expect(find.text('Открытая смена найдена'), findsOneWidget);
++        } else {
++          expect(find.text('Открытие смены заблокировано'), findsOneWidget);
++          expect(find.textContaining('Запрос SHIFT:00000001'), findsOneWidget);
++          await tester.tap(find.text('Проверить смену'));
++          await tester.pumpAndSettle();
++          expect(find.text('Открыть смену'), findsOneWidget);
++          expect(openings, 1);
++          expect(reads, 3);
++        }
++      },
++    );
++  }
++
+   testWidgets('cashier counts by denomination and retries an identical close', (
+     tester,
+   ) async {
