@@ -46,7 +46,7 @@ jobs:
           echo '75ecb1f51f0113dd28611bfc57bcd2cafe336b9998bc175cf1e5043a8814e829  build/kassa-shift-conflict/android.patch' | sha256sum --check
           patch --batch --fuzz=0 -p1 -d compiled-source < build/kassa-shift-conflict/android.patch
 
-          echo 'dfc42cdcc14955b53ee0a53c0db74454de9e4e0c0863852aeb683135902408e1  build/kassa-receiving-design/android.patch' | sha256sum --check
+          echo 'ac718a16bfa2fef3becbe152e930758be8420ddc37b830033d30979193d16da9  build/kassa-receiving-design/android.patch' | sha256sum --check
           patch --batch --fuzz=0 -p1 -d compiled-source < build/kassa-receiving-design/android.patch
 
       - name: Test Android client
