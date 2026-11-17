@@ -1,0 +1,502 @@
+--- a/apps/mobile-flutter/lib/expenses.dart
++++ b/apps/mobile-flutter/lib/expenses.dart
+@@ -1,5 +1,35 @@
+ part of 'main.dart';
+ 
++const _expenseCategoriesUz = {
++  'rent': 'Ijara',
++  'salary': 'Ish haqi',
++  'utilities': 'Kommunal xizmatlar',
++  'delivery': 'Yetkazib berish',
++  'repair': 'Ta’mirlash',
++  'advertising': 'Reklama',
++  'tax': 'Soliqlar',
++  'other': 'Boshqa xarajatlar',
++};
++
++const _expensePaymentMethodsUz = {
++  'cash': 'Naqd pul',
++  'manualCashless': 'Naqdsiz to‘lov, qo‘lda qayd etiladi',
++  'bankTransfer': 'Bank o‘tkazmasi',
++  'other': 'Boshqa usul',
++};
++
++({Map<String, String> categories, Map<String, String> paymentMethods})
++_expenseLabels(BuildContext context) {
++  final uzbek = context.dependOnInheritedWidgetOfExactType<_KassaLanguage>()?.uzbek == true;
++  return (
++    categories: uzbek ? _expenseCategoriesUz : expenseCategories,
++    paymentMethods: uzbek ? _expensePaymentMethodsUz : expensePaymentMethods,
++  );
++}
++
++String _expenseAmount(BuildContext context, num value) =>
++    '${value.toStringAsFixed(value % 1 == 0 ? 0 : 2)} ${_tr(context, 'сум', 'so‘m')}';
++
+ class _ExpensesScreen extends StatefulWidget {
+   const _ExpensesScreen(this.pos);
+ 
+@@ -17,6 +47,7 @@
+   String? _category;
+   bool _includeReversed = false;
+   bool _loaded = false;
++  bool _unavailable = false;
+   int? _nextOffset;
+   Json? _pending;
+ 
+@@ -45,13 +76,20 @@
+       _items.clear();
+       _nextOffset = null;
+     }
+-    final page = await _api.list(
+-      from: dateText(_range.start),
+-      to: dateText(_range.end),
+-      includeReversed: _includeReversed,
+-      category: _category,
+-      offset: more ? _nextOffset! : 0,
+-    );
++    final ({List<Json> items, int? nextOffset}) page;
++    try {
++      page = await _api.list(
++        from: dateText(_range.start),
++        to: dateText(_range.end),
++        includeReversed: _includeReversed,
++        category: _category,
++        offset: more ? _nextOffset! : 0,
++      );
++    } on ApiFailure catch (failure) {
++      _unavailable = failure.code == 'operating_expenses_unavailable';
++      rethrow;
++    }
++    _unavailable = false;
+     for (final item in page.items) {
+       _items[item['operationId'] as String] = item;
+     }
+@@ -76,7 +114,11 @@
+       final days = DateTime.utc(to.year, to.month, to.day)
+           .difference(DateTime.utc(from.year, from.month, from.day)).inDays;
+       if (days >= 93) {
+-        throw const FormatException('Выберите период до 93 дней включительно.');
++        throw FormatException(_tr(
++          context,
++          'Выберите период до 93 дней включительно.',
++          '93 kungacha bo‘lgan davrni tanlang.',
++        ));
+       }
+       _range = range;
+       await _load();
+@@ -104,14 +146,18 @@
+   Future<void> _reverse(Json item) async {
+     final reason = await inputValue(
+       context,
+-      'Отменить расход',
+-      'Причина отмены',
+-      hint: '${item['description']} · ${money(item['amount'] as num)}',
++      _tr(context, 'Отменить расход', 'Xarajatni bekor qilish'),
++      _tr(context, 'Причина отмены', 'Bekor qilish sababi'),
++      hint: '${item['description']} · ${_expenseAmount(context, item['amount'] as num)}',
+     );
+     if (reason == null || !mounted) return;
+     await _submit(() {
+       if (reason.isEmpty || reason.length > 500) {
+-        throw const FormatException('Укажите причину отмены до 500 символов.');
++        throw FormatException(_tr(
++          context,
++          'Укажите причину отмены до 500 символов.',
++          'Bekor qilish sababini 500 tagacha belgi bilan yozing.',
++        ));
+       }
+       return _api.reverse(item['operationId'] as String, reason);
+     });
+@@ -124,20 +170,30 @@
+     } finally {
+       _pending = await _api.pending();
+     }
+-    if (result != null) {
+-      status = result['reversed'] == true ? 'Расход отменён.' : 'Расход сохранён.';
++    if (result != null && mounted) {
++      status = result['reversed'] == true
++          ? _tr(context, 'Расход отменён.', 'Xarajat bekor qilindi.')
++          : _tr(context, 'Расход сохранён.', 'Xarajat saqlandi.');
+     }
+     try {
+       await _load();
+     } on Exception {
+       if (status == null) rethrow;
+-      status = '$status Не удалось обновить список расходов.';
++      if (mounted) {
++        final message = _tr(
++          context,
++          'Не удалось обновить список расходов.',
++          'Xarajatlar ro‘yxatini yangilab bo‘lmadi.',
++        );
++        status = '$status $message';
++      }
+     }
+   });
+ 
+   @override
+   Widget build(BuildContext context) {
+     final writeDisabled = busy || !_loaded || _pending != null;
++    final labels = _expenseLabels(context);
+     return Scaffold(
+       appBar: AppBar(
+         title: const _UiText('Расходы магазина', 'Do‘kon xarajatlari'),
+@@ -157,57 +213,70 @@
+           if (_pending case final pending?) ...[
+             StatusBox(
+               pending['target'] == null
+-                  ? 'Проверьте сохранение предыдущего расхода.'
+-                  : 'Проверьте отмену предыдущего расхода.',
++                  ? _tr(context, 'Проверьте сохранение предыдущего расхода.',
++                      'Avvalgi xarajat saqlanganini tekshiring.')
++                  : _tr(context, 'Проверьте отмену предыдущего расхода.',
++                      'Avvalgi xarajat bekor qilinganini tekshiring.'),
+             ),
+             OutlinedButton(
+               onPressed: busy ? null : () => _submit(_api.retry),
+               child: const _UiText('Проверить операцию', 'Amalni tekshirish'),
+             ),
+           ],
+-          FilledButton.icon(
+-            onPressed: writeDisabled ? null : _add,
+-            icon: const Icon(Icons.add),
+-            label: const _UiText('Добавить расход', 'Xarajat qo‘shish'),
+-          ),
+-          OutlinedButton.icon(
+-            onPressed: busy ? null : _chooseRange,
+-            icon: const Icon(Icons.date_range_outlined),
+-            label: Text(
+-              '${_reportDate(dateText(_range.start))} — ${_reportDate(dateText(_range.end))}',
++          if (_unavailable)
++            OutlinedButton.icon(
++              onPressed: busy ? null : () => task(_reload),
++              icon: const Icon(Icons.refresh),
++              label: const _UiText('Проверить снова', 'Qayta tekshirish'),
++            )
++          else ...[
++            FilledButton.icon(
++              onPressed: writeDisabled ? null : _add,
++              icon: const Icon(Icons.add),
++              label: const _UiText('Добавить расход', 'Xarajat qo‘shish'),
+             ),
+-          ),
+-          _ReportOptionFilter(
+-            label: 'Категория',
+-            value: _category ?? '',
+-            options: const {'': 'Все категории', ...expenseCategories},
+-            onChanged: busy ? null : (value) => task(() async {
+-              _category = value.isEmpty ? null : value;
+-              await _load();
+-            }),
+-          ),
+-          SwitchListTile(
+-            contentPadding: EdgeInsets.zero,
+-            title: const _UiText('Показывать отменённые', 'Bekor qilinganlarni ko‘rsatish'),
+-            value: _includeReversed,
+-            onChanged: busy ? null : (value) => task(() async {
+-              _includeReversed = value;
+-              await _load();
+-            }),
+-          ),
++            const SizedBox(height: 12),
++            OutlinedButton.icon(
++              onPressed: busy ? null : _chooseRange,
++              icon: const Icon(Icons.date_range_outlined),
++              label: Text(
++                '${_reportDate(dateText(_range.start))} — ${_reportDate(dateText(_range.end))}',
++              ),
++            ),
++            const SizedBox(height: 12),
++            _ReportOptionFilter(
++              label: _tr(context, 'Категория', 'Toifa'),
++              value: _category ?? '',
++              options: {'': _tr(context, 'Все категории', 'Barcha toifalar'), ...labels.categories},
++              onChanged: busy ? null : (value) => task(() async {
++                _category = value.isEmpty ? null : value;
++                await _load();
++              }),
++            ),
++            SwitchListTile(
++              contentPadding: EdgeInsets.zero,
++              title: const _UiText('Показывать отменённые', 'Bekor qilinganlarni ko‘rsatish'),
++              value: _includeReversed,
++              onChanged: busy ? null : (value) => task(() async {
++                _includeReversed = value;
++                await _load();
++              }),
++            ),
++          ],
+           if (_loaded && _items.isEmpty)
+             const _UiStatus('За выбранный период расходов нет.', 'Tanlangan davrda xarajatlar yo‘q.'),
+           for (final item in _items.values)
+             Section(
+               child: ListTile(
+                 contentPadding: EdgeInsets.zero,
+-                title: Text('${money(item['amount'] as num)} · ${item['description']}'),
++                title: Text('${_expenseAmount(context, item['amount'] as num)} · ${item['description']}'),
+                 subtitle: Text([
+                   _reportDate(item['incurredOn']),
+-                  expenseCategories[item['category']] ?? item['category'] as String,
+-                  expensePaymentMethods[item['paymentMethod']] ??
++                  labels.categories[item['category']] ?? item['category'] as String,
++                  labels.paymentMethods[item['paymentMethod']] ??
+                       item['paymentMethod'] as String,
+-                  if (item['reversed'] == true) 'Отменён · ${item['reversalReason'] ?? '—'}',
++                  if (item['reversed'] == true)
++                    '${_tr(context, 'Отменён', 'Bekor qilingan')} · ${item['reversalReason'] ?? '—'}',
+                 ].join('\n')),
+                 trailing: item['reversed'] == true
+                     ? null
+@@ -268,6 +337,8 @@
+       firstDate: DateTime(2000),
+       lastDate: widget.today,
+       helpText: _tr(context, 'Дата расхода', 'Xarajat sanasi'),
++      cancelText: _tr(context, 'Отмена', 'Bekor qilish'),
++      confirmText: _tr(context, 'Выбрать', 'Tanlash'),
+     );
+     if (mounted && date != null) setState(() => _date = date);
+   }
+@@ -284,51 +355,55 @@
+   }
+ 
+   @override
+-  Widget build(BuildContext context) => Scaffold(
+-    appBar: AppBar(title: const _UiText('Новый расход', 'Yangi xarajat')),
+-    body: Form(
+-      key: _form,
+-      child: ListView(
+-        padding: const EdgeInsets.all(16),
+-        children: [
+-          OutlinedButton.icon(
+-            onPressed: _chooseDate,
+-            icon: const Icon(Icons.date_range_outlined),
+-            label: Text(_reportDate(dateText(_date))),
+-          ),
+-          _ReportOptionFilter(
+-            label: 'Категория',
+-            value: _category,
+-            options: expenseCategories,
+-            onChanged: (value) => setState(() => _category = value),
+-          ),
+-          _ReportOptionFilter(
+-            label: 'Способ оплаты',
+-            value: _method,
+-            options: expensePaymentMethods,
+-            onChanged: (value) => setState(() => _method = value),
+-          ),
+-          const SizedBox(height: 12),
+-          TextFormField(
+-            controller: _amount,
+-            decoration: InputDecoration(labelText: _tr(context, 'Сумма, сум', 'Summa, so‘m')),
+-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+-            validator: (value) => (parseAmount(value ?? '') ?? 0) <= 0
+-                ? 'Укажите положительную сумму.'
+-                : null,
+-          ),
+-          const SizedBox(height: 12),
+-          TextFormField(
+-            controller: _description,
+-            decoration: InputDecoration(labelText: _tr(context, 'Описание', 'Tavsif')),
+-            maxLength: 500,
+-            validator: (value) => (value ?? '').trim().isEmpty
+-                ? 'Укажите назначение расхода.'
+-                : null,
+-          ),
+-          FilledButton(onPressed: _save, child: const _UiText('Сохранить расход', 'Xarajatni saqlash')),
+-        ],
++  Widget build(BuildContext context) {
++    final labels = _expenseLabels(context);
++    return Scaffold(
++      appBar: AppBar(title: const _UiText('Новый расход', 'Yangi xarajat')),
++      body: Form(
++        key: _form,
++        child: ListView(
++          padding: const EdgeInsets.all(16),
++          children: [
++            OutlinedButton.icon(
++              onPressed: _chooseDate,
++              icon: const Icon(Icons.date_range_outlined),
++              label: Text(_reportDate(dateText(_date))),
++            ),
++            _ReportOptionFilter(
++              label: _tr(context, 'Категория', 'Toifa'),
++              value: _category,
++              options: labels.categories,
++              onChanged: (value) => setState(() => _category = value),
++            ),
++            const SizedBox(height: 12),
++            _ReportOptionFilter(
++              label: _tr(context, 'Способ оплаты', 'To‘lov usuli'),
++              value: _method,
++              options: labels.paymentMethods,
++              onChanged: (value) => setState(() => _method = value),
++            ),
++            const SizedBox(height: 12),
++            TextFormField(
++              controller: _amount,
++              decoration: InputDecoration(labelText: _tr(context, 'Сумма, сум', 'Summa, so‘m')),
++              keyboardType: const TextInputType.numberWithOptions(decimal: true),
++              validator: (value) => (parseAmount(value ?? '') ?? 0) <= 0
++                  ? _tr(context, 'Укажите положительную сумму.', 'Musbat summa kiriting.')
++                  : null,
++            ),
++            const SizedBox(height: 12),
++            TextFormField(
++              controller: _description,
++              decoration: InputDecoration(labelText: _tr(context, 'Описание', 'Tavsif')),
++              maxLength: 500,
++              validator: (value) => (value ?? '').trim().isEmpty
++                  ? _tr(context, 'Укажите назначение расхода.', 'Xarajat maqsadini kiriting.')
++                  : null,
++            ),
++            FilledButton(onPressed: _save, child: const _UiText('Сохранить расход', 'Xarajatni saqlash')),
++          ],
++        ),
+       ),
+-    ),
+-  );
++    );
++  }
+ }
+--- a/apps/mobile-flutter/lib/language.dart
++++ b/apps/mobile-flutter/lib/language.dart
+@@ -81,6 +81,12 @@
+     'mobile_login_denied' => 'Server taklif orqali kirishni rad etdi. Administratorga murojaat qiling.',
+     'manual_discount_quote_unavailable' => 'Server qo‘lda chegirma hisoblashni hozircha qo‘llamaydi.',
+     'operating_expenses_unavailable' => 'Server do‘kon xarajatlarini hozircha qo‘llamaydi.',
++    'operating_expense_pending' => 'Avval oldingi xarajatni tekshiring.',
++    'invalid_operating_expense' => 'Xarajat ma’lumotlarini tekshiring.',
++    'invalid_operating_expense_reversal' => 'Bekor qilish sababini tekshiring.',
++    'invalid_operating_expense_filter' => 'Xarajatlar davrini tekshiring.',
++    'operating_expense_not_found' => 'Xarajat topilmadi. Ro‘yxatni yangilang.',
++    'operating_expense_already_reversed' => 'Xarajat avval bekor qilingan. Ro‘yxatni yangilang.',
+     'product_proposal_unavailable' => 'Server kartochkalarni tasdiqlash uchun hozircha qabul qilmaydi.',
+     'account_login_failed' => 'Hisobga kirish yakunlanmadi. Ulanishni tekshirib, qayta urinib ko‘ring.',
+     'account_login_unavailable' => 'Server Android orqali hisobga kirishga ruxsat bermadi. Administratorga murojaat qiling.',
+--- a/apps/mobile-flutter/pubspec.yaml
++++ b/apps/mobile-flutter/pubspec.yaml
+@@ -1,7 +1,7 @@
+ name: kassa_mobile
+ description: Android POS pilot for Kassa.
+ publish_to: none
+-version: 0.2.82+2102
++version: 0.2.83+2103
+ environment:
+   sdk: ">=3.10.0 <4.0.0"
+ dependencies:
+--- /dev/null
++++ b/apps/mobile-flutter/test/expenses_ui_test.dart
+@@ -0,0 +1,112 @@
++import 'dart:convert';
++
++import 'package:flutter/material.dart';
++import 'package:flutter_secure_storage/flutter_secure_storage.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:http/http.dart' as http;
++import 'package:http/testing.dart';
++import 'package:kassa_mobile/main.dart';
++import 'package:kassa_mobile/pos.dart';
++
++class _AdminLogin extends Login {
++  _AdminLogin(super.storage);
++
++  @override
++  String get subject => 'expense-admin-fixture';
++
++  @override
++  Future<void> signIn() async {}
++
++  @override
++  Future<String> accessToken({bool force = false}) async => 'fixture-token';
++}
++
++void main() {
++  testWidgets('Uzbek expense screen recovers when the route becomes available', (tester) async {
++    tester.view.devicePixelRatio = 1;
++    tester.view.physicalSize = const Size(400, 800);
++    addTearDown(tester.view.resetDevicePixelRatio);
++    addTearDown(tester.view.resetPhysicalSize);
++    FlutterSecureStorage.setMockInitialValues({'kassa.ui.language': 'uz'});
++    const storage = FlutterSecureStorage();
++    const base = '/v1/stores/$testStore';
++    const path = '$base/finance/expenses';
++    var available = false;
++    Json? expense;
++    http.Response response(Object body, {int status = 200}) => http.Response.bytes(
++      utf8.encode(jsonEncode(body)),
++      status,
++      headers: {'content-type': 'application/json; charset=utf-8'},
++    );
++    final pos = Pos(
++      storage,
++      login: _AdminLogin(storage),
++      client: MockClient((request) async {
++        if (request.url.path == '/v1/me/roles') {
++          return response({'storeId': testStore, 'roles': ['admin']});
++        }
++        if (request.url.path == '$base/receiving/catalog/proposals') {
++          return response([]);
++        }
++        expect(request.url.path, path);
++        expect(request.headers['X-Active-Role'], 'admin');
++        if (!available) return response({}, status: 404);
++        if (request.method == 'POST') {
++          expense = {...(jsonDecode(request.body) as Json), 'reversed': false};
++          return response(expense!);
++        }
++        expect(request.method, 'GET');
++        final query = request.url.queryParameters;
++        return response({
++          'storeId': testStore,
++          'from': query['from'],
++          'to': query['to'],
++          'category': query['category'],
++          'includeReversed': query['includeReversed'] == 'true',
++          'items': [if (expense != null) expense],
++          'nextOffset': null,
++        });
++      }),
++    );
++    addTearDown(pos.api.close);
++
++    Future<void> tap(Finder target) async {
++      await tester.ensureVisible(target);
++      await tester.pumpAndSettle();
++      await tester.tap(target);
++      await tester.pumpAndSettle();
++    }
++
++    await tester.pumpWidget(KassaApp(pos: pos, debugPilot: true));
++    await tester.pumpAndSettle();
++    await tap(find.text('Hisobga kirish'));
++    await tap(find.widgetWithText(NavigationDestination, 'Do‘kon'));
++    await tap(find.text('Do‘kon xarajatlari'));
++    expect(find.text('Server do‘kon xarajatlarini hozircha qo‘llamaydi.'), findsOneWidget);
++    expect(find.text('Xarajat qo‘shish'), findsNothing);
++    expect(find.byType(DropdownButtonFormField<String>), findsNothing);
++
++    available = true;
++    await tap(find.text('Qayta tekshirish'));
++    expect(find.text('Toifa'), findsOneWidget);
++    expect(find.text('Barcha toifalar'), findsOneWidget);
++    expect(find.text('Категория'), findsNothing);
++    expect(find.text('Все категории'), findsNothing);
++    await tap(find.text('Xarajat qo‘shish'));
++    expect(find.text('To‘lov usuli'), findsOneWidget);
++    expect(find.text('Naqd pul'), findsOneWidget);
++    await tap(find.text('Boshqa xarajatlar'));
++    await tap(find.text('Yetkazib berish').last);
++    await tester.enterText(find.widgetWithText(TextFormField, 'Summa, so‘m'), '24500');
++    await tester.enterText(find.widgetWithText(TextFormField, 'Tavsif'), 'Sinov yetkazib berish');
++    await tap(find.text('Xarajatni saqlash'));
++
++    expect(expense?['category'], 'delivery');
++    expect(expense?['paymentMethod'], 'cash');
++    expect(expense?['amount'], 24500);
++    expect(find.text('Xarajat saqlandi.'), findsOneWidget);
++    expect(find.textContaining('24500 so‘m'), findsOneWidget);
++    expect(find.textContaining('Yetkazib berish\nNaqd pul'), findsOneWidget);
++    expect(tester.takeException(), isNull);
++  });
++}
