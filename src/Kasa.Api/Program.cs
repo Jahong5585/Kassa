@@ -656,6 +656,21 @@ api.MapPost("/expiry/cashier/shelf-tasks", async (CreateShelfTask request, PosSe
     CancellationToken ct) => TypedResults.Ok(await pos.MarkShelfRemoval(context, request, ct))).WithName("MarkShelfRemoval");
 
 var storeApi = api.MapGroup("/stores/{storeId:guid}");
+var storeFinance = storeApi.MapGroup("/finance/expenses");
+storeFinance.MapGet("", async (Guid storeId, DateOnly from, DateOnly to, string? category,
+    bool? includeReversed, int? offset, PosService pos, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await pos.ListOperatingExpenses(context, storeId, from, to, category, includeReversed, offset, ct)))
+    .WithName("ListOperatingExpenses");
+storeFinance.MapGet("/{id:guid}", async (Guid storeId, Guid id, PosService pos, HttpContext context,
+    CancellationToken ct) => TypedResults.Ok(await pos.GetOperatingExpense(context, storeId, id, ct)))
+    .WithName("ReadOperatingExpense");
+storeFinance.MapPost("", async (Guid storeId, CreateOperatingExpense request, PosService pos, HttpContext context,
+    CancellationToken ct) => TypedResults.Ok(await pos.CreateOperatingExpense(context, storeId, request, ct)))
+    .WithName("CreateOperatingExpense");
+storeFinance.MapPost("/{id:guid}/reverse", async (Guid storeId, Guid id, ReverseOperatingExpense request,
+    PosService pos, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await pos.ReverseOperatingExpense(context, storeId, id, request, ct)))
+    .WithName("ReverseOperatingExpense");
 storeApi.MapGet("/audit", async (Guid storeId, DateOnly from, DateOnly to, string? action, string? after, int? limit,
     PosService pos, HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await pos.GetStoreAudit(context, storeId, from, to, action, after, limit ?? 50, ct)))

@@ -165,6 +165,10 @@ else
         exit 1
     fi
     "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/sales_period_audit.sql
+    if ! "$python_command" tests/mobile_catalog_expenses.py; then
+        cat "$logs" >&2
+        exit 1
+    fi
 fi
 if ! "$python_command" tests/local_test_developer.py; then
     cat "$logs" >&2

@@ -159,7 +159,8 @@ internal sealed partial class PosService
         await LockProduct(db, tx, scope.Organization, product, true, ct);
         var current = await ReadProductCard(db, tx, scope, product, ct);
         var card = ValidateProductCard(product, request, request.RequiresExpiry ?? current?.RequiresExpiry ?? false);
-        var result = await WriteCard(db, tx, context, scope, card, request.ExpectedVersion, ct);
+        var result = await WriteCard(db, tx, context, scope, card, request.ExpectedVersion, ct,
+            keepShelfLife: !request.ShelfLifeDaysSpecified);
         await tx.CommitAsync(ct);
         return result;
     }
@@ -171,7 +172,8 @@ internal sealed partial class PosService
     {
         if (product == Guid.Empty || request.ExpectedVersion is < 0 or int.MaxValue ||
             request.Unit is not ("piece" or "kg") || !IsText(request.Name, 160) ||
-            request.Barcodes is not { Length: <= 30 })
+            request.Barcodes is not { Length: <= 30 } || request.ShelfLifeDays is < 1 or > 3650 ||
+            (!requiresExpiry && request.ShelfLifeDays is not null))
             throw new PosError(400, "invalid_product_card");
         var codes = new HashSet<string>(StringComparer.Ordinal);
         foreach (var barcode in request.Barcodes)
@@ -186,15 +188,17 @@ internal sealed partial class PosService
         return new ProductCard(product, request.Name.Trim(), request.Unit, requiresExpiry,
             OptionalText(request.Sku, 64), OptionalText(request.Category, 120), OptionalText(request.Brand, 120),
             OptionalText(request.SupplierRef, 160), OptionalText(request.TaxProfile, 80), request.ExpectedVersion + 1,
-            ordered, null, 1, true);
+            ordered, null, 1, true) { ShelfLifeDays = request.ShelfLifeDays };
     }
 
     private static async Task<ProductCard> WriteCard(NpgsqlConnection db, NpgsqlTransaction tx, HttpContext context,
-        StoreScope scope, ProductCard card, int expectedVersion, CancellationToken ct)
+        StoreScope scope, ProductCard card, int expectedVersion, CancellationToken ct, bool keepShelfLife = true)
     {
         var id = card.ProductId;
         await LockProduct(db, tx, scope.Organization, id, true, ct);
         var current = await ReadProductCard(db, tx, scope, id, ct);
+        if (keepShelfLife && current is not null && card.RequiresExpiry && card.ShelfLifeDays is null)
+            card = card with { ShelfLifeDays = current.ShelfLifeDays };
         if (current is not null && SameProductCard(card, current))
             return current;
         if (current is null && expectedVersion != 0)
@@ -223,11 +227,11 @@ internal sealed partial class PosService
             {
                 var added = await db.Run(tx, ct, """
                     INSERT INTO products (org_id, id, name, unit, requires_expiry, barcode, sku, category,
-                        brand, supplier_ref, tax_profile, revision)
-                    VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7, $8, $9, $10, $11, $12)
+                        brand, supplier_ref, tax_profile, revision, shelf_life_days)
+                    VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7, $8, $9, $10, $11, $12, $13)
                     ON CONFLICT (org_id, id) DO NOTHING
                     """, scope.Organization, id, card.Name, card.Unit, card.RequiresExpiry, primary, card.Sku, card.Category,
-                    card.Brand, card.SupplierRef, card.TaxProfile, card.Version);
+                    card.Brand, card.SupplierRef, card.TaxProfile, card.Version, card.ShelfLifeDays);
                 if (added != 1)
                     throw new PosError(409, "product_id_reused");
                 await db.Run(tx, ct, """
@@ -240,10 +244,11 @@ internal sealed partial class PosService
             {
                 await db.Run(tx, ct, """
                     UPDATE products SET name = $3, requires_expiry = $4, barcode = NULLIF($5, ''), sku = $6,
-                        category = $7, brand = $8, supplier_ref = $9, tax_profile = $10, revision = $11
+                        category = $7, brand = $8, supplier_ref = $9, tax_profile = $10, revision = $11,
+                        shelf_life_days = $12
                     WHERE (org_id, id) = ($1, $2)
                     """, scope.Organization, id, card.Name, card.RequiresExpiry, primary, card.Sku, card.Category,
-                    card.Brand, card.SupplierRef, card.TaxProfile, card.Version);
+                    card.Brand, card.SupplierRef, card.TaxProfile, card.Version, card.ShelfLifeDays);
             }
         }
         catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation &&
@@ -283,7 +288,7 @@ internal sealed partial class PosService
     {
         await using var command = db.Sql(tx, """
             SELECT p.name, p.unit, p.requires_expiry, p.sku, p.category, p.brand, p.supplier_ref, p.tax_profile,
-                   p.revision, sp.unit_price, sp.version, sp.active, b.code, b.quantity_factor
+                   p.revision, sp.unit_price, sp.version, sp.active, b.code, b.quantity_factor, p.shelf_life_days
             FROM products p JOIN store_prices sp ON (sp.org_id, sp.product_id) = (p.org_id, p.id)
             LEFT JOIN product_barcodes b ON (b.org_id, b.product_id) = (p.org_id, p.id)
             WHERE (p.org_id, sp.store_id, p.id) = ($1, $2, $3)
@@ -295,7 +300,8 @@ internal sealed partial class PosService
         List<ProductBarcode> codes = [];
         var card = new ProductCard(product, rows.GetString(0), rows.GetString(1), rows.GetBoolean(2), rows.GetString(3),
             rows.GetString(4), rows.GetString(5), rows.GetString(6), rows.GetString(7), rows.GetInt32(8), codes,
-            rows.DecimalOrNull(9), rows.GetInt32(10), rows.GetBoolean(11));
+            rows.DecimalOrNull(9), rows.GetInt32(10), rows.GetBoolean(11))
+            { ShelfLifeDays = rows.IsDBNull(14) ? null : rows.GetInt32(14) };
         do
         {
             if (!rows.IsDBNull(12))

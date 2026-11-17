@@ -274,10 +274,30 @@ public sealed record InventorySummary(Guid InventoryId, string Reason, string St
 public sealed record ProductBarcode(string Code, decimal QuantityFactor);
 public sealed record WriteProductCard([property: JsonRequired] int ExpectedVersion, string Name, string Unit,
     bool? RequiresExpiry, string? Sku, string? Category, string? Brand, string? SupplierRef, string? TaxProfile,
-    ProductBarcode[] Barcodes);
+    ProductBarcode[] Barcodes)
+{
+    private int? _shelfLifeDays;
+
+    [JsonIgnore]
+    internal bool ShelfLifeDaysSpecified { get; private set; }
+
+    public int? ShelfLifeDays
+    {
+        get => _shelfLifeDays;
+        init
+        {
+            _shelfLifeDays = value;
+            ShelfLifeDaysSpecified = true;
+        }
+    }
+}
 public sealed record ProductCard(Guid ProductId, string Name, string Unit, bool RequiresExpiry, string Sku,
     string Category, string Brand, string SupplierRef, string TaxProfile, int Version,
-    IReadOnlyList<ProductBarcode> Barcodes, decimal? UnitPrice, int PriceVersion, bool Active);
+    IReadOnlyList<ProductBarcode> Barcodes, decimal? UnitPrice, int PriceVersion, bool Active)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? ShelfLifeDays { get; init; }
+}
 public sealed record ProductSearchResult(Guid ProductId, string Name, string Sku, string Barcode, string Unit,
     decimal? UnitPrice, int PriceVersion, bool Active);
 public sealed record WriteProductPrice(int ExpectedVersion, [property: JsonRequired] decimal? UnitPrice,
@@ -286,8 +306,25 @@ public sealed record ProductPrice(int Version, decimal? UnitPrice, bool Active, 
     DateTime RecordedAt);
 public sealed record ImportCatalog([property: JsonRequired] bool Preview, string Csv);
 public sealed record CatalogImportResult(bool Preview, IReadOnlyList<ProductCard> Products);
+public sealed record CreateOperatingExpense(Guid OperationId, DateOnly IncurredOn, string Category,
+    [property: JsonRequired] decimal Amount, string PaymentMethod, string Description);
+public sealed record ReverseOperatingExpense(Guid OperationId, string Reason);
+public sealed record OperatingExpense(Guid OperationId, DateOnly IncurredOn, string Category, decimal Amount,
+    string PaymentMethod, string Description, Guid RecordedBy, DateTime CreatedAt, Guid? ReversalId,
+    string? ReversalReason, Guid? ReversedBy, DateTime? ReversedAt)
+{
+    public bool Reversed => ReversedAt.HasValue;
+}
+public sealed record OperatingExpensePage(Guid StoreId, string TimeZone, DateOnly From, DateOnly To,
+    string? Category, bool IncludeReversed, IReadOnlyList<OperatingExpense> Items, int? NextOffset);
 public sealed record ProductProposalBody(string Name, string Unit, bool RequiresExpiry, string? Sku,
-    string? Category, ProductBarcode[] Barcodes);
+    string? Category, ProductBarcode[] Barcodes)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Brand { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? ShelfLifeDays { get; init; }
+}
 public sealed record ProposeProduct(Guid ProposalId, ProductProposalBody Product);
 public sealed record ReviewProductProposal(string? Reason);
 public sealed record ProductProposal(Guid ProposalId, Guid ProposedBy, string Status, ProductProposalBody Product,

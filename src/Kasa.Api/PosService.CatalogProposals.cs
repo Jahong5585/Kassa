@@ -11,7 +11,11 @@ internal sealed partial class PosService
         var input = request.Product ?? throw new PosError(400, "invalid_product_proposal");
         var card = ProposalCard(request.ProposalId, input);
         var body = new ProductProposalBody(card.Name, card.Unit, card.RequiresExpiry, card.Sku, card.Category,
-            card.Barcodes.ToArray());
+            card.Barcodes.ToArray())
+        {
+            Brand = string.IsNullOrEmpty(card.Brand) ? null : card.Brand,
+            ShelfLifeDays = card.ShelfLifeDays
+        };
 
         await using var db = await source.OpenConnectionAsync(ct);
         await using var tx = await db.BeginTransactionAsync(ct);
@@ -95,7 +99,7 @@ internal sealed partial class PosService
 
     private static ProductCard ProposalCard(Guid id, ProductProposalBody body) =>
         ValidateProductCard(id, new WriteProductCard(0, body.Name, body.Unit, body.RequiresExpiry, body.Sku, body.Category,
-            null, null, null, body.Barcodes));
+            body.Brand, null, null, body.Barcodes) { ShelfLifeDays = body.ShelfLifeDays });
 
     private static Task LockProposal(NpgsqlConnection db, NpgsqlTransaction tx, StoreScope scope, Guid id,
         CancellationToken ct) =>
