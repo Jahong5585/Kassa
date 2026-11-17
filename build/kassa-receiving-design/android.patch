@@ -70,7 +70,7 @@
        final days = int.tryParse(daysText);
        if (daysText.isNotEmpty && (days == null || days < 1 || days > 3650)) {
          throw const FormatException(
-@@ -2067,162 +2084,295 @@
+@@ -2067,162 +2084,301 @@
            ],
          });
          result = saved['status'] as String;
@@ -172,7 +172,7 @@
 +                fontWeight: FontWeight.w600,
                ),
              ),
--            const SizedBox(height: 8),
+             const SizedBox(height: 8),
 -            TextField(
 -              controller: barcode,
 -              enabled: !busy,
@@ -184,7 +184,6 @@
 -                labelText: _tr(context, 'Штрихкод', 'Shtrixkod'),
 -                counterText: '',
 -                suffixIcon: IconButton(
-+            const SizedBox(height: 12),
 +            Row(
 +              children: [
 +                Expanded(
@@ -277,47 +276,9 @@
 -                enabled: !busy,
 -                keyboardType: const TextInputType.numberWithOptions(
 -                  decimal: true,
--                ),
--                decoration: InputDecoration(labelText: _tr(context, 'Цена', 'Narx')),
--              ),
--              const SizedBox(height: 8),
--              TextField(
--                controller: stock,
--                enabled: !busy,
--                keyboardType: TextInputType.number,
--                decoration: InputDecoration(
--                  labelText: _tr(context, 'Начальный остаток', 'Boshlang‘ich qoldiq'),
--                ),
--              ),
--            ],
--            CheckboxListTile(
--              value: expiry,
--              contentPadding: EdgeInsets.zero,
--              title: const _UiText('Обязательный срок годности', 'Yaroqlilik muddati majburiy'),
--              onChanged: busy
--                  ? null
--                  : (value) => setState(() => expiry = value == true),
--            ),
--            FilledButton(
--              onPressed: busy || pending || _existingBarcode != null
--                  ? null
--                  : save,
--              child: pos.demo
--                  ? const _UiText('Сохранить товар', 'Tovarni saqlash')
--                  : const _UiText('Отправить на утверждение', 'Tasdiqlashga yuborish'),
--            ),
-           ],
-         ),
-       ),
--      Section(
--        child: OutlinedButton.icon(
--          onPressed: busy
--              ? null
--              : () => Navigator.of(context).push(
--                  MaterialPageRoute<void>(builder: (_) => DraftScreen(pos)),
--                ),
--          icon: const Icon(Icons.receipt_long),
--          label: const _UiText('Черновик накладной', 'Yukxat qoralamasi'),
++          ],
++        ),
++      ),
 +    );
 +  }
 +
@@ -328,9 +289,7 @@
 +        _UiText(
 +          'Добавить товар', 'Mahsulot qo‘shish',
 +          style: Theme.of(context).textTheme.titleMedium,
-         ),
--      ),
--    ],
++        ),
 +        const SizedBox(height: 12),
 +        TextField(
 +          controller: name,
@@ -376,53 +335,60 @@
 +    ),
 +  );
 +
-+  Widget _productDetails(BuildContext context) => Section(
++  Widget _productDetails(BuildContext context) => Card(
 +    child: Column(
 +      crossAxisAlignment: CrossAxisAlignment.stretch,
 +      children: [
 +        ListTile(
-+          contentPadding: EdgeInsets.zero,
++          contentPadding: const EdgeInsets.symmetric(horizontal: 16),
 +          leading: const Icon(Icons.tune),
 +          title: const _UiText('Категория, бренд, срок', 'Toifa, brend, muddat'),
 +          trailing: Icon(_showDetails ? Icons.expand_less : Icons.expand_more),
 +          onTap: busy ? null : () => setState(() => _showDetails = !_showDetails),
 +        ),
-+        if (_showDetails) ...[
-+          const SizedBox(height: 8),
-+          TextField(
-+            controller: category,
-+            enabled: !busy,
-+            maxLength: 120,
-+            textInputAction: TextInputAction.next,
-+            decoration: InputDecoration(
-+              labelText: _tr(context, 'Категория', 'Toifa'),
-+              counterText: '',
++        if (_showDetails)
++          Padding(
++            padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
++            child: Column(
++              crossAxisAlignment: CrossAxisAlignment.stretch,
++              children: [
++                TextField(
++                  controller: category,
++                  enabled: !busy,
++                  maxLength: 120,
++                  textInputAction: TextInputAction.next,
++                  decoration: InputDecoration(
++                    labelText: _tr(context, 'Категория', 'Toifa'),
++                    counterText: '',
++                  ),
+                 ),
+-                decoration: InputDecoration(labelText: _tr(context, 'Цена', 'Narx')),
++                const SizedBox(height: 12),
++                TextField(
++                  controller: brand,
++                  enabled: !busy,
++                  maxLength: 120,
++                  decoration: InputDecoration(
++                    labelText: _tr(context, 'Бренд', 'Brend'),
++                    counterText: '',
++                  ),
++                ),
++                _expiryField(),
++                if (expiry)
++                  TextField(
++                    controller: shelfLife,
++                    enabled: !busy,
++                    keyboardType: TextInputType.number,
++                    decoration: InputDecoration(
++                      labelText: _tr(context, 'Срок хранения, дней', 'Saqlash muddati, kun'),
++                    ),
++                  ),
++              ],
 +            ),
 +          ),
-+          const SizedBox(height: 12),
-+          TextField(
-+            controller: brand,
-+            enabled: !busy,
-+            maxLength: 120,
-+            decoration: InputDecoration(
-+              labelText: _tr(context, 'Бренд', 'Brend'),
-+              counterText: '',
-+            ),
-+          ),
-+          _expiryField(),
-+          if (expiry)
-+            TextField(
-+              controller: shelfLife,
-+              enabled: !busy,
-+              keyboardType: TextInputType.number,
-+              decoration: InputDecoration(
-+                labelText: _tr(context, 'Срок хранения, дней', 'Saqlash muddati, kun'),
-+              ),
-+            ),
-+        ],
 +      ],
 +    ),
-   );
++  );
 +
 +  @override
 +  Widget build(BuildContext context) {
@@ -457,8 +423,14 @@
 +                    label: const _UiText('Черновик накладной', 'Yukxat qoralamasi'),
 +                  ),
 +                ],
-+              ),
-+              const SizedBox(height: 12),
+               ),
+               const SizedBox(height: 8),
+-              TextField(
+-                controller: stock,
+-                enabled: !busy,
+-                keyboardType: TextInputType.number,
+-                decoration: InputDecoration(
+-                  labelText: _tr(context, 'Начальный остаток', 'Boshlang‘ich qoldiq'),
 +              if (busy) const LinearProgressIndicator(),
 +              if (status != null)
 +                Semantics(liveRegion: true, child: StatusBox(status!, error: failed)),
@@ -468,15 +440,23 @@
 +                  child: const _UiText(
 +                    'Проверить отправку карточки', 'Kartochka yuborilganini tekshirish',
 +                  ),
-+                ),
+                 ),
+-              ),
 +                const SizedBox(height: 12),
 +              ],
 +              _barcodePanel(context),
-+              const SizedBox(height: 16),
++              const SizedBox(height: 12),
 +              _productFields(context),
 +              if (!pos.demo) _productDetails(context),
 +              if (keyboardOpen) _submitButton(),
-+            ],
+             ],
+-            CheckboxListTile(
+-              value: expiry,
+-              contentPadding: EdgeInsets.zero,
+-              title: const _UiText('Обязательный срок годности', 'Yaroqlilik muddati majburiy'),
+-              onChanged: busy
+-                  ? null
+-                  : (value) => setState(() => expiry = value == true),
 +          ),
 +        ),
 +        if (!keyboardOpen)
@@ -484,11 +464,34 @@
 +            decoration: const BoxDecoration(
 +              color: _workplaceSurface,
 +              border: Border(top: BorderSide(color: _workplaceLine)),
-+            ),
+             ),
+-            FilledButton(
+-              onPressed: busy || pending || _existingBarcode != null
+-                  ? null
+-                  : save,
+-              child: pos.demo
+-                  ? const _UiText('Сохранить товар', 'Tovarni saqlash')
+-                  : const _UiText('Отправить на утверждение', 'Tasdiqlashga yuborish'),
 +            child: Padding(
 +              padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
 +              child: _submitButton(),
-+            ),
+             ),
+-          ],
+-        ),
+-      ),
+-      Section(
+-        child: OutlinedButton.icon(
+-          onPressed: busy
+-              ? null
+-              : () => Navigator.of(context).push(
+-                  MaterialPageRoute<void>(builder: (_) => DraftScreen(pos)),
+-                ),
+-          icon: const Icon(Icons.receipt_long),
+-          label: const _UiText('Черновик накладной', 'Yukxat qoralamasi'),
+-        ),
+-      ),
+-    ],
+-  );
 +          ),
 +      ],
 +    );
