@@ -1,0 +1,1353 @@
+--- a/apps/mobile-flutter/lib/main.dart
++++ b/apps/mobile-flutter/lib/main.dart
+@@ -53,6 +53,7 @@
+ part 'supplier_returns.dart';
+ part 'workplaces.dart';
+ part 'workplace_ui.dart';
++part 'workspace_shell.dart';
+ part 'store_management.dart';
+ part 'platform.dart';
+ part 'platform_store_commands.dart';
+@@ -67,9 +68,8 @@
+ 
+ DateTime _storeToday(ServerApi api) => api.storeDate(DateTime.now());
+ 
+-const _blue = Color(0xff304acb);
+-const _navy = Color(0xff15223a);
+-const _muted = Color(0xff475970);
++const _accent = Color(0xff176548);
++const _brandDeep = Color(0xff183d32);
+ 
+ extension on Desk {
+   String nameFor(BuildContext context) => switch (this) {
+@@ -78,17 +78,7 @@
+     Desk.admin => _tr(context, roleName, 'Administrator'),
+   };
+ 
+-  String labelFor(BuildContext context) => switch (this) {
+-    Desk.cashier => _tr(context, 'Касса', 'Kassa'),
+-    Desk.receiving => _tr(context, 'Приёмка', 'Qabul'),
+-    Desk.admin => nameFor(context),
+-  };
+ 
+-  IconData get icon => switch (this) {
+-    Desk.cashier => Icons.point_of_sale_rounded,
+-    Desk.receiving => Icons.inventory_2_outlined,
+-    Desk.admin => Icons.admin_panel_settings_outlined,
+-  };
+ }
+ 
+ class KassaApp extends StatefulWidget {
+@@ -120,7 +110,21 @@
+   final navigator = GlobalKey<NavigatorState>();
+   static const demoDesks = {Desk.cashier, Desk.receiving};
+ 
+-  Desk? desk;
++  Desk? _desk;
++  Desk? get desk => _desk;
++  set desk(Desk? next) {
++    if (_desk == next) return;
++    _desk = next;
++    _activeTab = null;
++  }
++
++  _DeskTab? _activeTab;
++  _DeskTab? get _currentTab =>
++      _activeTab ?? (desk == null ? null : _tabsFor(desk!).first);
++
++  bool get _hasWorkspaceTabs =>
++      desk != null &&
++      (desk != Desk.cashier || pos.demo || pos.api.location.registerId != null);
+   Set<Desk> allowed = {};
+   bool signedIn = false;
+   PlatformIdentity? _platformIdentity;
+@@ -302,6 +306,7 @@
+     setState(() {
+       _selected?.pos.api.retireWorkplace();
+       _selected = selected;
++      _activeTab = null;
+       allowed = selected.roles;
+       desk = selected.register != null
+           ? Desk.cashier
+@@ -446,11 +451,8 @@
+   Widget welcome(BuildContext context) => ListView(
+     padding: const EdgeInsets.all(16),
+     children: [
+-      Text(_tr(context, 'Рабочее место', 'Ish joyi'), style: Theme.of(context).textTheme.headlineSmall),
+-      const SizedBox(height: 6),
+-      if (_pilot)
+-        Text(_tr(context, 'Тестовый магазин', 'Sinov do‘koni'), style: TextStyle(color: _muted)),
+-      const SizedBox(height: 16),
++      _WelcomeBanner(signedIn: signedIn),
++      const SizedBox(height: 24),
+       if (signedIn && _platformIdentity != null)
+         FilledButton.icon(
+           onPressed: busy ? null : _openPlatform,
+@@ -495,29 +497,7 @@
+             onPressed: busy ? null : signInWithInvitation,
+             child: const _UiText('Войти по приглашению', 'Taklif orqali kirish'),
+           ),
+-        const SizedBox(height: 12),
+-        for (final role in demoDesks)
+-          Section(
+-            child: Column(
+-              crossAxisAlignment: CrossAxisAlignment.stretch,
+-              children: [
+-                ListTile(
+-                  contentPadding: EdgeInsets.zero,
+-                  leading: Icon(role.icon, color: _blue),
+-                  title: Text(role.labelFor(context)),
+-                  subtitle: Text(
+-                    role == Desk.cashier
+-                        ? _tr(context, 'Смена, штрихкоды и продажи', 'Smena, shtrixkodlar va sotuvlar')
+-                        : _tr(context, 'Карточки товаров и черновики накладных', 'Tovar kartochkalari va yukxat qoralamalari'),
+-                  ),
+-                ),
+-                TextButton(
+-                  onPressed: busy ? null : () => openDemo(role),
+-                  child: const _UiText('Учебный режим', 'O‘quv rejimi'),
+-                ),
+-              ],
+-            ),
+-          ),
++
+       ],
+     ],
+   );
+@@ -542,28 +522,161 @@
+         if (allowed.contains(role) && (role != Desk.cashier || canCashier))
+           role,
+     ];
++    final active = _currentTab;
++    final documents = desk == Desk.receiving && active == _DeskTab.documents;
++    final more = active == _DeskTab.more;
+     return IndexedStack(
+       key: ObjectKey(pos),
+-      index: roles.indexOf(desk!),
++      index: more ? roles.length : documents ? roles.length + 1 : roles.indexOf(desk!),
+       sizing: StackFit.expand,
+       children: [
+         for (final role in roles)
+           ExcludeFocus(
+             key: ValueKey(role),
+-            excluding: role != desk,
++            excluding: role != desk || documents || more,
+             child: switch (role) {
+               Desk.cashier => CashierScreen(
+                 pos,
+                 registerName: _selected?.register?.name,
++                historyTab: role == desk && active == _DeskTab.history,
+               ),
+               Desk.receiving => ReceivingScreen(pos),
+-              Desk.admin => AdminScreen(pos),
++              Desk.admin => AdminScreen(
++                pos,
++                tab: role == desk ? active : _DeskTab.overview,
++              ),
+             },
+           ),
++        ExcludeFocus(excluding: !more, child: _more(context)),
++        if (roles.contains(Desk.receiving))
++          ExcludeFocus(excluding: !documents, child: _ReceivingDocuments(pos)),
+       ],
+     );
+   }
+ 
++  PopupMenuButton<String> _languageButton(BuildContext context) =>
++      PopupMenuButton<String>(
++        tooltip: _tr(context, 'Язык', 'Til'),
++        icon: const Icon(Icons.language),
++        enabled: !busy && !_savingLanguage,
++        onSelected: _selectLanguage,
++        itemBuilder: (_) => [
++          CheckedPopupMenuItem(
++            value: 'ru', checked: !_uzbek, child: const Text('Русский'),
++          ),
++          CheckedPopupMenuItem(
++            value: 'uz', checked: _uzbek, child: const Text('O‘zbekcha'),
++          ),
++        ],
++      );
++
++  Future<void> _welcomeSettings(BuildContext context) async {
++    final shouldTrain = await showModalBottomSheet<bool>(
++      context: context,
++      showDragHandle: true,
++      useSafeArea: true,
++      builder: (sheetContext) => SingleChildScrollView(
++        padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
++        child: Column(
++          mainAxisSize: MainAxisSize.min,
++          children: [
++            const _WorkspaceTitle(_UiText('Настройки', 'Sozlamalar')),
++            _WorkspaceActions([
++              _WorkspaceAction(
++                icon: Icons.school_outlined,
++                title: const _UiText('Учебный режим', 'O‘quv rejimi'),
++                subtitle: const _UiText('Тренировка с учебными данными', 'O‘quv ma’lumotlari bilan mashq'),
++                onTap: () => Navigator.pop(sheetContext, true),
++              ),
++            ]),
++          ],
++        ),
++      ),
++    );
++    if (shouldTrain == true && mounted) await openDemo(Desk.cashier);
++  }
++
++  Widget _more(BuildContext context) => ListView(
++    padding: const EdgeInsets.all(16),
++    children: [
++      const _WorkspaceTitle(_UiText('Настройки', 'Sozlamalar')),
++      Section(
++        child: Column(
++          crossAxisAlignment: CrossAxisAlignment.start,
++          children: [
++            const _UiText('Язык интерфейса', 'Interfeys tili'),
++            const SizedBox(height: 8),
++            Wrap(
++              spacing: 8,
++              children: [
++                ChoiceChip(
++                  label: const Text('Русский'),
++                  selected: !_uzbek,
++                  onSelected: _savingLanguage ? null : (_) => _selectLanguage('ru'),
++                ),
++                ChoiceChip(
++                  label: const Text('O‘zbekcha'),
++                  selected: _uzbek,
++                  onSelected: _savingLanguage ? null : (_) => _selectLanguage('uz'),
++                ),
++              ],
++            ),
++          ],
++        ),
++      ),
++      _WorkspaceActions([
++        if (_selected != null)
++          _WorkspaceAction(
++            icon: Icons.storefront_outlined,
++            title: const _UiText('Магазины и кассы', 'Do‘konlar va kassalar'),
++            subtitle: Text(_selected!.store.name),
++            onTap: busy ? null : () => pos.api.platformWorkplace
++                ? _openPlatform()
++                : run(openWorkplaces),
++          ),
++        if (signedIn && _platformIdentity != null)
++          _WorkspaceAction(
++            icon: Icons.admin_panel_settings_outlined,
++            title: const _UiText('Кабинет разработчика', 'Dasturchi kabineti'),
++            onTap: busy ? null : _openPlatform,
++          ),
++        _WorkspaceAction(
++          icon: Icons.logout,
++          title: pos.demo
++              ? const _UiText('Завершить обучение', 'O‘quv rejimidan chiqish')
++              : const _UiText('Выйти из аккаунта', 'Hisobdan chiqish'),
++          onTap: busy ? null : leave,
++        ),
++      ]),
++    ],
++  );
++
++  Widget? _navigationBar(BuildContext context) {
++    if (!_hasWorkspaceTabs || MediaQuery.viewInsetsOf(context).bottom > 0) {
++      return null;
++    }
++    final tabs = _tabsFor(desk!);
++    return DecoratedBox(
++      decoration: const BoxDecoration(
++        border: Border(top: BorderSide(color: _workplaceLine)),
++      ),
++      child: NavigationBar(
++        selectedIndex: tabs.indexOf(_currentTab!),
++        onDestinationSelected: busy ? null : (index) {
++          FocusManager.instance.primaryFocus?.unfocus();
++          setState(() => _activeTab = tabs[index]);
++        },
++        destinations: [
++          for (final tab in tabs)
++            NavigationDestination(
++              icon: Icon(tab.icon),
++              label: _tr(context, tab.ru, tab.uz),
++            ),
++        ],
++      ),
++    );
++  }
++
+   @override
+   Widget build(BuildContext context) {
+     return MaterialApp(
+@@ -583,6 +696,13 @@
+               overflow: TextOverflow.ellipsis,
+             ),
+             actions: [
++              if (desk == null) _languageButton(context),
++              if (desk == null && !signedIn && !_restorePending && !_logoutCleanupPending)
++                IconButton(
++                  tooltip: _tr(context, 'Настройки', 'Sozlamalar'),
++                  onPressed: busy ? null : () => _welcomeSettings(context),
++                  icon: const Icon(Icons.more_vert),
++                ),
+               if (_selected != null)
+                 IconButton(
+                   tooltip: _tr(context, 'Магазины и кассы', 'Do‘konlar va kassalar'),
+@@ -591,7 +711,7 @@
+                       : run(openWorkplaces),
+                   icon: const Icon(Icons.store_outlined),
+                 ),
+-              if (signedIn || desk != null)
++              if (signedIn && !_hasWorkspaceTabs)
+                 IconButton(
+                   tooltip: _tr(context, 'Выйти', 'Chiqish'),
+                   onPressed: busy ? null : leave,
+@@ -600,15 +720,11 @@
+               if (desk case final active?)
+                 TextButton(
+                   key: roleButton,
+-                  style: TextButton.styleFrom(
+-                    foregroundColor: Colors.white,
+-                    disabledForegroundColor: Colors.white70,
+-                  ),
+                   onPressed: busy ? null : showRoles,
+                   child: Row(
+                     mainAxisSize: MainAxisSize.min,
+                     children: [
+-                      Text(active.nameFor(context)),
++                      Flexible(child: Text(active.nameFor(context), overflow: TextOverflow.ellipsis)),
+                       const Icon(Icons.arrow_drop_down, size: 20),
+                     ],
+                   ),
+@@ -616,6 +732,7 @@
+             ],
+           ),
+           body: SafeArea(
++            bottom: !_hasWorkspaceTabs,
+             child: Column(
+               children: [
+                 if (busy) const LinearProgressIndicator(),
+@@ -625,44 +742,10 @@
+                     child: StatusBox(message, error: true),
+                   ),
+                 Expanded(child: desk == null ? welcome(context) : workplace(context)),
+-                Row(
+-                  mainAxisSize: MainAxisSize.min,
+-                  children: [
+-                    PopupMenuButton<String>(
+-                      tooltip: _tr(context, 'Язык', 'Til'),
+-                      icon: const Icon(Icons.language, size: 20),
+-                      enabled: !busy && !_savingLanguage,
+-                      onSelected: _selectLanguage,
+-                      itemBuilder: (_) => [
+-                        CheckedPopupMenuItem(
+-                          value: 'ru', checked: !_uzbek, child: const Text('Русский'),
+-                        ),
+-                        CheckedPopupMenuItem(
+-                          value: 'uz', checked: _uzbek, child: const Text('O‘zbekcha'),
+-                        ),
+-                      ],
+-                    ),
+-                    Text(_uzbek ? 'O‘zbekcha' : 'Русский'),
+-                  ],
+-                ),
+               ],
+             ),
+           ),
+-          bottomNavigationBar: pos.demo && desk != null
+-              ? NavigationBar(
+-                  selectedIndex: desk == Desk.cashier ? 0 : 1,
+-                  onDestinationSelected: (index) => setState(
+-                    () => desk = index == 0 ? Desk.cashier : Desk.receiving,
+-                  ),
+-                  destinations: [
+-                    for (final role in demoDesks)
+-                      NavigationDestination(
+-                        icon: Icon(role.icon),
+-                        label: role.labelFor(context),
+-                      ),
+-                  ],
+-                )
+-              : null,
++          bottomNavigationBar: _navigationBar(context),
+         ),
+       ),
+     );
+@@ -689,7 +772,7 @@
+     padding: const EdgeInsets.only(bottom: 12),
+     child: DecoratedBox(
+       decoration: BoxDecoration(
+-        color: error ? const Color(0xffffe9ee) : const Color(0xffeef1ff),
++        color: error ? const Color(0xffffe9ee) : const Color(0xffe5f1e9),
+         borderRadius: BorderRadius.circular(10),
+       ),
+       child: Padding(padding: const EdgeInsets.all(12), child: Text(message)),
+@@ -845,9 +928,16 @@
+ }
+ 
+ class CashierScreen extends StatefulWidget {
+-  const CashierScreen(this.pos, {this.registerName, super.key});
++  const CashierScreen(
++    this.pos, {
++    this.registerName,
++    this.historyTab = false,
++    super.key,
++  });
++
+   final Pos pos;
+   final String? registerName;
++  final bool historyTab;
+   @override
+   State<CashierScreen> createState() => _CashierScreenState();
+ }
+@@ -1542,17 +1632,67 @@
+     status = 'Движение наличных записано.';
+   });
+ 
++  Widget _history(BuildContext context) => ListView(
++    key: const PageStorageKey('cashier-history'),
++    padding: const EdgeInsets.all(16),
++    children: [
++      const _WorkspaceTitle(_UiText('Чеки и смены', 'Cheklar va smenalar')),
++      if (busy) const LinearProgressIndicator(),
++      if (status != null) StatusBox(status!, error: failed),
++      if (pos.demo)
++        const _UiStatus(
++          'История магазина доступна в рабочем аккаунте.',
++          'Do‘kon tarixi ish hisobida mavjud.',
++        )
++      else
++        _WorkspaceActions([
++          if (ready || pendingRefund != null)
++            _WorkspaceAction(
++              icon: Icons.receipt_long_outlined,
++              title: pendingRefund == null
++                  ? const _UiText('История чеков', 'Cheklar tarixi')
++                  : const _UiText('История чеков · проверить возврат', 'Cheklar tarixi · qaytarishni tekshirish'),
++              onTap: busy ? null : openHistory,
++            ),
++          if (ready)
++            _WorkspaceAction(
++              icon: Icons.history,
++              title: const _UiText('Архив смен', 'Smenalar arxivi'),
++              onTap: busy ? null : () => Navigator.of(context).push<void>(
++                MaterialPageRoute(builder: (_) => _ShiftArchiveScreen(pos.api, pos: pos)),
++              ),
++            ),
++          _WorkspaceAction(
++            icon: Icons.sync,
++            title: const _UiText('Ожидают подтверждения', 'Tasdiq kutilmoqda'),
++            onTap: busy ? null : () async {
++              await Navigator.of(context).push<void>(MaterialPageRoute(
++                builder: (_) => _SyncOverview(pos, desk: Desk.cashier),
++              ));
++              if (mounted) await task(reload);
++            },
++          ),
++          _WorkspaceAction(
++            icon: Icons.event_outlined,
++            title: const _UiText('Сроки годности', 'Yaroqlilik muddatlari'),
++            onTap: busy ? null : () => Navigator.of(context).push<void>(
++              MaterialPageRoute(builder: (_) => ExpiryScreen(pos, admin: false)),
++            ),
++          ),
++        ]),
++    ],
++  );
++
+   @override
+-  Widget build(BuildContext context) => ListView(
++  Widget build(BuildContext context) => widget.historyTab ? _history(context) : ListView(
++    key: const PageStorageKey('cashier-sale'),
+     padding: const EdgeInsets.all(16),
+     children: [
+-      Text(
++      _WorkspaceTitle(Text(
+         pos.demo
+             ? _tr(context, 'Учебная касса', 'O‘quv kassasi')
+-            : widget.registerName ?? _tr(context, 'Касса', 'Kassa'),
+-        style: Theme.of(context).textTheme.headlineSmall,
+-      ),
+-      const SizedBox(height: 12),
++            : widget.registerName ?? _tr(context, 'Продажа', 'Savdo'),
++      )),
+       if (busy) const LinearProgressIndicator(),
+       if (status != null) StatusBox(status!, error: failed),
+       if (!pos.demo && !ready)
+@@ -1582,6 +1722,12 @@
+           icon: const Icon(Icons.download_done),
+           label: const _UiText('Карточки на устройстве', 'Qurilmadagi kartochkalar'),
+         ),
++      if (pendingRefund != null)
++        TextButton.icon(
++          onPressed: busy ? null : openHistory,
++          icon: const Icon(Icons.assignment_return_outlined),
++          label: const _UiText('Проверить возврат', 'Qaytarishni tekshirish'),
++        ),
+       if (pendingShift != null)
+         OutlinedButton(
+           onPressed: busy ? null : _retryShift,
+@@ -1601,88 +1747,96 @@
+           ),
+         ),
+       if (ready)
+-        Section(
+-          child: Column(
+-            crossAxisAlignment: CrossAxisAlignment.start,
+-            children: [
+-              Row(
+-                children: [
+-                  _RegisterStatusDot(active: shift != null),
+-                  const SizedBox(width: 8),
+-                  Expanded(
+-                    child: Text(
+-                      _openingBlocked
+-                          ? _tr(context, 'Открытие смены заблокировано', 'Smena ochish bloklangan')
+-                          : shift == null
+-                          ? _tr(context, 'Смена закрыта', 'Smena yopilgan')
+-                          : _tr(context, 'Смена открыта', 'Smena ochiq'),
+-                      style: Theme.of(context).textTheme.titleMedium,
++        Card(
++          color: Theme.of(context).colorScheme.primaryContainer,
++          child: Padding(
++            padding: const EdgeInsets.all(16),
++            child: Column(
++              crossAxisAlignment: CrossAxisAlignment.start,
++              children: [
++                Row(
++                  children: [
++                    Icon(
++                      shift == null ? Icons.lock_clock_outlined : Icons.schedule,
++                      color: Theme.of(context).colorScheme.onPrimaryContainer,
+                     ),
+-                  ),
+-                ],
+-              ),
+-              if (shift case final current?) ...[
+-                if (current['businessDate'] case final String date)
+-                  _UiText('Торговый день · ${_reportDate(date)}', 'Savdo kuni · ${_reportDate(date)}'),
+-                if (current['expectedCash'] case final num expected)
+-                  Text('Расчётные наличные · ${money(expected)}')
+-                else
+-                  const _UiText(
+-                    'Расчётные наличные появятся после закрытия смены.', 'Hisoblangan naqd pul smena yopilgach ko‘rsatiladi.',
+-                  ),
+-                if (current['manualCashlessSales'] case final num cashless)
+-                  Text('Безналичные продажи · ${money(cashless)}'),
+-              ],
+-              const SizedBox(height: 8),
+-              Wrap(
+-                spacing: 8,
+-                runSpacing: 8,
+-                children: [
+-                  if (_openingBlocked)
+-                    OutlinedButton(
+-                      onPressed: busy ? null : () => task(reload),
+-                      child: const _UiText('Проверить смену', 'Smenani tekshirish'),
+-                    )
+-                  else if (shift == null)
+-                    FilledButton(
+-                      onPressed: busy || locked || lines.isNotEmpty
+-                          ? null
+-                          : () => changeShift(),
+-                      child: const _UiText('Открыть смену', 'Smenani ochish'),
+-                    )
+-                  else ...[
+-                    OutlinedButton(
+-                      onPressed: busy || locked || lines.isNotEmpty
+-                          ? null
+-                          : () => changeShift(),
+-                      child: const _UiText('Закрыть смену', 'Smenani yopish'),
++                    const SizedBox(width: 10),
++                    Expanded(
++                      child: Text(
++                        _openingBlocked
++                            ? _tr(context, 'Открытие смены заблокировано', 'Smena ochish bloklangan')
++                            : shift == null
++                            ? _tr(context, 'Смена закрыта', 'Smena yopilgan')
++                            : _tr(context, 'Смена открыта', 'Smena ochiq'),
++                        style: Theme.of(context).textTheme.titleMedium,
++                      ),
++                    ),
++                  ],
++                ),
++                if (shift case final current?) ...[
++                  const SizedBox(height: 10),
++                  if (current['businessDate'] case final String date)
++                    _UiText('Торговый день · ${_reportDate(date)}', 'Savdo kuni · ${_reportDate(date)}'),
++                  if (current['expectedCash'] case final num expected)
++                    Text('Расчётные наличные · ${money(expected)}')
++                  else
++                    const _UiText(
++                      'Расчётные наличные появятся после закрытия смены.', 'Hisoblangan naqd pul smena yopilgach ko‘rsatiladi.',
+                     ),
+-                    if (!pos.demo && !pos.api.productionContract)
++                  if (current['manualCashlessSales'] case final num cashless)
++                    Text('Безналичные продажи · ${money(cashless)}'),
++                ],
++                const SizedBox(height: 12),
++                Wrap(
++                  spacing: 8,
++                  runSpacing: 8,
++                  children: [
++                    if (_openingBlocked)
+                       OutlinedButton(
++                        onPressed: busy ? null : () => task(reload),
++                        child: const _UiText('Проверить смену', 'Smenani tekshirish'),
++                      )
++                    else if (shift == null)
++                      FilledButton(
+                         onPressed: busy || locked || lines.isNotEmpty
+                             ? null
+-                            : () => changeShift(handover: true),
+-                        child: const _UiText('Закрыть и передать смену', 'Smenani yopish va topshirish'),
+-                      ),
+-                    if (!pos.demo)
++                            : () => changeShift(),
++                        child: const _UiText('Открыть смену', 'Smenani ochish'),
++                      )
++                    else ...[
+                       OutlinedButton(
+-                        onPressed: busy
++                        onPressed: busy || locked || lines.isNotEmpty
+                             ? null
+-                            : () => _openShiftReport(shiftId),
+-                        child: const _UiText('Итог смены', 'Smena yakuni'),
++                            : () => changeShift(),
++                        child: const _UiText('Закрыть смену', 'Smenani yopish'),
+                       ),
+-                    OutlinedButton(
+-                      onPressed: busy || locked ? null : () => cash('in'),
+-                      child: const _UiText('Внести', 'Pul kiritish'),
+-                    ),
+-                    OutlinedButton(
+-                      onPressed: busy || locked ? null : () => cash('out'),
+-                      child: const _UiText('Изъять', 'Pul chiqarish'),
+-                    ),
++                      if (!pos.demo && !pos.api.productionContract)
++                        OutlinedButton(
++                          onPressed: busy || locked || lines.isNotEmpty
++                              ? null
++                              : () => changeShift(handover: true),
++                          child: const _UiText('Закрыть и передать смену', 'Smenani yopish va topshirish'),
++                        ),
++                      if (!pos.demo)
++                        OutlinedButton(
++                          onPressed: busy
++                              ? null
++                              : () => _openShiftReport(shiftId),
++                          child: const _UiText('Итог смены', 'Smena yakuni'),
++                        ),
++                      OutlinedButton(
++                        onPressed: busy || locked ? null : () => cash('in'),
++                        child: const _UiText('Внести', 'Pul kiritish'),
++                      ),
++                      OutlinedButton(
++                        onPressed: busy || locked ? null : () => cash('out'),
++                        child: const _UiText('Изъять', 'Pul chiqarish'),
++                      ),
++                    ],
+                   ],
+-                ],
+-              ),
+-            ],
++                ),
++              ],
++            ),
+           ),
+         ),
+       if (basket?.parkingId != null)
+@@ -1810,51 +1964,6 @@
+             ],
+           ),
+         ),
+-      if (!pos.demo)
+-        OutlinedButton.icon(
+-          onPressed: busy ? null : () async {
+-            await Navigator.of(context).push<void>(MaterialPageRoute(
+-              builder: (_) => _SyncOverview(pos, desk: Desk.cashier),
+-            ));
+-            if (mounted) await task(reload);
+-          },
+-          icon: const Icon(Icons.sync),
+-          label: const _UiText('Ожидают подтверждения', 'Tasdiq kutilmoqda'),
+-        ),
+-      if (!pos.demo && (ready || pendingRefund != null))
+-        OutlinedButton.icon(
+-          onPressed: busy ? null : openHistory,
+-          icon: const Icon(Icons.receipt_long_outlined),
+-          label: Text(
+-            pendingRefund == null
+-                ? 'История чеков'
+-                : 'История чеков · проверить возврат',
+-          ),
+-        ),
+-      if (!pos.demo && ready)
+-        OutlinedButton.icon(
+-          onPressed: busy
+-              ? null
+-              : () => Navigator.of(context).push<void>(
+-                  MaterialPageRoute(
+-                    builder: (_) => _ShiftArchiveScreen(pos.api, pos: pos),
+-                  ),
+-                ),
+-          icon: const Icon(Icons.history),
+-          label: const _UiText('Архив смен', 'Smenalar arxivi'),
+-        ),
+-      if (!pos.demo)
+-        OutlinedButton.icon(
+-          onPressed: busy
+-              ? null
+-              : () => Navigator.of(context).push<void>(
+-                  MaterialPageRoute(
+-                    builder: (_) => ExpiryScreen(pos, admin: false),
+-                  ),
+-                ),
+-          icon: const Icon(Icons.event_outlined),
+-          label: const _UiText('Сроки годности', 'Yaroqlilik muddatlari'),
+-        ),
+       if (receipt case final result?)
+         Section(
+           child: Column(
+@@ -2321,30 +2430,10 @@
+             keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+             padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+             children: [
+-              Wrap(
+-                alignment: WrapAlignment.spaceBetween,
+-                crossAxisAlignment: WrapCrossAlignment.center,
+-                runSpacing: 4,
+-                spacing: 8,
+-                children: [
+-                  _UiText(
+-                    pos.demo ? 'Учебная приёмка' : 'Приёмка',
+-                    pos.demo ? 'O‘quv qabuli' : 'Tovar qabuli',
+-                    style: Theme.of(context).textTheme.headlineSmall,
+-                  ),
+-                  TextButton.icon(
+-                    style: TextButton.styleFrom(
+-                      padding: const EdgeInsets.symmetric(horizontal: 4),
+-                    ),
+-                    onPressed: busy ? null : () => Navigator.of(context).push(
+-                      MaterialPageRoute<void>(builder: (_) => DraftScreen(pos)),
+-                    ),
+-                    icon: const Icon(Icons.receipt_long_outlined, size: 20),
+-                    label: const _UiText('Черновик накладной', 'Yukxat qoralamasi'),
+-                  ),
+-                ],
+-              ),
+-              const SizedBox(height: 8),
++              _WorkspaceTitle(_UiText(
++                pos.demo ? 'Учебная приёмка' : 'Приёмка',
++                pos.demo ? 'O‘quv qabuli' : 'Tovar qabuli',
++              )),
+               if (busy) const LinearProgressIndicator(),
+               if (status != null)
+                 Semantics(liveRegion: true, child: StatusBox(status!, error: failed)),
+@@ -2382,8 +2471,9 @@
+ }
+ 
+ class AdminScreen extends StatefulWidget {
+-  const AdminScreen(this.pos, {super.key});
++  const AdminScreen(this.pos, {this.tab, super.key});
+   final Pos pos;
++  final _DeskTab? tab;
+   @override
+   State<AdminScreen> createState() => _AdminScreenState();
+ }
+@@ -2468,133 +2558,95 @@
+     status = 'Цена сохранена.';
+   });
+ 
++  _WorkspaceAction _action(
++    IconData icon,
++    String russian,
++    String uzbek,
++    WidgetBuilder builder, {
++    bool enabled = true,
++  }) => _WorkspaceAction(
++    icon: icon,
++    title: _UiText(russian, uzbek),
++    onTap: enabled
++        ? () => Navigator.of(context).push<void>(MaterialPageRoute(builder: builder))
++        : null,
++  );
++
++  Widget _stock() => _WorkspaceActions([
++    _action(Icons.inventory_2_outlined, 'Каталог товаров', 'Tovarlar katalogi',
++      (_) => _CatalogListScreen(widget.pos, admin: true), enabled: !busy),
++    _action(Icons.warehouse_outlined, 'Складские остатки', 'Ombor qoldiqlari',
++      (_) => StockLotsScreen(widget.pos), enabled: !busy),
++    _action(Icons.fact_check_outlined, 'Инвентаризации', 'Inventarizatsiyalar',
++      (_) => _InventoryListScreen(widget.pos), enabled: !busy),
++    _action(Icons.event_outlined, 'Сроки годности и задачи', 'Yaroqlilik muddatlari va vazifalar',
++      (_) => ExpiryScreen(widget.pos, admin: true), enabled: !busy),
++    _action(Icons.local_shipping_outlined, 'Поставщики', 'Yetkazib beruvchilar',
++      (_) => _SuppliersScreen(widget.pos)),
++    _action(Icons.shopping_cart_outlined, 'Закупки', 'Xaridlar',
++      (_) => _ProcurementScreen(widget.pos)),
++  ]);
++
++  Widget _store() => _WorkspaceActions([
++    if (api.supportsOperation('GET', '${api.store}/profile'))
++      _action(Icons.storefront_outlined, 'Карточка магазина', 'Do‘kon kartochkasi',
++        (_) => _StoreProfileScreen(api)),
++    _action(Icons.manage_accounts_outlined, 'Сотрудники и кассы', 'Xodimlar va kassalar',
++      (_) => _StoreManagementScreen(widget.pos)),
++    _action(Icons.groups_outlined, 'Покупатели', 'Xaridorlar',
++      (_) => _CustomersScreen(api, widget.pos.storage)),
++    _action(Icons.bar_chart_outlined, 'Отчёты магазина', 'Do‘kon hisobotlari',
++      (_) => _StoreReportsScreen(api)),
++    if (api.supportsOperation('GET', '${api.store}/finance/expenses'))
++      _action(Icons.payments_outlined, 'Расходы магазина', 'Do‘kon xarajatlari',
++        (_) => _ExpensesScreen(widget.pos)),
++    _action(Icons.sync, 'Ожидают подтверждения', 'Tasdiq kutilmoqda',
++      (_) => _SyncOverview(widget.pos, desk: Desk.admin)),
++  ]);
++
+   @override
+-  Widget build(BuildContext context) => ListView(
+-    padding: const EdgeInsets.all(16),
+-    children: [
+-      if (api.supportsOperation('GET', '${api.store}/profile'))
+-        OutlinedButton.icon(
+-          onPressed: () => Navigator.of(context).push<void>(MaterialPageRoute(
+-            builder: (_) => _StoreProfileScreen(api),
++  Widget build(BuildContext context) {
++    final tab = widget.tab ?? _DeskTab.overview;
++    return ListView(
++      key: PageStorageKey(tab),
++      padding: const EdgeInsets.all(16),
++      children: switch (tab) {
++        _DeskTab.stock => [
++          const _WorkspaceTitle(_UiText('Товары и склад', 'Tovarlar va ombor')),
++          _stock(),
++        ],
++        _DeskTab.store => [
++          const _WorkspaceTitle(_UiText('Управление магазином', 'Do‘kon boshqaruvi')),
++          _store(),
++        ],
++        _ => _overview(context),
++      },
++    );
++  }
++
++  List<Widget> _overview(BuildContext context) => [
++      const _WorkspaceTitle(_UiText('Обзор магазина', 'Do‘kon haqida')),
++      _WorkspaceActions([
++        _WorkspaceAction(
++          icon: Icons.assignment_outlined,
++          title: const _UiText('Накладные на проверке', 'Tekshiruvdagi yukxatlar'),
++          subtitle: const _UiText('Проверить и подтвердить приёмку', 'Qabulni tekshirish va tasdiqlash'),
++          onTap: () => Navigator.of(context).push<void>(MaterialPageRoute(
++            builder: (_) => ReceiptReviewList(api, adminPos: widget.pos),
+           )),
+-          icon: const Icon(Icons.storefront_outlined),
+-          label: const _UiText('Карточка магазина', 'Do‘kon kartochkasi'),
+         ),
+-      OutlinedButton.icon(
+-        onPressed: () => Navigator.of(context).push<void>(
+-          MaterialPageRoute(builder: (_) => _StoreReportsScreen(api)),
+-        ),
+-        icon: const Icon(Icons.bar_chart_outlined),
+-        label: const _UiText('Отчёты магазина', 'Do‘kon hisobotlari'),
+-      ),
+-      OutlinedButton.icon(
+-        onPressed: () => Navigator.of(context).push<void>(MaterialPageRoute(
+-          builder: (_) => _SyncOverview(widget.pos, desk: Desk.admin),
+-        )),
+-        icon: const Icon(Icons.sync),
+-        label: const _UiText('Ожидают подтверждения', 'Tasdiq kutilmoqda'),
+-      ),
+-      if (api.supportsOperation('GET', '${api.store}/finance/expenses'))
+-        OutlinedButton.icon(
+-          onPressed: () => Navigator.of(context).push<void>(
+-            MaterialPageRoute(builder: (_) => _ExpensesScreen(widget.pos)),
+-          ),
+-          icon: const Icon(Icons.payments_outlined),
+-          label: const _UiText('Расходы магазина', 'Do‘kon xarajatlari'),
+-        ),
+-      OutlinedButton.icon(
+-        onPressed: () => Navigator.of(context).push<void>(
+-          MaterialPageRoute(builder: (_) => _StoreManagementScreen(widget.pos)),
+-        ),
+-        icon: const Icon(Icons.manage_accounts_outlined),
+-        label: const _UiText('Сотрудники и кассы', 'Xodimlar va kassalar'),
+-      ),
+-      OutlinedButton.icon(
+-        onPressed: busy
+-            ? null
+-            : () => Navigator.of(context).push<void>(
+-                MaterialPageRoute(
+-                  builder: (_) => _CatalogListScreen(widget.pos, admin: true),
+-                ),
+-              ),
+-        icon: const Icon(Icons.inventory_2_outlined),
+-        label: const _UiText('Каталог товаров', 'Tovarlar katalogi'),
+-      ),
+-      OutlinedButton.icon(
+-        onPressed: () => Navigator.of(context).push<void>(MaterialPageRoute(
+-          builder: (_) => _CustomersScreen(api, widget.pos.storage),
+-        )),
+-        icon: const Icon(Icons.groups_outlined),
+-        label: const _UiText('Покупатели', 'Xaridorlar'),
+-      ),
+-      OutlinedButton.icon(
+-        onPressed: () => Navigator.of(context).push<void>(
+-          MaterialPageRoute(builder: (_) => _SuppliersScreen(widget.pos)),
+-        ),
+-        icon: const Icon(Icons.local_shipping_outlined),
+-        label: const _UiText('Поставщики', 'Yetkazib beruvchilar'),
+-      ),
+-      OutlinedButton.icon(
+-        onPressed: () => Navigator.of(context).push<void>(
+-          MaterialPageRoute(builder: (_) => _ProcurementScreen(widget.pos)),
+-        ),
+-        icon: const Icon(Icons.shopping_cart_outlined),
+-        label: const _UiText('Закупки', 'Xaridlar'),
+-      ),
+-      OutlinedButton.icon(
+-        onPressed: busy
+-            ? null
+-            : () => Navigator.of(context).push<void>(
+-                MaterialPageRoute(builder: (_) => StockLotsScreen(widget.pos)),
+-              ),
+-        icon: const Icon(Icons.warehouse_outlined),
+-        label: const _UiText('Складские остатки', 'Ombor qoldiqlari'),
+-      ),
+-      OutlinedButton.icon(
+-        onPressed: busy
+-            ? null
+-            : () => Navigator.of(context).push<void>(
+-                MaterialPageRoute(
+-                  builder: (_) => _InventoryListScreen(widget.pos),
+-                ),
+-              ),
+-        icon: const Icon(Icons.fact_check_outlined),
+-        label: const _UiText('Инвентаризации', 'Inventarizatsiyalar'),
+-      ),
+-      OutlinedButton.icon(
+-        onPressed: busy
+-            ? null
+-            : () => Navigator.of(context).push<void>(
+-                MaterialPageRoute(
+-                  builder: (_) => ExpiryScreen(widget.pos, admin: true),
+-                ),
+-              ),
+-        icon: const Icon(Icons.event_outlined),
+-        label: const _UiText('Сроки годности и задачи', 'Yaroqlilik muddatlari va vazifalar'),
+-      ),
+-      FilledButton.icon(
+-        onPressed: () => Navigator.of(context).push<void>(
+-          MaterialPageRoute(
+-            builder: (_) => ReceiptReviewList(api, adminPos: widget.pos),
+-          ),
++      ]),
++      const SizedBox(height: 8),
++      _WorkspaceTitle(
++        const _UiText('Карточки товаров', 'Tovar kartochkalari'),
++        trailing: IconButton(
++          onPressed: busy ? null : () => task(load),
++          tooltip: _tr(context, 'Обновить', 'Yangilash'),
++          icon: const Icon(Icons.refresh),
+         ),
+-        icon: const Icon(Icons.assignment_outlined),
+-        label: const _UiText('Накладные на проверке', 'Tekshiruvdagi yukxatlar'),
+       ),
+-      const SizedBox(height: 16),
+-      _UiText(
+-        'Карточки товаров', 'Tovar kartochkalari',
+-        style: Theme.of(context).textTheme.headlineSmall,
+-      ),
+-      const SizedBox(height: 12),
+       if (busy) const LinearProgressIndicator(),
+       if (status != null) StatusBox(status!, error: failed),
+-      OutlinedButton.icon(
+-        onPressed: busy ? null : () => task(load),
+-        icon: const Icon(Icons.refresh),
+-        label: const _UiText('Обновить', 'Yangilash'),
+-      ),
+-      const SizedBox(height: 8),
+       if (loaded && proposals.isEmpty)
+         const _UiStatus('Карточек на проверку пока нет.', 'Tekshiriladigan kartochkalar hali yo‘q.'),
+       for (final item in proposals)
+@@ -2621,6 +2673,5 @@
+             ],
+           ),
+         ),
+-    ],
+-  );
++    ];
+ }
+--- a/apps/mobile-flutter/lib/workplace_ui.dart
++++ b/apps/mobile-flutter/lib/workplace_ui.dart
+@@ -1,31 +1,31 @@
+ part of 'main.dart';
+ 
+-const _workplaceSurface = Color(0xfff7f8fa);
+-const _workplaceLine = Color(0xffdfe4ec);
+-const _workplaceInk = Color(0xff1b2536);
+-const _workplaceMeta = Color(0xff536075);
+-const _workplaceControlRadius = BorderRadius.all(Radius.circular(10));
++const _workplaceSurface = Color(0xfff6f6f0);
++const _workplaceLine = Color(0xffdce4dd);
++const _workplaceInk = Color(0xff1b3027);
++const _workplaceMeta = Color(0xff50665a);
++const _workplaceControlRadius = BorderRadius.all(Radius.circular(12));
+ const _kassaFont = 'Roboto';
+ 
+ ThemeData _kassaTheme() {
+   final scheme = ColorScheme.fromSeed(
+-    seedColor: _blue,
+-    primary: _blue,
++    seedColor: _accent,
++    primary: _accent,
+     onPrimary: Colors.white,
+-    primaryContainer: const Color(0xffe9eefb),
+-    onPrimaryContainer: const Color(0xff20378f),
+-    secondaryContainer: const Color(0xffe9eefb),
+-    onSecondaryContainer: const Color(0xff20378f),
++    primaryContainer: const Color(0xffe0efe6),
++    onPrimaryContainer: const Color(0xff204c3a),
++    secondaryContainer: const Color(0xffe0efe6),
++    onSecondaryContainer: const Color(0xff204c3a),
+     surface: Colors.white,
+     onSurface: _workplaceInk,
+     onSurfaceVariant: _workplaceMeta,
+-    outline: const Color(0xff7a879b),
++    outline: const Color(0xff70867a),
+     outlineVariant: _workplaceLine,
+   );
+   const button = RoundedRectangleBorder(borderRadius: _workplaceControlRadius);
+   const field = OutlineInputBorder(borderRadius: _workplaceControlRadius);
+   const panel = RoundedRectangleBorder(
+-    borderRadius: BorderRadius.all(Radius.circular(16)),
++    borderRadius: BorderRadius.all(Radius.circular(18)),
+     side: BorderSide(color: _workplaceLine),
+   );
+   return ThemeData(
+@@ -33,16 +33,31 @@
+     scaffoldBackgroundColor: _workplaceSurface,
+     fontFamily: _kassaFont,
+     appBarTheme: const AppBarTheme(
+-      backgroundColor: _navy,
+-      foregroundColor: Colors.white,
++      backgroundColor: Colors.white,
++      foregroundColor: _workplaceInk,
+       surfaceTintColor: Colors.transparent,
++      systemOverlayStyle: SystemUiOverlayStyle.dark,
+       titleTextStyle: TextStyle(
+-        color: Colors.white,
++        color: _workplaceInk,
+         fontFamily: _kassaFont,
+         fontSize: 20,
+-        fontWeight: FontWeight.w500,
++        fontWeight: FontWeight.w600,
+       ),
+     ),
++    navigationBarTheme: NavigationBarThemeData(
++      backgroundColor: Colors.white,
++      surfaceTintColor: Colors.transparent,
++      indicatorColor: scheme.secondaryContainer,
++      elevation: 0,
++      height: 66,
++      labelTextStyle: const WidgetStatePropertyAll(
++        TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
++      ),
++    ),
++    bottomSheetTheme: const BottomSheetThemeData(
++      backgroundColor: _workplaceSurface,
++      surfaceTintColor: Colors.transparent,
++    ),
+     filledButtonTheme: FilledButtonThemeData(
+       style: FilledButton.styleFrom(minimumSize: const Size(0, 48), shape: button),
+     ),
+@@ -63,11 +78,11 @@
+       border: field,
+       enabledBorder: OutlineInputBorder(
+         borderRadius: _workplaceControlRadius,
+-        borderSide: BorderSide(color: Color(0xffaeb9c9)),
++        borderSide: BorderSide(color: Color(0xffb0c1b6)),
+       ),
+       focusedBorder: OutlineInputBorder(
+         borderRadius: _workplaceControlRadius,
+-        borderSide: BorderSide(color: _blue, width: 2),
++        borderSide: BorderSide(color: _accent, width: 2),
+       ),
+     ),
+     cardTheme: const CardThemeData(
+--- /dev/null
++++ b/apps/mobile-flutter/lib/workspace_shell.dart
+@@ -0,0 +1,173 @@
++part of 'main.dart';
++
++enum _DeskTab {
++  sale(Icons.point_of_sale_rounded, 'Касса', 'Kassa'),
++  history(Icons.receipt_long_outlined, 'История', 'Tarix'),
++  product(Icons.inventory_2_outlined, 'Товар', 'Tovar'),
++  documents(Icons.assignment_outlined, 'Накладные', 'Yukxatlar'),
++  overview(Icons.dashboard_outlined, 'Обзор', 'Umumiy'),
++  stock(Icons.warehouse_outlined, 'Товары', 'Tovarlar'),
++  store(Icons.storefront_outlined, 'Магазин', 'Do‘kon'),
++  more(Icons.more_horiz, 'Ещё', 'Yana');
++
++  const _DeskTab(this.icon, this.ru, this.uz);
++  final IconData icon;
++  final String ru;
++  final String uz;
++}
++
++List<_DeskTab> _tabsFor(Desk desk) => switch (desk) {
++  Desk.cashier => const [_DeskTab.sale, _DeskTab.history, _DeskTab.more],
++  Desk.receiving => const [_DeskTab.product, _DeskTab.documents, _DeskTab.more],
++  Desk.admin => const [_DeskTab.overview, _DeskTab.stock, _DeskTab.store, _DeskTab.more],
++};
++
++class _WorkspaceTitle extends StatelessWidget {
++  const _WorkspaceTitle(this.title, {this.trailing});
++
++  final Widget title;
++  final Widget? trailing;
++
++  @override
++  Widget build(BuildContext context) => Padding(
++    padding: const EdgeInsets.only(bottom: 16),
++    child: DefaultTextStyle.merge(
++      style: Theme.of(context).textTheme.headlineSmall,
++      child: Row(
++        children: [
++          Expanded(child: title),
++          if (trailing case final action?) ...[
++            const SizedBox(width: 8),
++            action,
++          ],
++        ],
++      ),
++    ),
++  );
++}
++
++class _WorkspaceActions extends StatelessWidget {
++  const _WorkspaceActions(this.actions);
++
++  final List<_WorkspaceAction> actions;
++
++  @override
++  Widget build(BuildContext context) => Card(
++    clipBehavior: Clip.antiAlias,
++    child: Column(
++      children: [
++        for (var i = 0; i < actions.length; i++) ...[
++          if (i > 0) const Divider(height: 1, indent: 60),
++          actions[i],
++        ],
++      ],
++    ),
++  );
++}
++
++class _WorkspaceAction extends StatelessWidget {
++  const _WorkspaceAction({
++    required this.icon,
++    required this.title,
++    required this.onTap,
++    this.subtitle,
++  });
++
++  final IconData icon;
++  final Widget title;
++  final Widget? subtitle;
++  final VoidCallback? onTap;
++
++  @override
++  Widget build(BuildContext context) {
++    final colors = Theme.of(context).colorScheme;
++    return ListTile(
++      minTileHeight: 58,
++      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
++      leading: Container(
++        width: 36,
++        height: 36,
++        decoration: BoxDecoration(
++          color: colors.secondaryContainer,
++          borderRadius: BorderRadius.circular(11),
++        ),
++        child: Icon(icon, size: 20, color: colors.onSecondaryContainer),
++      ),
++      title: title,
++      subtitle: subtitle,
++      trailing: const Icon(Icons.chevron_right_rounded, size: 20),
++      onTap: onTap,
++    );
++  }
++}
++
++class _WelcomeBanner extends StatelessWidget {
++  const _WelcomeBanner({required this.signedIn});
++
++  final bool signedIn;
++
++  @override
++  Widget build(BuildContext context) => DecoratedBox(
++    decoration: BoxDecoration(
++      color: _brandDeep,
++      borderRadius: BorderRadius.circular(24),
++    ),
++    child: Padding(
++      padding: const EdgeInsets.all(24),
++      child: Column(
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          Container(
++            width: 56,
++            height: 56,
++            decoration: BoxDecoration(
++              color: const Color(0xffe4f3e8),
++              borderRadius: BorderRadius.circular(16),
++            ),
++            child: const Icon(Icons.point_of_sale_rounded, color: _brandDeep, size: 28),
++          ),
++          const SizedBox(height: 24),
++          _UiText(
++            'Рабочее место',
++            'Ish joyi',
++            style: Theme.of(context).textTheme.headlineMedium?.copyWith(color: Colors.white),
++          ),
++          const SizedBox(height: 8),
++          _UiText(
++            signedIn
++                ? 'Выберите магазин и кассу, чтобы начать работу.'
++                : 'Войдите, чтобы открыть свой магазин.',
++            signedIn
++                ? 'Ishni boshlash uchun do‘kon va kassani tanlang.'
++                : 'Do‘koningizni ochish uchun hisobga kiring.',
++            style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: const Color(0xffc7ded2)),
++          ),
++        ],
++      ),
++    ),
++  );
++}
++
++class _ReceivingDocuments extends StatelessWidget {
++  const _ReceivingDocuments(this.pos);
++
++  final Pos pos;
++
++  @override
++  Widget build(BuildContext context) => ListView(
++    padding: const EdgeInsets.all(16),
++    children: [
++      const _WorkspaceTitle(_UiText('Накладные', 'Yukxatlar')),
++      _WorkspaceActions([
++        _WorkspaceAction(
++          icon: Icons.edit_document,
++          title: const _UiText('Черновик накладной', 'Yukxat qoralamasi'),
++          subtitle: const _UiText('Товары, поставщик и документы', 'Tovarlar, yetkazib beruvchi va hujjatlar'),
++          onTap: () => Navigator.of(context).push<void>(
++            MaterialPageRoute(builder: (_) => DraftScreen(pos)),
++          ),
++        ),
++      ]),
++    ],
++  );
++}
+--- a/apps/mobile-flutter/lib/store_management.dart
++++ b/apps/mobile-flutter/lib/store_management.dart
+@@ -409,7 +409,7 @@
+             side: const WidgetStatePropertyAll(BorderSide(color: _workplaceLine)),
+             foregroundColor: WidgetStateProperty.resolveWith((states) {
+               if (states.contains(WidgetState.disabled)) return _workplaceMeta;
+-              return states.contains(WidgetState.selected) ? _blue : _workplaceInk;
++              return states.contains(WidgetState.selected) ? _accent : _workplaceInk;
+             }),
+             backgroundColor: WidgetStateProperty.resolveWith((states) =>
+               states.contains(WidgetState.selected) ? const Color(0xffe9eefb) : Colors.white,
+--- a/apps/mobile-flutter/pubspec.yaml
++++ b/apps/mobile-flutter/pubspec.yaml
+@@ -1,7 +1,7 @@
+ name: kassa_mobile
+ description: Android POS pilot for Kassa.
+ publish_to: none
+-version: 0.2.81+2101
++version: 0.2.82+2102
+ environment:
+   sdk: ">=3.10.0 <4.0.0"
+ dependencies:
+--- a/apps/mobile-flutter/test/widget_test.dart
++++ b/apps/mobile-flutter/test/widget_test.dart
+@@ -45,7 +45,10 @@
+     await tester.pumpWidget(const KassaApp());
+     await tester.pumpAndSettle();
+     expect(find.text('Ish joyi'), findsOneWidget);
+-    await tester.tap(find.text('O‘quv rejimi').first);
++    expect(find.text('O‘quv rejimi'), findsNothing);
++    await tester.tap(find.byTooltip('Sozlamalar'));
++    await tester.pumpAndSettle();
++    await tester.tap(find.text('O‘quv rejimi'));
+     await tester.pumpAndSettle();
+     expect(roleButton('Kassir'), findsOneWidget);
+     expect(find.text('Smena yopilgan'), findsOneWidget);
+@@ -61,9 +64,16 @@
+ 
+       await tester.pumpWidget(const KassaApp());
+       await tester.pumpAndSettle();
+-      await tester.tap(find.text('Учебный режим').first);
++      expect(find.text('Учебный режим'), findsNothing);
++      expect(find.byType(NavigationBar), findsNothing);
++      await tester.tap(find.byTooltip('Настройки'));
++      await tester.pumpAndSettle();
++      await tester.tap(find.text('Учебный режим'));
+       await tester.pumpAndSettle();
+       expect(find.text('Смена закрыта'), findsOneWidget);
++      await tester.tap(find.widgetWithText(NavigationDestination, 'История'));
++      await tester.pumpAndSettle();
++      expect(find.text('Чеки и смены'), findsOneWidget);
+ 
+       await tester.tap(roleButton('Кассир'));
+       await tester.pumpAndSettle();
+@@ -77,6 +87,16 @@
+       expect(roleButton('Приёмщик'), findsOneWidget);
+       expect(find.text('Добавить товар'), findsOneWidget);
+       expect(find.byTooltip('Сканировать штрихкод'), findsOneWidget);
++      final name = find.widgetWithText(TextField, 'Название');
++      await tester.enterText(name, 'Демо: чай');
++      FocusManager.instance.primaryFocus?.unfocus();
++      await tester.pumpAndSettle();
++      await tester.tap(find.widgetWithText(NavigationDestination, 'Накладные'));
++      await tester.pumpAndSettle();
++      expect(find.text('Черновик накладной'), findsOneWidget);
++      await tester.tap(find.widgetWithText(NavigationDestination, 'Товар'));
++      await tester.pumpAndSettle();
++      expect(tester.widget<TextField>(name).controller!.text, 'Демо: чай');
+       expect(tester.takeException(), isNull);
+     },
+   );
+--- a/apps/mobile-flutter/test/receipt_workflow_test.dart
++++ b/apps/mobile-flutter/test/receipt_workflow_test.dart
+@@ -290,6 +290,7 @@
+         await tester.pumpAndSettle();
+         await tap('Войти в аккаунт');
+         await switchTo('Администратор', 'Приёмщик');
++        await tap('Накладные');
+         await tap('Черновик накладной');
+         if (linked) {
+           await tap('Выбрать заказ');
+@@ -398,6 +399,7 @@
+         await tester.pageBack();
+         await tester.pumpAndSettle();
+         await switchTo('Администратор', 'Приёмщик');
++        await tap('Накладные');
+         await tap('Черновик накладной');
+         await tap('Обновить состояние');
+         expect(
+--- a/apps/mobile-flutter/test/refund_test.dart
++++ b/apps/mobile-flutter/test/refund_test.dart
+@@ -267,6 +267,7 @@
+         find.text('Расчётные наличные появятся после закрытия смены.'),
+         findsOneWidget,
+       );
++      await tap('История');
+       await tap('История чеков');
+       await tester.enterText(
+         find.widgetWithText(TextField, 'Номер чека'),
