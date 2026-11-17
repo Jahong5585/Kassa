@@ -162,7 +162,31 @@
                      if (!pos.demo && !pos.api.productionContract)
                        OutlinedButton(
                          onPressed: busy || locked || lines.isNotEmpty
-@@ -1793,6 +1740,51 @@
+@@ -1730,12 +1677,14 @@
+                   icon: const Icon(Icons.qr_code_scanner),
+                   label: const _UiText('Сканировать штрихкод', 'Shtrixkodni skanerlash'),
+                 ),
+-                if (!pos.demo)
++                if (!pos.demo) ...[
++                  const SizedBox(height: 8),
+                   OutlinedButton.icon(
+                     onPressed: canEditBasket ? _findProduct : null,
+                     icon: const Icon(Icons.search),
+                     label: const _UiText('Найти товар по названию', 'Tovarni nomi bo‘yicha qidirish'),
+                   ),
++                ],
+               ],
+               if (!pos.demo && !pos.api.productionContract && canSell && lines.isNotEmpty)
+                 if (_customer case final customer?)
+@@ -1786,6 +1735,7 @@
+                     child: const _UiText('Изменить состав', 'Tarkibni o‘zgartirish'),
+                   ),
+               ],
++              const SizedBox(height: 8),
+               FilledButton(
+                 onPressed: canSell && lines.isNotEmpty ? payment : null,
+                 child: const _UiText('К оплате', 'To‘lovga o‘tish'),
+@@ -1793,6 +1743,51 @@
              ],
            ),
          ),
@@ -403,7 +427,7 @@
  }
 --- /dev/null
 +++ b/apps/mobile-flutter/lib/workplace_ui.dart
-@@ -0,0 +1,161 @@
+@@ -0,0 +1,167 @@
 +part of 'main.dart';
 +
 +const _workplaceSurface = Color(0xfff7f8fa);
@@ -411,6 +435,7 @@
 +const _workplaceInk = Color(0xff1b2536);
 +const _workplaceMeta = Color(0xff536075);
 +const _workplaceControlRadius = BorderRadius.all(Radius.circular(10));
++const _kassaFont = 'Roboto';
 +
 +ThemeData _kassaTheme() {
 +  final scheme = ColorScheme.fromSeed(
@@ -419,6 +444,8 @@
 +    onPrimary: Colors.white,
 +    primaryContainer: const Color(0xffe9eefb),
 +    onPrimaryContainer: const Color(0xff20378f),
++    secondaryContainer: const Color(0xffe9eefb),
++    onSecondaryContainer: const Color(0xff20378f),
 +    surface: Colors.white,
 +    onSurface: _workplaceInk,
 +    onSurfaceVariant: _workplaceMeta,
@@ -434,13 +461,14 @@
 +  return ThemeData(
 +    colorScheme: scheme,
 +    scaffoldBackgroundColor: _workplaceSurface,
-+    fontFamily: 'Roboto',
++    fontFamily: _kassaFont,
 +    appBarTheme: const AppBarTheme(
 +      backgroundColor: _navy,
 +      foregroundColor: Colors.white,
 +      surfaceTintColor: Colors.transparent,
 +      titleTextStyle: TextStyle(
 +        color: Colors.white,
++        fontFamily: _kassaFont,
 +        fontSize: 20,
 +        fontWeight: FontWeight.w500,
 +      ),
@@ -536,11 +564,13 @@
 +          iconColor: _workplaceMeta,
 +          titleTextStyle: TextStyle(
 +            color: _workplaceInk,
++            fontFamily: _kassaFont,
 +            fontSize: 16,
 +            fontWeight: FontWeight.w500,
 +          ),
 +          subtitleTextStyle: TextStyle(
 +            color: _workplaceMeta,
++            fontFamily: _kassaFont,
 +            fontSize: 13,
 +            height: 1.4,
 +          ),

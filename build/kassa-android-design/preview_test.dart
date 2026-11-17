@@ -85,7 +85,7 @@ void main() {
             return reply([]);
           case '/v1/stores/$store/staff':
             return reply([
-              {'staffId': owner, 'subject': 'Владелец магазина', 'roles': ['owner'],
+              {'staffId': owner, 'subject': 'Сардор Алиев', 'roles': ['owner'],
                 'active': true, 'registerIds': [checkout]},
               {'staffId': cashier, 'subject': 'Дилшод Каримов', 'roles': ['cashier'],
                 'active': true, 'registerIds': [teamRegister]},
