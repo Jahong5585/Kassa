@@ -501,7 +501,7 @@
  dependencies:
 --- /dev/null
 +++ b/apps/mobile-flutter/test/receiving_design_test.dart
-@@ -0,0 +1,174 @@
+@@ -0,0 +1,176 @@
 +import 'dart:convert';
 +import 'dart:io';
 +import 'dart:ui' as ui;
@@ -616,6 +616,8 @@
 +    final boundaryKey = GlobalKey();
 +    Future<void> tap(Finder target) async {
 +      await tester.ensureVisible(target);
++      await tester.pumpAndSettle();
++      expect(target.hitTestable(), findsOneWidget);
 +      await tester.tap(target);
 +      await tester.pumpAndSettle();
 +    }
