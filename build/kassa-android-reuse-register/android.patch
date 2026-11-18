@@ -144,8 +144,8 @@
      await _install(() => _registers.createRegister(name, owner));
    }
  
-+  Future<void> _connect(StoreRegister register) async {
-+    if (_usableDevices.contains(register.id)) {
++  Future<void> _connect(StoreRegister register, {bool updateKey = false}) async {
++    if (!updateKey && _usableDevices.contains(register.id)) {
 +      await task(() async {
 +        await widget.pos.api.setOperatorTerminal(register);
 +        await _load();
@@ -237,13 +237,12 @@
      await task(() async {
        await _operators.assignCashiers(register, saved);
        await _load();
-@@ -302,26 +375,41 @@
+@@ -302,26 +375,43 @@
          if (_terminal == null)
            const _UiStatus('Подключите кассу один раз, чтобы сотрудники могли продавать.',
              'Xodimlar savdo qilishi uchun kassani bir marta ulang.'),
 -        for (final register in _devices.where((row) => _usableDevices.contains(row.id)))
-+        for (final register in _devices)
-           _WorkplaceRow(
+-          _WorkplaceRow(
 -            child: ListTile(
 -              title: Text(register.name),
 -              subtitle: register.id == _terminal?.id
@@ -256,6 +255,8 @@
 -                      await widget.pos.api.setOperatorTerminal(register);
 -                      await _load();
 -                    }), child: const _UiText('Подключить', 'Ulash')),
++        for (final register in _devices)
++          Card(
 +            child: Column(
 +              crossAxisAlignment: CrossAxisAlignment.start,
 +              children: [
@@ -270,11 +271,13 @@
 +                  child: Wrap(
 +                    spacing: 8,
 +                    children: [
-+                      if (register.id != _terminal?.id)
-+                        TextButton(
-+                          onPressed: busy || _pendingRegister ? null : () => _connect(register),
-+                          child: const _UiText('Подключить', 'Ulash'),
-+                        ),
++                      TextButton(
++                        onPressed: busy || _pendingRegister ? null
++                            : () => _connect(register, updateKey: register.id == _terminal?.id),
++                        child: register.id == _terminal?.id
++                            ? const _UiText('Обновить ключ', 'Kalitni yangilash')
++                            : const _UiText('Подключить', 'Ulash'),
++                      ),
 +                      TextButton(
 +                        onPressed: busy || _pendingRegister ? null : () => _assign(register),
 +                        child: const _UiText('Кассиры', 'Kassirlar'),
