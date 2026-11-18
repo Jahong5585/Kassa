@@ -453,31 +453,40 @@
  class CashierScreen extends StatefulWidget {
    const CashierScreen(
      this.pos, {
-@@ -1024,17 +1118,15 @@
+@@ -1023,19 +1117,20 @@
+     super.dispose();
    }
  
-   Future<void> configure() => task(() async {
+-  Future<void> configure() => task(() async {
 -    final key = await inputValue(
 -      context,
 -      'Подключить кассу',
 -      'Ключ кассы',
 -      secret: true,
++  Future<void> configure() async {
++    if (busy) return;
 +    final key = await showDialog<String>(
 +      context: context,
 +      builder: (_) => const _RegisterBindingDialog(),
      );
 -    if (key == null) return;
 -    ready = false;
-+    if (!mounted || key == null) return;
-     await pos.api.bindRegister(key);
-+    if (!mounted) return;
-     await reload();
+-    await pos.api.bindRegister(key);
+-    await reload();
 -    status = 'Касса подключена.';
-+    if (mounted) status = _tr(context, 'Касса подключена.', 'Kassa ulandi.');
-   });
+-  });
++    if (!mounted || key == null) return;
++    await task(() async {
++      await pos.api.bindRegister(key);
++      if (!mounted) return;
++      await reload();
++      if (mounted) status = _tr(context, 'Касса подключена.', 'Kassa ulandi.');
++    });
++  }
  
    Future<void> changeShift({bool handover = false}) => task(() async {
-@@ -1712,7 +1804,7 @@
+     final current = shift;
+@@ -1712,7 +1807,7 @@
              children: [
                FilledButton(
                  onPressed: busy ? null : configure,
@@ -558,7 +567,7 @@
  dependencies:
 --- a/apps/mobile-flutter/test/form_layout_test.dart
 +++ b/apps/mobile-flutter/test/form_layout_test.dart
-@@ -218,4 +218,105 @@
+@@ -218,4 +218,104 @@
      expect(find.text('Yangi xarajat'), findsOneWidget);
      expect(tester.takeException(), isNull);
    });
@@ -651,15 +660,14 @@
 +    await tester.enterText(barcode, localCode);
 +    await tester.pumpAndSettle();
 +    expect(tester.widget<TextFormField>(name).controller!.text, isEmpty);
-+    await tester.testTextInput.receiveAction(TextInputAction.search);
-+    await tester.pumpAndSettle();
++    await tap(find.byTooltip('Найти по штрихкоду'));
++    expect(queries, [sharedCode, localCode]);
 +    expect(tester.widget<TextFormField>(name).controller!.text, local['name']);
 +    expect(find.text('Товар уже есть в каталоге магазина.'), findsOneWidget);
 +    expect(find.text('Сохранить карточку'), findsNothing);
 +    await tap(find.text('Открыть карточку'));
 +    expect(find.text('Карточка товара'), findsOneWidget);
 +    expect(find.text('В архиве'), findsOneWidget);
-+    expect(queries, [sharedCode, localCode]);
 +    expect(writes, 0);
 +    expect(tester.takeException(), isNull);
 +  });
