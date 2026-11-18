@@ -1,11 +1,13 @@
 --- a/apps/mobile-flutter/lib/language.dart
 +++ b/apps/mobile-flutter/lib/language.dart
-@@ -51,6 +51,11 @@
+@@ -51,6 +51,13 @@
      'staff_access_denied' => 'Bu bo‘lim uchun ruxsat yo‘q.',
      'register_access_denied' => 'Kassaga ruxsat yo‘q. Hisob va kalitni tekshiring.',
      'register_key_required' => 'Kassa kalitini kiriting.',
 +    'operator_credentials_invalid' => 'Xodim kodini tekshiring.',
 +    'operator_login_rate_limited' => 'Urinishlar soni oshib ketdi. Keyinroq qayta kiring.',
++    'operator_register_denied' => 'Egadan shu telefon kassasiga tayinlovni tekshirishni so‘rang.',
++    'operator_session_expired' || 'operator_session_invalid' => 'Xodim seansi tugadi. Kodni qayta kiriting.',
 +    'operator_terminal_required' => 'Egasi kassani shu telefonda ulashi kerak.',
 +    'operator_login_unavailable' => 'Xodimlar ro‘yxati hozircha mavjud emas. Yana urinib ko‘ring.',
 +    'owner_account_mismatch' => 'Egasining ayni shu hisobi bilan kirishni tasdiqlang.',
@@ -41,7 +43,20 @@
        (desk != Desk.cashier || pos.demo || pos.api.location.registerId != null);
    Set<Desk> allowed = {};
    bool signedIn = false;
-@@ -287,10 +292,14 @@
+@@ -208,7 +213,11 @@
+       if (mounted) {
+         setState(() {
+           error = _apiMessage(navigator.currentContext ?? context, failure);
+-          if (failure.status == 401) clearSession();
++          if (failure.status == 401 &&
++              failure.code != 'operator_session_expired' &&
++              failure.code != 'operator_session_invalid') {
++            clearSession();
++          }
+           if (failure.code == 'session_storage_unavailable') {
+             _logoutCleanupPending = true;
+           }
+@@ -287,10 +296,14 @@
      if (selected != null) _activateWorkplace(selected);
    });
  
@@ -57,7 +72,7 @@
        )),
      );
      if (selected != null) _activateWorkplace(selected);
-@@ -301,12 +310,24 @@
+@@ -301,12 +314,24 @@
        selected.pos.api.retireWorkplace();
        return;
      }
@@ -83,7 +98,7 @@
            ? Desk.cashier
            : allowed.contains(Desk.admin)
            ? Desk.admin
-@@ -379,7 +400,9 @@
+@@ -379,7 +404,9 @@
        ),
        items: [
          for (final role in Desk.values)
@@ -94,7 +109,7 @@
              CheckedPopupMenuItem<Object>(
                value: role,
                checked: desk == role,
-@@ -400,6 +423,30 @@
+@@ -400,6 +427,32 @@
      }
    }
  
@@ -110,22 +125,24 @@
 +      error = null;
 +    });
 +    navigator.currentState?.popUntil((route) => route.isFirst);
-+    if (!expired) {
-+      try {
-+        await selected.pos.api.closeOperatorSession(previousRole);
-+      } on Exception {
-+        // Local access ends immediately. The remote session also expires.
-+      }
-+    }
++    if (!expired) unawaited(_revokeOperator(selected.pos, previousRole));
 +    if (mounted && signedIn && _selected == null) {
 +      await openWorkplaces(automaticallyOpenOwner: true, preferredStore: selected.store.id);
++    }
++  }
++
++  Future<void> _revokeOperator(Pos workplace, Desk role) async {
++    try {
++      await workplace.api.closeOperatorSession(role);
++    } on Exception {
++      // Local access ends immediately. The remote session also expires.
 +    }
 +  }
 +
    void clearSession() {
      _selected?.pos.api.retireWorkplace();
      _selected = null;
-@@ -413,12 +460,21 @@
+@@ -413,12 +466,17 @@
  
    Future<void> leave() => run(() async {
      final shouldRevoke = !_session.demo;
@@ -138,16 +155,12 @@
      navigator.currentState?.popUntil((route) => route.isFirst);
      if (!shouldRevoke) return;
 +    if (previous?.pos.api.operatorSession != null && previousRole != null) {
-+      try {
-+        await previous!.pos.api.closeOperatorSession(previousRole);
-+      } on Exception {
-+        // The local session is gone even when the server cannot be reached.
-+      }
++      await _revokeOperator(previous!.pos, previousRole);
 +    }
      final bool revoked;
      try {
        revoked = await _session.login.signOutAndRevoke();
-@@ -515,9 +571,12 @@
+@@ -515,9 +573,12 @@
          children: [
            const _UiStatus('Для работы кассира выберите и подключите кассу.', 'Kassir bo‘lib ishlash uchun kassani tanlang va ulang.'),
            FilledButton.icon(
@@ -162,7 +175,7 @@
            ),
          ],
        );
-@@ -630,7 +689,13 @@
+@@ -630,7 +691,13 @@
          ),
        ),
        _WorkspaceActions([
@@ -177,7 +190,7 @@
            _WorkspaceAction(
              icon: Icons.storefront_outlined,
              title: const _UiText('Магазины и кассы', 'Do‘konlar va kassalar'),
-@@ -645,7 +710,8 @@
+@@ -645,7 +712,8 @@
              title: const _UiText('Кабинет разработчика', 'Dasturchi kabineti'),
              onTap: busy ? null : _openPlatform,
            ),
@@ -187,7 +200,7 @@
            icon: Icons.logout,
            title: pos.demo
                ? const _UiText('Завершить обучение', 'O‘quv rejimidan chiqish')
-@@ -697,7 +763,7 @@
+@@ -697,7 +765,7 @@
          builder: (context) => Scaffold(
            appBar: AppBar(
              title: Text(
@@ -196,7 +209,7 @@
                overflow: TextOverflow.ellipsis,
              ),
              actions: [
-@@ -708,7 +774,13 @@
+@@ -708,7 +776,13 @@
                    onPressed: busy ? null : () => _welcomeSettings(context),
                    icon: const Icon(Icons.more_vert),
                  ),
@@ -211,7 +224,7 @@
                  IconButton(
                    tooltip: _tr(context, 'Магазины и кассы', 'Do‘konlar va kassalar'),
                    onPressed: busy ? null : () => pos.api.platformWorkplace
-@@ -716,13 +788,13 @@
+@@ -716,13 +790,13 @@
                        : run(openWorkplaces),
                    icon: const Icon(Icons.store_outlined),
                  ),
@@ -227,7 +240,7 @@
                  TextButton(
                    key: roleButton,
                    style: TextButton.styleFrom(
-@@ -899,6 +971,8 @@
+@@ -899,6 +973,8 @@
    bool numeric = false,
    String? initial,
    String? hint,
@@ -236,7 +249,7 @@
  }) async {
    var value = initial ?? '';
    return showDialog<String>(
-@@ -907,6 +981,7 @@
+@@ -907,6 +983,7 @@
        title: Text(title),
        content: TextFormField(
          initialValue: initial,
@@ -244,7 +257,7 @@
          autofocus: true,
          obscureText: secret,
          enableSuggestions: !secret,
-@@ -916,11 +991,12 @@
+@@ -916,11 +993,12 @@
              : TextInputType.text,
          decoration: InputDecoration(
            labelText: label,
@@ -258,7 +271,7 @@
        ),
        actions: [
          TextButton(
-@@ -928,7 +1004,7 @@
+@@ -928,7 +1006,7 @@
            child: const _UiText('Отмена', 'Bekor qilish'),
          ),
          FilledButton(
@@ -267,7 +280,26 @@
            child: const _UiText('Подтвердить', 'Tasdiqlash'),
          ),
        ],
-@@ -1805,10 +1881,11 @@
+@@ -1089,7 +1167,17 @@
+     pendingMovement = await pos.pendingMovement();
+     pendingShift = await pos.pendingShiftChange();
+     pendingRefund = await pos.pendingRefund();
+-    final refreshed = await pos.activeShift();
++    final Json? refreshed;
++    try {
++      refreshed = await pos.activeShift();
++    } on ApiFailure catch (failure) {
++      if (pos.api.operatorSession != null &&
++          (failure.code == 'register_key_required' ||
++              failure.code == 'register_access_denied')) {
++        throw ApiFailure(403, 'operator_register_denied');
++      }
++      rethrow;
++    }
+     if (refreshed?['shiftId'] != shift?['shiftId']) _customer = null;
+     shift = refreshed;
+     _openingBlocked = false;
+@@ -1805,10 +1893,11 @@
              spacing: 8,
              runSpacing: 8,
              children: [
@@ -283,7 +315,7 @@
                OutlinedButton(
                  onPressed: busy ? null : () => task(reload),
                  child: const _UiText('Проверить доступ', 'Ruxsatni tekshirish'),
-@@ -1816,7 +1893,7 @@
+@@ -1816,7 +1905,7 @@
              ],
            ),
          ),
@@ -292,7 +324,7 @@
          OutlinedButton.icon(
            onPressed: busy ? null : () => Navigator.of(context).push<void>(
              MaterialPageRoute(builder: (_) => _CashierReferenceScreen(
-@@ -1921,7 +1998,7 @@
+@@ -1921,7 +2010,7 @@
                                : () => changeShift(handover: true),
                            child: const _UiText('Закрыть и передать смену', 'Smenani yopish va topshirish'),
                          ),
@@ -301,7 +333,7 @@
                          OutlinedButton(
                            onPressed: busy
                                ? null
-@@ -2697,8 +2774,11 @@
+@@ -2697,8 +2786,11 @@
      if (api.supportsOperation('GET', '${api.store}/profile'))
        _action(Icons.storefront_outlined, 'Карточка магазина', 'Do‘kon kartochkasi',
          (_) => _StoreProfileScreen(api)),
@@ -317,7 +349,7 @@
      _action(Icons.bar_chart_outlined, 'Отчёты магазина', 'Do‘kon hisobotlari',
 --- /dev/null
 +++ b/apps/mobile-flutter/lib/operator_api.dart
-@@ -0,0 +1,267 @@
+@@ -0,0 +1,270 @@
 +part of 'pos.dart';
 +
 +class StoreOperator {
@@ -447,10 +479,13 @@
 +  Future<AssignedRegister?> operatorTerminal() async {
 +    final value = await login._storage.read(key: _terminalKey);
 +    if (value == null) return null;
-+    final data = jsonDecode(value);
-+    if (data is! Json || !_assignedId(data['id']) || data['name'] is! String) {
-+      throw ApiFailure(0, 'invalid_location');
++    final dynamic data;
++    try {
++      data = jsonDecode(value);
++    } on FormatException {
++      return null;
 +    }
++    if (data is! Json || !_assignedId(data['id']) || data['name'] is! String) return null;
 +    final id = data['id'] as String;
 +    final credential = await savedRegisterKey(id);
 +    return credential != null && RegExp(r'^[a-fA-F0-9]{64}$').hasMatch(credential)
@@ -1094,19 +1129,21 @@
  part 'platform_api.dart';
  part 'store_exceptions_api.dart';
  part 'register_diagnostics.dart';
-@@ -135,6 +136,11 @@
+@@ -135,6 +136,13 @@
        'admin_mfa_required' =>
          'Для входа администратора требуется второй фактор.',
        'register_key_required' => 'Введите ключ кассы.',
 +      'operator_credentials_invalid' => 'Проверьте код сотрудника.',
 +      'operator_login_rate_limited' => 'Слишком много попыток. Повторите вход позже.',
++      'operator_register_denied' => 'Попросите владельца проверить назначение на кассу этого телефона.',
++      'operator_session_expired' || 'operator_session_invalid' => 'Сеанс сотрудника завершён. Введите код снова.',
 +      'operator_terminal_required' => 'Владелец должен подключить кассу на этом телефоне.',
 +      'operator_login_unavailable' => 'Список сотрудников пока недоступен. Повторите попытку.',
 +      'owner_account_mismatch' => 'Подтвердите вход тем же аккаунтом владельца.',
        'owner_access_required' =>
          'Изменить роли сотрудников может владелец магазина.',
        'invalid_staff_access' => 'Проверьте идентификатор, роль и кассу.',
-@@ -518,6 +524,9 @@
+@@ -518,6 +526,9 @@
  
    Future<void> signIn() => _signIn(persist: true);
  
@@ -1116,7 +1153,7 @@
    Future<void> signInByDeviceCode() => _signIn(persist: true, deviceCode: true);
  
    Future<void> signInForApproval() => _signIn(persist: false);
-@@ -545,7 +554,11 @@
+@@ -545,7 +556,11 @@
      }
    }
  
@@ -1129,7 +1166,7 @@
      if (_deviceCancellation != null) {
        throw ApiFailure(409, 'device_login_in_progress');
      }
-@@ -572,6 +585,9 @@
+@@ -572,6 +587,9 @@
        }
        final sub = _tokenSubject(identity);
        if (_tokenSubject(access) != sub) throw ApiFailure(401, 'sign_in_required');
@@ -1139,7 +1176,7 @@
        final refresh = tokens.refreshToken;
        if (persist) {
          if (refresh == null || refresh.isEmpty) {
-@@ -848,6 +864,7 @@
+@@ -848,6 +866,7 @@
      http.Client? client,
      KassaLocation? debugLocation,
      this.productionContract = _productionApiEnabled,
@@ -1147,7 +1184,7 @@
    }) : _client = client ?? http.Client(),
        _scopeGeneration = null,
        _location = kDebugMode && !productionContract
-@@ -856,22 +873,29 @@
+@@ -856,22 +875,29 @@
      login._scopedRegisterKey = () => localKey(Desk.cashier, 'register-key');
    }
  
@@ -1178,7 +1215,7 @@
    String? staffId;
    bool get storeOwner => _storeOwner;
    bool get platformWorkplace => _location?.platformOrganizationId != null;
-@@ -894,7 +918,7 @@
+@@ -894,7 +920,7 @@
  
    String localKey(Desk desk, String item) {
      _ensureWorkplace();
@@ -1187,7 +1224,7 @@
    }
  
    DateTime storeDate(DateTime time) {
-@@ -1028,13 +1052,16 @@
+@@ -1028,13 +1054,16 @@
      final headers = <String, String>{
        'Accept': binaryResponse ? '*/*' : 'application/json',
        for (final entry in (extraHeaders ?? const <String, String>{}).entries)
@@ -1205,7 +1242,7 @@
        if (platformWorkplace && (authorization == null || identical(authorization, login))) ...{
          'X-Platform-Organization': location.platformOrganizationId!,
          'X-Platform-Store': storeId,
-@@ -1046,9 +1073,7 @@
+@@ -1046,9 +1075,7 @@
            registerKeyForVerification ??
            await (_scopeGeneration == null
                ? login.readRegisterKey()
@@ -1216,7 +1253,7 @@
        if (key == null) throw ApiFailure(403, 'register_key_required');
        headers.addAll({'X-Register-Id': register, 'X-Register-Key': key});
      }
-@@ -1089,11 +1114,6 @@
+@@ -1089,11 +1116,6 @@
        if (auth._generation != generation) {
          throw ApiFailure(401, 'sign_in_required');
        }
@@ -1228,7 +1265,7 @@
        final success = response.statusCode >= 200 && response.statusCode < 300;
        if (success && binaryResponse) return response.bodyBytes;
        dynamic data;
-@@ -1108,6 +1128,18 @@
+@@ -1108,6 +1130,18 @@
        }
        if (success) return data;
        final code = data is Json ? data['code'] : null;
@@ -1247,7 +1284,7 @@
        final requestId = response.headers.entries
                .where((header) => header.key.toLowerCase() == 'x-request-id')
                .firstOrNull
-@@ -1255,8 +1287,8 @@
+@@ -1255,8 +1289,8 @@
      api = scope;
    }
  
@@ -1380,7 +1417,7 @@
  dependencies:
 --- /dev/null
 +++ b/apps/mobile-flutter/test/operator_login_test.dart
-@@ -0,0 +1,188 @@
+@@ -0,0 +1,251 @@
 +import 'dart:convert';
 +
 +import 'package:flutter/material.dart';
@@ -1567,6 +1604,69 @@
 +    expect(data.values, isNot(contains(_workerToken)));
 +    expect(data.values, isNot(contains('02468135')));
 +    expect(tester.takeException(), isNull);
++  });
++
++  test('the owner creates a terminal and assigns employees without copying its key', () async {
++    FlutterSecureStorage.setMockInitialValues({});
++    const storage = FlutterSecureStorage();
++    String? issuedKey;
++    final owner = {
++      'operatorId': _owner, 'displayName': 'Владелец',
++      'roles': ['admin', 'cashier', 'receiver'], 'isOwner': true,
++      'passwordRequired': false, 'active': true,
++    };
++    final root = Pos(storage, login: _OperatorHost(storage), productionContract: true,
++      client: MockClient((request) async {
++        final body = jsonDecode(request.body) as Json;
++        if (request.url.path == '$_base/operator-sessions') {
++          return _reply({'storeId': _store, 'organizationId': _organization,
++            'sessionId': _sessionId, 'operatorSessionToken': _ownerToken, 'operator': owner});
++        }
++        expect(request.headers['X-Operator-Session'], _ownerToken);
++        expect(request.headers['X-Active-Role'], 'admin');
++        expect(request.headers['X-Register-Key'], isNull);
++        if (request.url.path == '$_base/employees') {
++          expect(request.headers['Idempotency-Key'], _worker);
++          expect(body['password'], '02468135');
++          expect(body['roles'], ['cashier', 'receiver']);
++          return _reply({'employeeId': _worker, 'displayName': 'Камола Н.',
++            'roles': body['roles'], 'active': true, 'version': 1});
++        }
++        if (request.url.path == '$_base/registers') {
++          issuedKey = body['registerKey'] as String;
++          expect(issuedKey, matches(r'^[a-f0-9]{64}$'));
++          return _reply({'registerId': body['registerId'], 'name': body['name'],
++            'active': true, 'version': 1, 'cashierIds': [_owner]});
++        }
++        expect(request.url.path, startsWith('$_base/registers/'));
++        expect(request.url.path, endsWith('/cashiers'));
++        expect(body['expectedVersion'], 1);
++        expect(body['cashierIds'], [_owner, _worker]);
++        return _reply({'registerId': request.url.pathSegments[4], 'name': 'Телефон',
++          'active': true, 'version': 2, 'cashierIds': body['cashierIds']});
++      }),
++    );
++    final location = KassaLocation(_store, null);
++    final host = root.forWorkplace(location);
++    final session = await host.api.signInOperator(
++      const StoreOperator(_owner, 'Владелец', {Desk.admin, Desk.cashier, Desk.receiving}, isOwner: true), null);
++    final pos = root.forWorkplace(location, operator: session);
++    final employees = OperatorManagementApi(pos);
++    final employee = await employees.createEmployee(
++      _worker, 'Камола', 'Н.', {Desk.cashier, Desk.receiving}, '02468135');
++    final devices = StoreManagementApi(pos);
++    final issue = await devices.createRegister('Телефон', _owner);
++    await pos.api.setOperatorTerminal(issue.register, issuedKey: issue.key);
++    await devices.acknowledgeKey(issue);
++    final device = await employees.assignCashiers(issue.register, {_owner, employee.id});
++    final terminal = await host.api.operatorTerminal();
++    expect(terminal?.id, device.id);
++    expect(await host.api.savedRegisterKey(device.id), issuedKey);
++    expect(await devices.hasPendingKey(), false);
++    final data = await storage.readAll();
++    expect(data.values, isNot(contains('02468135')));
++    expect(data.values, isNot(contains(_ownerToken)));
++    root.api.close();
 +  });
 +}
 --- a/apps/mobile-flutter/test/session_test.dart
