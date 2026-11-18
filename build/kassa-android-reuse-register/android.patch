@@ -1,0 +1,467 @@
+--- a/apps/mobile-flutter/lib/main.dart
++++ b/apps/mobile-flutter/lib/main.dart
+@@ -2,7 +2,7 @@
+ import 'dart:math' show Random;
+ import 'dart:convert' show HtmlEscape, JsonEncoder, jsonDecode, jsonEncode, utf8;
+ 
+-import 'package:flutter/foundation.dart' show kDebugMode;
++import 'package:flutter/foundation.dart' show kDebugMode, setEquals;
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+@@ -108,6 +108,7 @@
+   Pos get pos => _selected?.pos ?? _session;
+   bool get _pilot => kDebugMode && widget.debugPilot && !_session.api.productionContract;
+   final roleButton = GlobalKey();
++  var _cashierScreen = GlobalKey<_CashierScreenState>();
+   final navigator = GlobalKey<NavigatorState>();
+   static const demoDesks = {Desk.cashier, Desk.receiving};
+ 
+@@ -326,6 +327,7 @@
+     setState(() {
+       _selected?.pos.api.retireWorkplace();
+       _selected = selected;
++      _cashierScreen = GlobalKey<_CashierScreenState>();
+       _activeTab = null;
+       allowed = selected.roles;
+       if (openRole != null) {
+@@ -465,6 +467,15 @@
+     }
+   }
+ 
++  Future<void> _switchFromWorkspace() async {
++    final cashier = desk == Desk.cashier ? _cashierScreen.currentState : null;
++    if (cashier != null) {
++      await cashier.switchCashier();
++    } else {
++      await _switchOperator();
++    }
++  }
++
+   Future<void> _switchOperator({bool expired = false}) async {
+     final selected = _selected;
+     if (selected == null || selected.pos.api.operatorSession == null) return;
+@@ -656,6 +667,8 @@
+             child: switch (role) {
+               Desk.cashier => CashierScreen(
+                 pos,
++                key: pos.api.operatorSession != null ? _cashierScreen : null,
++                onSwitchCashier: pos.api.operatorSession != null ? _switchOperator : null,
+                 registerName: _selected?.register?.name,
+                 historyTab: role == desk && active == _DeskTab.history,
+               ),
+@@ -831,8 +844,10 @@
+                 ),
+               if (pos.api.operatorSession != null)
+                 IconButton(
+-                  tooltip: _tr(context, 'Сменить сотрудника', 'Xodimni almashtirish'),
+-                  onPressed: busy ? null : _switchOperator,
++                  tooltip: desk == Desk.cashier
++                      ? _tr(context, 'Сменить кассира', 'Kassirni almashtirish')
++                      : _tr(context, 'Сменить сотрудника', 'Xodimni almashtirish'),
++                  onPressed: busy ? null : _switchFromWorkspace,
+                   icon: const Icon(Icons.switch_account_outlined),
+                 )
+               else if (_selected != null)
+@@ -1166,12 +1181,14 @@
+     this.pos, {
+     this.registerName,
+     this.historyTab = false,
++    this.onSwitchCashier,
+     super.key,
+   });
+ 
+   final Pos pos;
+   final String? registerName;
+   final bool historyTab;
++  final Future<void> Function()? onSwitchCashier;
+   @override
+   State<CashierScreen> createState() => _CashierScreenState();
+ }
+@@ -1273,7 +1290,25 @@
+     });
+   }
+ 
+-  Future<void> changeShift({bool handover = false}) => task(() async {
++  Future<void> switchCashier() async {
++    final switchOperator = widget.onSwitchCashier;
++    if (switchOperator == null || busy) return;
++    if (locked || lines.isNotEmpty) {
++      await task(() async {
++        throw FormatException(_tr(context,
++          'Завершите работу с чеком и проверьте операции перед сменой кассира.',
++          'Kassirni almashtirishdan oldin chek va amallarni yakunlang.'));
++      });
++      return;
++    }
++    if (shift == null) {
++      await switchOperator();
++    } else {
++      await changeShift(switchAfterClose: true);
++    }
++  }
++
++  Future<void> changeShift({bool handover = false, bool switchAfterClose = false}) => task(() async {
+     final current = shift;
+     try {
+       if (current == null) {
+@@ -1322,7 +1357,10 @@
+       pendingShift = await pos.pendingShiftChange();
+     }
+     await reload();
+-    if (mounted && current != null && !pos.demo) {
++    if (!mounted || current == null || pos.demo) return;
++    if (switchAfterClose) {
++      if (shift == null) await widget.onSwitchCashier?.call();
++    } else {
+       _openShiftReport(current['shiftId'] as String);
+     }
+   });
+@@ -2079,6 +2117,12 @@
+                         child: const _UiText('Изъять', 'Pul chiqarish'),
+                       ),
+                     ],
++                    if (widget.onSwitchCashier != null)
++                      OutlinedButton.icon(
++                        onPressed: busy ? null : switchCashier,
++                        icon: const Icon(Icons.switch_account_outlined),
++                        label: const _UiText('Сменить кассира', 'Kassirni almashtirish'),
++                      ),
+                   ],
+                 ),
+               ],
+--- a/apps/mobile-flutter/lib/operator_management.dart
++++ b/apps/mobile-flutter/lib/operator_management.dart
+@@ -48,6 +48,7 @@
+       offset = page.nextOffset;
+     }
+     _devices = devices;
++    if (!devices.any((device) => device.id == _terminal?.id)) _terminal = null;
+     _usableDevices
+       ..clear()
+       ..addAll(usable);
+@@ -224,6 +225,78 @@
+     await _install(() => _registers.createRegister(name, owner));
+   }
+ 
++  Future<void> _connect(StoreRegister register) async {
++    if (_usableDevices.contains(register.id)) {
++      await task(() async {
++        await widget.pos.api.setOperatorTerminal(register);
++        await _load();
++      });
++      return;
++    }
++
++    final recover = await showDialog<bool>(
++      context: context,
++      builder: (context) => AlertDialog(
++        title: Text(register.name),
++        content: const _UiText(
++          'Подключите эту кассу с её действующим ключом. Если ключ утерян, можно выпустить новый.',
++          'Kassani amaldagi kaliti bilan ulang. Kalit yo‘qolgan bo‘lsa, yangisini yarating.',
++        ),
++        actions: [
++          TextButton(onPressed: () => Navigator.pop(context), child: const _UiText('Отмена', 'Bekor qilish')),
++          TextButton(onPressed: () => Navigator.pop(context, true), child: const _UiText('Ключ утерян', 'Kalit yo‘qolgan')),
++          FilledButton(onPressed: () => Navigator.pop(context, false), child: const _UiText('Вставить ключ', 'Kalitni qo‘yish')),
++        ],
++      ),
++    );
++    if (!mounted || recover == null) return;
++    if (recover) {
++      await _recoverRegister(register);
++      return;
++    }
++    final key = await showDialog<String>(
++      context: context,
++      builder: (_) => const _RegisterBindingDialog(),
++    );
++    if (!mounted || key == null) return;
++    await task(() async {
++      final api = widget.pos.api;
++      if (register.cashiers.contains(api.staffId)) {
++        final verification = widget.pos.forWorkplace(
++          KassaLocation(api.storeId, register.id),
++          operator: api.operatorSession,
++        );
++        try {
++          await verification.api.currentShift(keyForVerification: key);
++        } finally {
++          verification.api.retireWorkplace();
++        }
++      }
++      await api.setOperatorTerminal(register, issuedKey: key);
++      await _load();
++    });
++  }
++
++  Future<void> _recoverRegister(StoreRegister register) async {
++    final confirmed = await showDialog<bool>(
++      context: context,
++      builder: (context) => AlertDialog(
++        title: Text(register.name),
++        content: const _UiText(
++          'Новый ключ будет автоматически сохранён на этом телефоне. Другие устройства с этой кассой потребуется подключить заново.',
++          'Yangi kalit shu telefonda saqlanadi. Bu kassaning boshqa qurilmalarini qayta ulash kerak.',
++        ),
++        actions: [
++          TextButton(onPressed: () => Navigator.pop(context), child: const _UiText('Отмена', 'Bekor qilish')),
++          FilledButton(onPressed: () => Navigator.pop(context, true), child: const _UiText('Заменить ключ', 'Kalitni almashtirish')),
++        ],
++      ),
++    );
++    if (mounted && confirmed == true) {
++      await _install(() => _registers.rotateKey(register));
++    }
++  }
++
+   Future<void> _install(Future<RegisterKeyIssue?> Function() issueKey) => task(() async {
+     try {
+       final issue = await issueKey();
+@@ -252,7 +325,7 @@
+           content: Column(
+             mainAxisSize: MainAxisSize.min,
+             children: [
+-              const _UiText('Кассиры этого телефона', 'Shu telefon kassirlari'),
++              const _UiText('Кассиры этой кассы', 'Shu kassa kassirlari'),
+               for (final entry in staff.entries)
+                 CheckboxListTile(
+                   contentPadding: EdgeInsets.zero,
+@@ -279,7 +352,7 @@
+         ),
+       ),
+     );
+-    if (saved == null || !mounted) return;
++    if (saved == null || !mounted || setEquals(saved, register.cashiers.toSet())) return;
+     await task(() async {
+       await _operators.assignCashiers(register, saved);
+       await _load();
+@@ -302,26 +375,41 @@
+         if (_terminal == null)
+           const _UiStatus('Подключите кассу один раз, чтобы сотрудники могли продавать.',
+             'Xodimlar savdo qilishi uchun kassani bir marta ulang.'),
+-        for (final register in _devices.where((row) => _usableDevices.contains(row.id)))
++        for (final register in _devices)
+           _WorkplaceRow(
+-            child: ListTile(
+-              title: Text(register.name),
+-              subtitle: register.id == _terminal?.id
+-                  ? const _UiText('На этом телефоне', 'Shu telefonda') : null,
+-              trailing: register.id == _terminal?.id
+-                  ? IconButton(onPressed: busy ? null : () => _assign(register),
+-                      tooltip: _tr(context, 'Назначить кассиров', 'Kassirlarni tayinlash'),
+-                      icon: const Icon(Icons.group_add_outlined))
+-                  : TextButton(onPressed: busy ? null : () => task(() async {
+-                      await widget.pos.api.setOperatorTerminal(register);
+-                      await _load();
+-                    }), child: const _UiText('Подключить', 'Ulash')),
++            child: Column(
++              crossAxisAlignment: CrossAxisAlignment.start,
++              children: [
++                ListTile(
++                  leading: const Icon(Icons.point_of_sale_outlined),
++                  title: Text(register.name),
++                  subtitle: register.id == _terminal?.id
++                      ? const _UiText('На этом телефоне', 'Shu telefonda') : null,
++                ),
++                Padding(
++                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
++                  child: Wrap(
++                    spacing: 8,
++                    children: [
++                      if (register.id != _terminal?.id)
++                        TextButton(
++                          onPressed: busy || _pendingRegister ? null : () => _connect(register),
++                          child: const _UiText('Подключить', 'Ulash'),
++                        ),
++                      TextButton(
++                        onPressed: busy || _pendingRegister ? null : () => _assign(register),
++                        child: const _UiText('Кассиры', 'Kassirlar'),
++                      ),
++                    ],
++                  ),
++                ),
++              ],
+             ),
+           ),
+         if (_pendingRegister)
+           OutlinedButton(onPressed: busy ? null : () => _install(_registers.retryKey),
+             child: const _UiText('Завершить подключение', 'Ulashni yakunlash'))
+-        else
++        else if (_devices.isEmpty)
+           OutlinedButton.icon(onPressed: busy ? null : _createRegister,
+             icon: const Icon(Icons.point_of_sale_outlined),
+             label: const _UiText('Создать кассу для телефона', 'Telefon uchun kassa yaratish')),
+--- a/apps/mobile-flutter/pubspec.yaml
++++ b/apps/mobile-flutter/pubspec.yaml
+@@ -1,7 +1,7 @@
+ name: kassa_mobile
+ description: Android POS pilot for Kassa.
+ publish_to: none
+-version: 0.2.89+2109
++version: 0.2.90+2110
+ environment:
+   sdk: ">=3.10.0 <4.0.0"
+ dependencies:
+--- a/apps/mobile-flutter/test/operator_login_test.dart
++++ b/apps/mobile-flutter/test/operator_login_test.dart
+@@ -61,6 +61,7 @@
+     Json? shift;
+     var logouts = 0;
+     var opened = false;
++    var closed = false;
+     var expired = false;
+     final pos = Pos(
+       const FlutterSecureStorage(),
+@@ -69,6 +70,17 @@
+       client: MockClient((request) async {
+         expect(request.headers['Authorization'], 'Bearer oidc-host-token');
+         final token = request.headers['X-Operator-Session'];
++        if (shift != null && request.url.path == "/v1/shifts/${shift!['shiftId']}/close") {
++          expect(token, _workerToken);
++          expect(request.headers['X-Register-Id'], _register);
++          expect(request.headers['X-Register-Key'], _registerKey);
++          final body = jsonDecode(request.body) as Json;
++          expect(body['countedCash'], 125);
++          final ended = {...shift!, 'countedCash': 125};
++          closed = true;
++          shift = null;
++          return _reply(ended);
++        }
+         switch (request.url.path) {
+           case '/v1/me/stores':
+             expect(token, isNull);
+@@ -114,7 +126,10 @@
+             return _reply({'shift': shift});
+           case '/v1/me/roles':
+             expect(token, _workerToken);
+-            if (expired) return _reply({'code': 'operator_session_expired'}, 401);
++            if (expired) {
++              expired = false;
++              return _reply({'code': 'operator_session_expired'}, 401);
++            }
+             return _reply({'storeId': _store, 'staffId': _worker,
+               'roles': ['cashier', 'receiver'], 'owner': false});
+           case '$_base/receiving/catalog/proposals':
+@@ -122,7 +137,7 @@
+             expect(request.headers['X-Active-Role'], 'admin');
+             return _reply([]);
+           case '/v1/operator-sessions/current':
+-            expect(token, _ownerToken);
++            expect(token, anyOf(_ownerToken, _workerToken));
+             expect(request.method, 'DELETE');
+             logouts++;
+             return http.Response('', 204);
+@@ -179,6 +194,26 @@
+     expired = true;
+     await tap(find.widgetWithText(TextButton, 'Приёмщик'));
+     expect(find.text('Кто работает?'), findsOneWidget);
++    await login('02468135');
++    expect(find.text('Смена открыта'), findsOneWidget);
++    await tester.tap(find.byTooltip('Сменить кассира'));
++    await tester.pump();
++    await tester.pump(const Duration(milliseconds: 350));
++    expect(find.text('Фактические наличные'), findsOneWidget);
++    await tap(find.text('Отмена'));
++    expect(closed, false);
++    expect(find.text('Смена открыта'), findsOneWidget);
++    await tester.tap(find.byTooltip('Сменить кассира'));
++    await tester.pump();
++    await tester.pump(const Duration(milliseconds: 350));
++    await tester.enterText(find.widgetWithText(TextField, 'Фактические наличные'), '125');
++    await tap(find.text('Подтвердить'));
++    expect(closed, true);
++    expect(logouts, 2);
++    expect(find.text('Кто работает?'), findsOneWidget);
++    await login('02468135');
++    expect(find.text('Касса телефона'), findsOneWidget);
++    expect(find.text('Открыть смену'), findsOneWidget);
+     expect(host.confirmations, 1);
+     final data = await pos.storage.readAll();
+     expect(data.values, isNot(contains(_workerToken)));
+@@ -265,6 +300,84 @@
+     });
+   }
+ 
++  testWidgets('the owner can connect and assign an existing register without creating one',
++      (tester) async {
++    const storage = FlutterSecureStorage();
++    FlutterSecureStorage.setMockInitialValues({});
++    final owner = {
++      'operatorId': _owner, 'displayName': 'Владелец магазина',
++      'roles': ['admin', 'cashier', 'receiver'], 'isOwner': true,
++      'passwordRequired': false, 'active': true,
++    };
++    var version = 1;
++    var cashiers = [_worker];
++    final root = Pos(storage, login: _OperatorHost(storage), productionContract: true,
++      client: MockClient((request) async {
++        switch ((request.method, request.url.path)) {
++          case ('GET', '/v1/me/stores'):
++            return _reply({'items': [{
++              'storeId': _store, 'storeName': 'Korzinka', 'organizationId': _organization,
++              'timeZone': 'Asia/Tashkent', 'utcOffsetMinutes': 300, 'isOwner': true, 'active': true,
++            }], 'nextOffset': null});
++          case ('GET', '$_base/operators'):
++            return _reply({'storeId': _store, 'items': [owner]});
++          case ('POST', '$_base/operator-sessions'):
++            return _reply({'storeId': _store, 'organizationId': _organization,
++              'sessionId': _sessionId, 'operatorSessionToken': _ownerToken, 'operator': owner});
++          case ('GET', '/v1/me/roles'):
++            return _reply({'storeId': _store, 'staffId': _owner, 'roles': owner['roles'], 'owner': true});
++          case ('GET', '$_base/receiving/catalog/proposals'):
++            return _reply([]);
++          case ('GET', '$_base/employees'):
++            return _reply({'items': [
++              {'employeeId': _worker, 'displayName': 'Абдулазиз', 'roles': ['cashier'],
++                'version': 1, 'active': true},
++            ]});
++          case ('GET', '$_base/registers'):
++            return _reply([{'registerId': _register, 'name': 'Касса3',
++              'active': true, 'version': version, 'cashierIds': cashiers}]);
++          case ('PUT', '$_base/registers/$_register/cashiers'):
++            final body = jsonDecode(request.body) as Json;
++            expect(body['expectedVersion'], version);
++            expect(body['cashierIds'], [_owner]);
++            cashiers = [_owner];
++            return _reply({'registerId': _register, 'name': 'Касса3',
++              'active': true, 'version': ++version, 'cashierIds': cashiers});
++          default:
++            fail('Unexpected request ${request.method} ${request.url.path}');
++        }
++      }),
++    );
++
++    Future<void> tap(Finder finder) async {
++      await tester.tap(finder);
++      await tester.pumpAndSettle();
++    }
++    await tester.pumpWidget(KassaApp(pos: root));
++    await tester.pumpAndSettle();
++    await tap(find.text('Владелец магазина').hitTestable());
++    await tap(find.widgetWithText(TextButton, 'Администратор'));
++    await tap(find.widgetWithText(CheckedPopupMenuItem<Object>, 'Кассир'));
++    await tap(find.text('Настроить кассу'));
++    expect(find.text('Касса3'), findsOneWidget);
++    expect(find.text('Создать кассу для телефона'), findsNothing);
++    await tap(find.text('Подключить'));
++    await tap(find.text('Вставить ключ'));
++    await tester.enterText(find.byType(TextFormField), _registerKey);
++    await tap(find.text('Подтвердить'));
++    final host = root.forWorkplace(KassaLocation(_store, null));
++    expect((await host.api.operatorTerminal())?.id, _register);
++    expect(await host.api.savedRegisterKey(_register), _registerKey);
++    expect(find.text('На этом телефоне'), findsOneWidget);
++
++    await tap(find.text('Кассиры'));
++    await tap(find.widgetWithText(CheckboxListTile, 'Абдулазиз'));
++    await tap(find.widgetWithText(CheckboxListTile, 'Владелец магазина'));
++    await tap(find.text('Сохранить'));
++    expect(cashiers, [_owner]);
++    expect(version, 2);
++  });
++
+   test('the owner creates a terminal and assigns employees without copying its key', () async {
+     FlutterSecureStorage.setMockInitialValues({});
+     const storage = FlutterSecureStorage();
