@@ -133,6 +133,9 @@ builder.Services.AddOpenApi(options => options.AddDocumentTransformer((document,
             { Type = SecuritySchemeType.ApiKey, In = ParameterLocation.Header, Name = "X-Register-Id" },
         ["RegisterKey"] = new OpenApiSecurityScheme
             { Type = SecuritySchemeType.ApiKey, In = ParameterLocation.Header, Name = "X-Register-Key" },
+        ["RegisterDeviceToken"] = new OpenApiSecurityScheme
+            { Type = SecuritySchemeType.ApiKey, In = ParameterLocation.Header, Name = "X-Register-Device-Token",
+                Description = "Revocable device-binding token returned once when an owner binds a device." },
         ["OperatorSession"] = new OpenApiSecurityScheme
             { Type = SecuritySchemeType.ApiKey, In = ParameterLocation.Header, Name = "X-Operator-Session",
                 Description = "Short-lived opaque operator session token. Required after operator selection." }
@@ -157,16 +160,30 @@ builder.Services.AddOpenApi(options => options.AddDocumentTransformer((document,
                     : "Business route: requires a valid OIDC bearer and X-Operator-Session.";
             if (!bootstrap && !platform)
                 security[new OpenApiSecuritySchemeReference("OperatorSession", document)] = [];
-            if (!bootstrap && !platform &&
+            var registerOperation = !bootstrap && !platform &&
                 !path.StartsWith("/v1/operator-sessions/", StringComparison.Ordinal) &&
                 path != "/v1/me/roles" &&
                 !path.StartsWith("/v1/reports/", StringComparison.Ordinal) &&
-                !path.StartsWith("/v1/stores/", StringComparison.Ordinal))
+                !path.StartsWith("/v1/stores/", StringComparison.Ordinal);
+            if (registerOperation)
             {
                 security[new OpenApiSecuritySchemeReference("RegisterId", document)] = [];
                 security[new OpenApiSecuritySchemeReference("RegisterKey", document)] = [];
             }
-            operation.Security = [security];
+            if (registerOperation)
+            {
+                var deviceSecurity = new OpenApiSecurityRequirement();
+                foreach (var entry in security.Where(x => x.Key.Reference?.Id != "RegisterKey"))
+                    deviceSecurity[entry.Key] = entry.Value;
+                deviceSecurity[new OpenApiSecuritySchemeReference("RegisterDeviceToken", document)] = [];
+                operation.Security = [deviceSecurity, security];
+                operation.Description += " Use X-Register-Device-Token for owner-approved device bindings; " +
+                                         "legacy X-Register-Key remains accepted during migration.";
+            }
+            else
+            {
+                operation.Security = [security];
+            }
             if (!bootstrap && !platform && path != "/v1/me/roles")
             {
                 operation.Parameters ??= [];
@@ -432,6 +449,9 @@ api.MapPost("/stores/{storeId:guid}/operator-sessions", async (Guid storeId, Cre
 api.MapGet("/operator-sessions/current", async (OperatorService operators, HttpContext context,
     CancellationToken ct) => TypedResults.Ok(await operators.Current(context, ct)))
     .WithName("ReadCurrentOperatorSession");
+api.MapGet("/operator-sessions/current/registers", async (OperatorService operators, HttpContext context,
+    CancellationToken ct) => TypedResults.Ok(await operators.ListCurrentRegisters(context, ct)))
+    .WithName("ListCurrentOperatorRegisters");
 api.MapDelete("/operator-sessions/current", async (OperatorService operators, HttpContext context,
     CancellationToken ct) =>
 {
@@ -477,6 +497,26 @@ api.MapPut("/stores/{storeId:guid}/registers/{registerId:guid}/cashiers", async 
     UpdateRegisterCashiers request, OperatorService operators, HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await operators.UpdateRegisterCashiers(context, storeId, registerId, request, ct)))
     .WithName("UpdateRegisterCashiers");
+api.MapPost("/stores/{storeId:guid}/registers/{registerId:guid}/device-bindings",
+    async (Guid storeId, Guid registerId, CreateRegisterDeviceBinding request, OperatorService operators,
+        HttpContext context, CancellationToken ct) =>
+    {
+        context.Response.Headers.CacheControl = "no-store";
+        context.Response.Headers.Pragma = "no-cache";
+        return TypedResults.Ok(await operators.BindRegisterDevice(context, storeId, registerId, request, ct));
+    }).WithName("CreateRegisterDeviceBinding");
+api.MapGet("/stores/{storeId:guid}/registers/{registerId:guid}/device-bindings",
+    async (Guid storeId, Guid registerId, int? offset, int? limit, OperatorService operators,
+        HttpContext context, CancellationToken ct) =>
+        TypedResults.Ok(await operators.ListRegisterDeviceBindings(context, storeId, registerId, offset ?? 0,
+            limit ?? 50, ct))).WithName("ListRegisterDeviceBindings");
+api.MapPost("/stores/{storeId:guid}/registers/{registerId:guid}/device-bindings/{bindingId:guid}/revoke",
+    async (Guid storeId, Guid registerId, Guid bindingId, RevokeRegisterDeviceBinding request,
+        OperatorService operators, HttpContext context, CancellationToken ct) =>
+    {
+        await operators.RevokeRegisterDeviceBinding(context, storeId, registerId, bindingId, request, ct);
+        return TypedResults.NoContent();
+    }).WithName("RevokeRegisterDeviceBinding");
 api.MapPost("/shifts", async (OpenShift request, PosService pos, HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await pos.OpenShift(context, request, ct))).WithName("OpenShift");
 api.MapPost("/shifts/{id:guid}/close", async (Guid id, CloseShift request, PosService pos, HttpContext context, CancellationToken ct) =>

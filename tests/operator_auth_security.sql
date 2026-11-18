@@ -20,6 +20,11 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'operator session token digest is invalid';
     END IF;
+    IF EXISTS (
+        SELECT 1 FROM register_device_bindings WHERE octet_length(token_digest) <> 32
+    ) THEN
+        RAISE EXCEPTION 'register device token digest is invalid';
+    END IF;
     IF NOT EXISTS (
         SELECT 1 FROM audit_events
         WHERE action = 'shift.opened' AND staff_id = '00000000-0000-0000-0000-000000009001'

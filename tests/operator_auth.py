@@ -20,6 +20,7 @@ SECOND_STORE = "00000000-0000-0000-0000-000000000013"
 FOREIGN_STORE = "00000000-0000-0000-0000-000000000012"
 EMPLOYEE = "00000000-0000-0000-0000-000000009001"
 DEVICE = "00000000-0000-0000-0000-000000009002"
+OTHER_DEVICE = "00000000-0000-0000-0000-000000009004"
 SECOND_EMPLOYEE = "00000000-0000-0000-0000-000000009003"
 REGISTER = "00000000-0000-0000-0000-000000000021"
 NEW_REGISTER = "00000000-0000-0000-0000-000000009021"
@@ -76,6 +77,10 @@ def main():
     business = spec["paths"]["/v1/stores/{storeId}/employees"]["get"]["security"][0]
     assert set(bootstrap) == {"Bearer"}
     assert set(business) == {"Bearer", "OperatorSession"}
+    shift_security = spec["paths"]["/v1/shifts"]["post"]["security"]
+    assert {frozenset(option) for option in shift_security} == {
+        frozenset({"Bearer", "OperatorSession", "RegisterId", "RegisterDeviceToken"}),
+        frozenset({"Bearer", "OperatorSession", "RegisterId", "RegisterKey"})}
     employee_schema = next(schema for schema in spec["components"]["schemas"].values()
                            if "employeeId" in schema.get("properties", {}) and
                            "password" in schema.get("properties", {}))
@@ -166,6 +171,22 @@ def main():
     if capture_contract:
         print("CAPTURE register-create 200 " + json.dumps(created_register, ensure_ascii=False, sort_keys=True))
 
+    binding, binding_headers = call(f"/v1/stores/{STORE}/registers/{NEW_REGISTER}/device-bindings",
+                                    {"deviceName": "Integration checkout", "reason": "owner approved test device"},
+                                    session=owner_token, role="admin")
+    device_token = binding["registerDeviceToken"]
+    assert binding["deviceId"] == DEVICE and binding["registerId"] == NEW_REGISTER
+    assert binding_headers["Cache-Control"] == "no-store"
+    bindings, _ = call(f"/v1/stores/{STORE}/registers/{NEW_REGISTER}/device-bindings",
+                       session=owner_token, role="admin")
+    assert len(bindings) == 1 and "registerDeviceToken" not in bindings[0]
+    assigned_register, _ = call(f"/v1/stores/{STORE}/registers/{NEW_REGISTER}/cashiers",
+                                {"expectedVersion": created_register["version"],
+                                 "cashierIds": [EMPLOYEE, SECOND_EMPLOYEE],
+                                 "reason": "two cashier integration scenario"}, method="PUT",
+                                session=owner_token, role="admin")
+    assert set(assigned_register["cashierIds"]) == {EMPLOYEE, SECOND_EMPLOYEE}
+
     owner_register_key = secrets.token_hex(32)
     call(f"/v1/stores/{STORE}/registers",
          {"registerId": OWNER_REGISTER, "name": "Unassigned cashier check",
@@ -175,6 +196,10 @@ def main():
     desktop_employee, _ = call(f"/v1/stores/{STORE}/operator-sessions",
                                {"operatorId": EMPLOYEE, "password": PASSWORD, "deviceId": DEVICE})
     desktop_token = desktop_employee["operatorSessionToken"]
+    assert desktop_employee["registerId"] == NEW_REGISTER
+    available, _ = call("/v1/operator-sessions/current/registers", session=desktop_token, role="cashier")
+    selected = next(item for item in available["items"] if item["registerId"] == NEW_REGISTER)
+    assert selected["assigned"] is True and selected["boundToCurrentDevice"] is True
     unassigned, _ = call("/v1/shifts", {"shiftId": str(uuid.uuid4()), "openingCash": 1000},
                          expected=403, session=desktop_token, role="cashier",
                          headers={"X-Register-Id": OWNER_REGISTER, "X-Register-Key": owner_register_key})
@@ -182,16 +207,19 @@ def main():
     desktop_shift_id = str(uuid.uuid4())
     opened_shift, _ = call("/v1/shifts", {"shiftId": desktop_shift_id, "openingCash": 1000},
                            session=desktop_token, role="cashier",
-                           headers={"X-Register-Id": NEW_REGISTER, "X-Register-Key": new_register_key})
+                           headers={"X-Register-Id": NEW_REGISTER,
+                                    "X-Register-Device-Token": device_token})
     assert opened_shift["shiftId"] == desktop_shift_id
 
     active_shift, _ = call("/v1/shifts/active", session=desktop_token, role="cashier",
-                           headers={"X-Register-Id": NEW_REGISTER, "X-Register-Key": new_register_key})
+                           headers={"X-Register-Id": NEW_REGISTER,
+                                    "X-Register-Device-Token": device_token})
     assert active_shift["shiftId"] == desktop_shift_id and active_shift["closedAt"] is None
     if capture_contract:
         print("CAPTURE shift-active-open 200 " + json.dumps(active_shift, ensure_ascii=False, sort_keys=True))
     cashier = {"session": desktop_token, "role": "cashier",
-               "headers": {"X-Register-Id": NEW_REGISTER, "X-Register-Key": new_register_key}}
+               "headers": {"X-Register-Id": NEW_REGISTER,
+                           "X-Register-Device-Token": device_token}}
     barcode_path = "/v1/catalog/barcodes/2100000090231"
     product, _ = call(barcode_path, **cashier)
     lot, = product["lots"]
@@ -212,26 +240,58 @@ def main():
     closed, _ = call(f"/v1/shifts/{desktop_shift_id}/close", {"countedCash": 2000}, **cashier)
     assert closed["expectedCash"] == 2000 and closed["cashDifference"] == 0
     no_active_shift, _ = call("/v1/shifts/active", expected=204, session=desktop_token, role="cashier",
-                              headers={"X-Register-Id": NEW_REGISTER, "X-Register-Key": new_register_key})
+                              headers={"X-Register-Id": NEW_REGISTER,
+                                       "X-Register-Device-Token": device_token})
     assert no_active_shift is None
     current_route, _ = call("/v1/shifts/current", expected=404, session=desktop_token, role="cashier",
-                            headers={"X-Register-Id": NEW_REGISTER, "X-Register-Key": new_register_key})
+                            headers={"X-Register-Id": NEW_REGISTER,
+                                     "X-Register-Device-Token": device_token})
     if capture_contract:
         print("CAPTURE shift-active-empty 204 <empty>")
         print("CAPTURE shift-current 404 " + (json.dumps(current_route, ensure_ascii=False, sort_keys=True)
                                                   if current_route is not None else "<empty>"))
 
+    call("/v1/operator-sessions/current", expected=204, method="DELETE",
+         session=desktop_token, role="cashier")
+    next_cashier, _ = call(f"/v1/stores/{STORE}/operator-sessions",
+                           {"operatorId": SECOND_EMPLOYEE, "password": PASSWORD, "deviceId": DEVICE})
+    next_token = next_cashier["operatorSessionToken"]
+    assert next_cashier["registerId"] == NEW_REGISTER
+    next_shift = str(uuid.uuid4())
+    call("/v1/shifts", {"shiftId": next_shift, "openingCash": 2500},
+         session=next_token, role="cashier",
+         headers={"X-Register-Id": NEW_REGISTER, "X-Register-Device-Token": device_token})
+    call(f"/v1/shifts/{next_shift}/close", {"countedCash": 2500},
+         session=next_token, role="cashier",
+         headers={"X-Register-Id": NEW_REGISTER, "X-Register-Device-Token": device_token})
+
+    other_device, _ = call(f"/v1/stores/{STORE}/operator-sessions",
+                           {"operatorId": SECOND_EMPLOYEE, "password": PASSWORD, "deviceId": OTHER_DEVICE})
+    wrong_device, _ = call("/v1/shifts/active", expected=403,
+                           session=other_device["operatorSessionToken"], role="cashier",
+                           headers={"X-Register-Id": NEW_REGISTER,
+                                    "X-Register-Device-Token": device_token})
+    assert wrong_device["code"] == "register_device_binding_invalid"
+
+    call(f"/v1/stores/{STORE}/registers/{NEW_REGISTER}/device-bindings/{binding['bindingId']}/revoke",
+         {"expectedVersion": binding["version"], "reason": "integration revoke"}, expected=204,
+         session=owner_token, role="admin")
+    revoked_binding, _ = call("/v1/shifts/active", expected=403, session=next_token, role="cashier",
+                              headers={"X-Register-Id": NEW_REGISTER,
+                                       "X-Register-Device-Token": device_token})
+    assert revoked_binding["code"] == "register_device_binding_invalid"
+    call("/v1/shifts/active", expected=204, session=next_token, role="cashier",
+         headers={"X-Register-Id": NEW_REGISTER, "X-Register-Key": new_register_key})
+
     rotated_register, _ = call(f"/v1/stores/{STORE}/registers/{NEW_REGISTER}/rotate-key",
-                               {"expectedVersion": created_register["version"],
+                               {"expectedVersion": assigned_register["version"],
                                 "registerKey": secrets.token_hex(32)},
                                session=owner_token, role="admin")
     assert set(rotated_register) == {"registerId", "name", "active", "version", "cashierIds"}
-    assert rotated_register["version"] == created_register["version"] + 1
+    assert rotated_register["version"] == assigned_register["version"] + 1
     if capture_contract:
         print("CAPTURE register-rotate 200 " + json.dumps(rotated_register, ensure_ascii=False, sort_keys=True))
 
-    call("/v1/operator-sessions/current", expected=204, method="DELETE",
-         session=desktop_token, role="cashier")
     revoked, _ = call("/v1/operator-sessions/current", expected=401,
                       session=desktop_token, role="cashier")
     assert revoked["code"] in ("operator_session_expired", "operator_session_invalid")

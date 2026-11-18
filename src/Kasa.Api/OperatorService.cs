@@ -121,19 +121,178 @@ internal sealed class OperatorService(NpgsqlDataSource source, OperatorPasswordH
         var now = DateTime.UtcNow;
         var idle = now.AddMinutes(candidate.Item.Roles.Contains("admin", StringComparer.Ordinal) ? 15 : 30);
         var absolute = now.AddHours(12);
+        Guid? registerId = null;
+        if (candidate.Item.Roles.Contains("cashier", StringComparer.Ordinal))
+        {
+            await using var boundRegister = db.Sql(tx, """
+                SELECT b.register_id
+                FROM register_device_bindings b
+                JOIN registers r ON (r.org_id, r.store_id, r.id) = (b.org_id, b.store_id, b.register_id) AND r.active
+                JOIN cashier_registers a ON (a.org_id, a.store_id, a.register_id) = (b.org_id, b.store_id, b.register_id)
+                WHERE (b.org_id, b.store_id, b.device_id) = ($1, $2, $3)
+                  AND b.host_issuer = $4 AND b.host_subject = $5 AND b.revoked_at IS NULL
+                  AND a.staff_id = $6
+                """, host.Organization, store, request.DeviceId, host.Issuer, host.Subject, candidate.Item.OperatorId);
+            var value = await boundRegister.ExecuteScalarAsync(ct);
+            if (value is Guid assignedRegister) registerId = assignedRegister;
+        }
         await db.Run(tx, ct, """
             INSERT INTO operator_sessions (id, org_id, store_id, staff_id, host_issuer, host_subject, device_id,
-                token_digest, created_at, last_seen_at, idle_expires_at, absolute_expires_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10, $11)
+                register_id, token_digest, created_at, last_seen_at, idle_expires_at, absolute_expires_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7,
+                NULLIF($8, '00000000-0000-0000-0000-000000000000'::uuid), $9, $10, $10, $11, $12)
             """, sessionId, host.Organization, store, candidate.Item.OperatorId, host.Issuer, host.Subject,
-            request.DeviceId, digest, now, idle, absolute);
+            request.DeviceId, registerId ?? Guid.Empty, digest, now, idle, absolute);
         if (candidate.Item.IsOwner)
             await Audit(db, tx, context, "oidc.owner_login_succeeded", host.Organization, store, host.Owner,
                 host.Owner, null, request.DeviceId, null, "succeeded", null, ct);
         await Audit(db, tx, context, "operator.login_succeeded", host.Organization, store, host.Owner,
             candidate.Item.OperatorId, null, request.DeviceId, null, "succeeded", null, ct);
         await tx.CommitAsync(ct);
-        return new(token, sessionId, host.Organization, store, candidate.Item, idle, absolute);
+        return new(token, sessionId, host.Organization, store, candidate.Item, idle, absolute, registerId);
+    }
+
+    public async Task<OperatorRegisterPage> ListCurrentRegisters(HttpContext context, CancellationToken ct)
+    {
+        await using var db = await source.OpenConnectionAsync(ct);
+        await using var tx = await db.BeginTransactionAsync(ct);
+        var session = await Access.RequireOperatorSession(db, tx, context, ct);
+        if (!session.Owner && !session.AssignedRoles.Contains("cashier", StringComparer.Ordinal))
+            return new([]);
+        var (issuer, subject) = Access.ReadHost(context);
+        await using var command = db.Sql(tx, """
+            SELECT r.id, r.name, r.active, r.version, b.id
+            FROM registers r
+            JOIN cashier_registers a ON (a.org_id, a.store_id, a.register_id) = (r.org_id, r.store_id, r.id)
+            LEFT JOIN register_device_bindings b
+              ON (b.org_id, b.store_id, b.register_id, b.device_id) = (r.org_id, r.store_id, r.id, $4)
+             AND b.host_issuer = $5 AND b.host_subject = $6 AND b.revoked_at IS NULL
+            WHERE (r.org_id, r.store_id, a.staff_id) = ($1, $2, $3) AND r.active
+            ORDER BY lower(r.name), r.id
+            """, session.Organization, session.Store, session.Staff, session.DeviceId, issuer, subject);
+        await using var rows = await command.ExecuteReaderAsync(ct);
+        var items = new List<OperatorRegisterItem>();
+        while (await rows.ReadAsync(ct))
+            items.Add(new(rows.GetGuid(0), rows.GetString(1), rows.GetBoolean(2), rows.GetInt32(3), true,
+                !rows.IsDBNull(4), rows.IsDBNull(4) ? null : rows.GetGuid(4)));
+        return new(items);
+    }
+
+    public async Task<RegisterDeviceBindingCreated> BindRegisterDevice(HttpContext context, Guid store, Guid register,
+        CreateRegisterDeviceBinding request, CancellationToken ct)
+    {
+        var deviceName = request.DeviceName?.Trim() ?? "";
+        if (deviceName.Length is < 1 or > 120 || deviceName.Any(char.IsControl))
+            throw new PosError(400, "invalid_device_name");
+        var reason = ValidateReason(request.Reason);
+        await using var db = await source.OpenConnectionAsync(ct);
+        await using var tx = await db.BeginTransactionAsync(ct);
+        var owner = await RequireOwnerAdmin(db, tx, context, store, ct);
+        await Access.LockRegister(db, tx, register, ct);
+        await using (var target = db.Sql(tx, """
+            SELECT active FROM registers WHERE (org_id, store_id, id) = ($1, $2, $3)
+            """, owner.Organization, store, register))
+        {
+            var active = await target.ExecuteScalarAsync(ct);
+            if (active is null) throw new PosError(404, "register_not_found");
+            if (active is not true) throw new PosError(409, "register_disabled");
+        }
+
+        Guid? previousBinding = null;
+        Guid? previousRegister = null;
+        Guid? previousStore = null;
+        await using (var existing = db.Sql(tx, """
+            SELECT id, store_id, register_id FROM register_device_bindings
+            WHERE (org_id, device_id) = ($1, $2) AND revoked_at IS NULL FOR UPDATE
+            """, owner.Organization, owner.DeviceId))
+        await using (var rows = await existing.ExecuteReaderAsync(ct))
+        {
+            if (await rows.ReadAsync(ct))
+            {
+                previousBinding = rows.GetGuid(0);
+                previousStore = rows.GetGuid(1);
+                previousRegister = rows.GetGuid(2);
+            }
+        }
+        if (previousRegister is { } oldRegister &&
+            (oldRegister != register || previousStore != store))
+        {
+            await using var shift = db.Sql(tx, """
+                SELECT 1 FROM shifts WHERE (org_id, store_id, register_id) = ($1, $2, $3) AND closed_at IS NULL
+                """, owner.Organization, previousStore, oldRegister);
+            if (await shift.ExecuteScalarAsync(ct) is not null)
+                throw new PosError(409, "register_device_binding_shift_open");
+        }
+        if (previousBinding is { } oldBinding)
+            await db.Run(tx, ct, """
+                UPDATE register_device_bindings
+                SET revoked_at = now(), revoked_by = $3, revoked_reason = 'device_rebound', version = version + 1
+                WHERE (org_id, id) = ($1, $2) AND revoked_at IS NULL
+                """, owner.Organization, oldBinding, owner.Staff);
+
+        var token = WebEncoders.Base64UrlEncode(RandomNumberGenerator.GetBytes(32));
+        var digest = SHA256.HashData(Encoding.UTF8.GetBytes(token));
+        var bindingId = Guid.NewGuid();
+        var now = DateTime.UtcNow;
+        var (issuer, subject) = Access.ReadHost(context);
+        await db.Run(tx, ct, """
+            INSERT INTO register_device_bindings (id, org_id, store_id, register_id, device_id, device_name,
+                token_digest, host_issuer, host_subject, created_by, created_at, last_seen_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
+            """, bindingId, owner.Organization, store, register, owner.DeviceId, deviceName, digest, issuer, subject,
+            owner.Staff, now);
+        await Audit(db, tx, context, "register.device_bound", owner.Organization, store, owner.Staff, null,
+            "admin", owner.DeviceId, register, "succeeded", reason, ct);
+        await tx.CommitAsync(ct);
+        return new(bindingId, store, register, owner.DeviceId, deviceName, token, 1, now);
+    }
+
+    public async Task<IReadOnlyList<RegisterDeviceBindingItem>> ListRegisterDeviceBindings(HttpContext context,
+        Guid store, Guid register, int offset, int limit, CancellationToken ct)
+    {
+        if (offset < 0 || limit is < 1 or > 100) throw new PosError(400, "validation_failed");
+        await using var db = await source.OpenConnectionAsync(ct);
+        await using var tx = await db.BeginTransactionAsync(ct);
+        var owner = await RequireOwnerAdmin(db, tx, context, store, ct);
+        await using var command = db.Sql(tx, """
+            SELECT b.id, b.store_id, b.register_id, b.device_id, b.device_name, b.version,
+                   b.created_at, b.last_seen_at, b.revoked_at
+            FROM register_device_bindings b
+            WHERE (b.org_id, b.store_id, b.register_id) = ($1, $2, $3)
+            ORDER BY b.created_at DESC, b.id LIMIT $4 OFFSET $5
+            """, owner.Organization, store, register, limit, offset);
+        await using var rows = await command.ExecuteReaderAsync(ct);
+        var result = new List<RegisterDeviceBindingItem>();
+        while (await rows.ReadAsync(ct))
+            result.Add(new(rows.GetGuid(0), rows.GetGuid(1), rows.GetGuid(2), rows.GetGuid(3), rows.GetString(4),
+                rows.GetInt32(5), rows.GetDateTime(6), rows.GetDateTime(7), rows.IsDBNull(8) ? null : rows.GetDateTime(8)));
+        return result;
+    }
+
+    public async Task RevokeRegisterDeviceBinding(HttpContext context, Guid store, Guid register, Guid binding,
+        RevokeRegisterDeviceBinding request, CancellationToken ct)
+    {
+        if (request.ExpectedVersion < 1) throw new PosError(400, "validation_failed");
+        var reason = ValidateReason(request.Reason);
+        await using var db = await source.OpenConnectionAsync(ct);
+        await using var tx = await db.BeginTransactionAsync(ct);
+        var owner = await RequireOwnerAdmin(db, tx, context, store, ct);
+        await using var command = db.Sql(tx, """
+            UPDATE register_device_bindings
+            SET revoked_at = now(), revoked_by = $6, revoked_reason = $7, version = version + 1
+            WHERE (org_id, store_id, register_id, id, version) = ($1, $2, $3, $4, $5)
+              AND revoked_at IS NULL
+            RETURNING device_id
+            """, owner.Organization, store, register, binding, request.ExpectedVersion, owner.Staff, reason);
+        var device = await command.ExecuteScalarAsync(ct);
+        if (device is not Guid deviceId) throw new PosError(409, "register_device_binding_version_conflict");
+        await db.Run(tx, ct, """
+            UPDATE operator_sessions SET register_id = NULL
+            WHERE (org_id, store_id, device_id, register_id) = ($1, $2, $3, $4) AND revoked_at IS NULL
+            """, owner.Organization, store, deviceId, register);
+        await Audit(db, tx, context, "register.device_binding_revoked", owner.Organization, store, owner.Staff, null,
+            "admin", deviceId, register, "succeeded", reason, ct);
+        await tx.CommitAsync(ct);
     }
 
     public async Task<CurrentOperatorSession> Current(HttpContext context, CancellationToken ct)
@@ -381,6 +540,13 @@ internal sealed class OperatorService(NpgsqlDataSource source, OperatorPasswordH
             await db.Run(tx, ct, """
                 INSERT INTO cashier_registers (org_id, staff_id, store_id, register_id) VALUES ($1, $2, $3, $4)
                 """, owner.Organization, cashier, store, register);
+        await db.Run(tx, ct, """
+            UPDATE operator_sessions os SET register_id = NULL
+            WHERE (os.org_id, os.store_id, os.register_id) = ($1, $2, $3) AND os.revoked_at IS NULL
+              AND NOT EXISTS (SELECT 1 FROM cashier_registers a
+                              WHERE (a.org_id, a.store_id, a.register_id, a.staff_id) =
+                                    (os.org_id, os.store_id, os.register_id, os.staff_id))
+            """, owner.Organization, store, register);
         await Audit(db, tx, context, "register.cashiers_updated", owner.Organization, store, owner.Staff, null,
             "admin", owner.DeviceId, register, "succeeded", reason, ct);
         await tx.CommitAsync(ct);

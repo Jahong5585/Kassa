@@ -113,28 +113,77 @@ internal static class Access
     {
         if (!Guid.TryParse(context.Request.Headers["X-Register-Id"].ToString(), out var register))
             throw new PosError(403, "register_access_denied");
-        var key = context.Request.Headers["X-Register-Key"].ToString();
-        if (RegisterKeyDigest(key) is not { } digest) throw new PosError(403, "register_access_denied");
+        var deviceToken = context.Request.Headers["X-Register-Device-Token"].ToString();
+        var usesDeviceBinding = !string.IsNullOrEmpty(deviceToken);
         if (write) await LockRegister(db, tx, register, ct);
-        var principal = await ReadPrincipal(db, tx, context, ct);
+        Principal principal;
+        if (usesDeviceBinding)
+        {
+            var deviceSession = await RequireOperatorSession(db, tx, context, ct);
+            principal = new Principal(deviceSession.Organization, deviceSession.Staff, deviceSession.Store,
+                deviceSession.AssignedRoles, deviceSession.Owner, deviceSession);
+        }
+        else
+        {
+            principal = await ReadPrincipal(db, tx, context, ct);
+        }
         var activeRole = ResolveActiveRole(context, AvailableRoles(principal.Roles, principal.Owner));
         if (activeRole != "cashier") throw new PosError(403, "active_role_denied");
         await using var command = db.Sql(tx, """
-            SELECT r.store_id, s.time_zone, r.key_digest
+            SELECT r.store_id, s.time_zone, r.key_digest, r.active
             FROM registers r
-            JOIN cashier_registers a ON (a.org_id, a.store_id, a.register_id) = (r.org_id, r.store_id, r.id)
-            JOIN staff_stores m ON (m.org_id, m.store_id, m.staff_id) = (a.org_id, a.store_id, a.staff_id) AND m.active
             JOIN stores s ON (s.org_id, s.id) = (r.org_id, r.store_id)
-            WHERE r.org_id = $1 AND a.staff_id = $2 AND r.id = $3 AND r.active
-            """, principal.Organization, principal.Staff, register);
+            WHERE r.org_id = $1 AND r.id = $2
+            """, principal.Organization, register);
         await using var rows = await command.ExecuteReaderAsync(ct);
-        if (!await rows.ReadAsync(ct) || !CryptographicOperations.FixedTimeEquals(rows.GetFieldValue<byte[]>(2), digest))
-            throw new PosError(403, "register_access_denied");
+        if (!await rows.ReadAsync(ct)) throw new PosError(403, "register_access_denied");
         var store = rows.GetGuid(0);
+        var timeZone = rows.GetString(1);
+        var registerKeyDigest = rows.GetFieldValue<byte[]>(2);
+        var active = rows.GetBoolean(3);
+        await rows.DisposeAsync();
         if (principal.Store is { } sessionStore && sessionStore != store)
             throw new PosError(409, "operator_store_mismatch");
-        var scope = new RegisterScope(principal.Organization, store, register, principal.Staff, rows.GetString(1));
-        await rows.DisposeAsync();
+        if (!active)
+            throw new PosError(usesDeviceBinding ? 409 : 403,
+                usesDeviceBinding ? "register_disabled" : "register_access_denied");
+        await using (var assignment = db.Sql(tx, """
+            SELECT 1 FROM cashier_registers a
+            JOIN staff_stores m ON (m.org_id, m.store_id, m.staff_id) = (a.org_id, a.store_id, a.staff_id) AND m.active
+            WHERE (a.org_id, a.store_id, a.register_id, a.staff_id) = ($1, $2, $3, $4)
+            """, principal.Organization, store, register, principal.Staff))
+        {
+            if (await assignment.ExecuteScalarAsync(ct) is null)
+                throw new PosError(403, usesDeviceBinding ? "register_assignment_required" : "register_access_denied");
+        }
+
+        if (usesDeviceBinding)
+        {
+            if (deviceToken.Length is < 32 or > 200)
+                throw new PosError(403, "register_device_binding_invalid");
+            var digest = SHA256.HashData(Encoding.UTF8.GetBytes(deviceToken));
+            var deviceSession = principal.Session ?? throw new PosError(403, "operator_session_required");
+            if (deviceSession.RegisterId is { } sessionRegister && sessionRegister != register)
+                throw new PosError(409, "operator_register_mismatch");
+            var (issuer, subject) = ReadHost(context);
+            await using var binding = db.Sql(tx, """
+                UPDATE register_device_bindings SET last_seen_at = statement_timestamp()
+                WHERE token_digest = $1 AND (org_id, store_id, register_id, device_id) = ($2, $3, $4, $5)
+                  AND host_issuer = $6 AND host_subject = $7 AND revoked_at IS NULL
+                RETURNING id
+                """, digest, principal.Organization, store, register, deviceSession.DeviceId, issuer, subject);
+            if (await binding.ExecuteScalarAsync(ct) is null)
+                throw new PosError(403, "register_device_binding_invalid");
+        }
+        else
+        {
+            var key = context.Request.Headers["X-Register-Key"].ToString();
+            if (RegisterKeyDigest(key) is not { } digest ||
+                !CryptographicOperations.FixedTimeEquals(registerKeyDigest, digest))
+                throw new PosError(403, "register_access_denied");
+        }
+
+        var scope = new RegisterScope(principal.Organization, store, register, principal.Staff, timeZone);
         if (principal.Session is { RegisterId: null } session)
             await db.Run(tx, ct, "UPDATE operator_sessions SET register_id = $2 WHERE id = $1 AND register_id IS NULL",
                 session.SessionId, register);

@@ -24,6 +24,18 @@ public sealed record PlatformAuditEvent(long Id, DateTime OccurredAt, string Act
 public sealed record PlatformAuditPage(IReadOnlyList<PlatformAuditEvent> Items, int? NextOffset);
 
 public sealed record RegisterDevice(Guid RegisterId, string Name, bool Active, int Version, IReadOnlyList<Guid> CashierIds);
+public sealed record CreateRegisterDeviceBinding(
+    [property: StringLength(120, MinimumLength = 1)] string DeviceName,
+    [property: StringLength(500, MinimumLength = 1)] string Reason);
+public sealed record RevokeRegisterDeviceBinding(int ExpectedVersion,
+    [property: StringLength(500, MinimumLength = 1)] string Reason);
+public sealed record RegisterDeviceBindingCreated(Guid BindingId, Guid StoreId, Guid RegisterId, Guid DeviceId,
+    string DeviceName, string RegisterDeviceToken, int Version, DateTime CreatedAt);
+public sealed record RegisterDeviceBindingItem(Guid BindingId, Guid StoreId, Guid RegisterId, Guid DeviceId,
+    string DeviceName, int Version, DateTime CreatedAt, DateTime LastSeenAt, DateTime? RevokedAt);
+public sealed record OperatorRegisterItem(Guid RegisterId, string Name, bool Active, int Version,
+    bool Assigned, bool BoundToCurrentDevice, Guid? BindingId);
+public sealed record OperatorRegisterPage(IReadOnlyList<OperatorRegisterItem> Items);
 public sealed record RegisterNewDevice(Guid RegisterId, string Name, Guid CashierId, string RegisterKey);
 public sealed record RotateDeviceKey(int ExpectedVersion, string RegisterKey);
 public sealed record RevokeDevice(int ExpectedVersion);
@@ -41,7 +53,7 @@ public sealed record StoreOperatorPage(Guid StoreId, IReadOnlyList<OperatorItem>
 public sealed record CreateOperatorSession(Guid OperatorId,
     [property: StringLength(128, MinimumLength = 8)] string? Password, Guid DeviceId);
 public sealed record OperatorSessionCreated(string OperatorSessionToken, Guid SessionId, Guid OrganizationId,
-    Guid StoreId, OperatorItem Operator, DateTime IdleExpiresAt, DateTime AbsoluteExpiresAt);
+    Guid StoreId, OperatorItem Operator, DateTime IdleExpiresAt, DateTime AbsoluteExpiresAt, Guid? RegisterId);
 public sealed record OperatorStore(Guid OrganizationId, Guid StoreId, string Name, string TimeZone);
 public sealed record CurrentOperatorSession(Guid SessionId, OperatorStore Store, OperatorItem Operator,
     DateTime CreatedAt, DateTime IdleExpiresAt, DateTime AbsoluteExpiresAt, Guid? RegisterId);

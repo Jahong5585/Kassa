@@ -131,14 +131,20 @@ def main():
     spec = request("/openapi/v1.json")
     assert "get" in spec["paths"]["/v1/shifts/{id}"]
     checkout = spec["paths"]["/v1/sales"]["post"]
-    assert set(checkout["security"][0]) == {"Bearer", "OperatorSession", "RegisterId", "RegisterKey"}
+    assert {frozenset(option) for option in checkout["security"]} == {
+        frozenset({"Bearer", "OperatorSession", "RegisterId", "RegisterDeviceToken"}),
+        frozenset({"Bearer", "OperatorSession", "RegisterId", "RegisterKey"})}
     assert {"200", "409"}.issubset(checkout["responses"])
-    assert set(spec["paths"]["/v1/refunds"]["post"]["security"][0]) == {"Bearer", "OperatorSession", "RegisterId", "RegisterKey"}
+    assert {frozenset(option) for option in spec["paths"]["/v1/refunds"]["post"]["security"]} == {
+        frozenset({"Bearer", "OperatorSession", "RegisterId", "RegisterDeviceToken"}),
+        frozenset({"Bearer", "OperatorSession", "RegisterId", "RegisterKey"})}
     assert set(spec["paths"]["/v1/stores/{storeId}/receipts/{id}/post"]["post"]["security"][0]) == {"Bearer", "OperatorSession"}
     upload = spec["paths"]["/v1/stores/{storeId}/receipts/{id}/files/{fileId}"]["put"]
     assert set(upload["requestBody"]["content"]) == {"application/pdf", "image/jpeg", "image/png"}
     assert "X-File-Name" in [parameter["name"] for parameter in upload["parameters"]]
-    assert set(spec["paths"]["/v1/expiry/cashier"]["get"]["security"][0]) == {"Bearer", "OperatorSession", "RegisterId", "RegisterKey"}
+    assert {frozenset(option) for option in spec["paths"]["/v1/expiry/cashier"]["get"]["security"]} == {
+        frozenset({"Bearer", "OperatorSession", "RegisterId", "RegisterDeviceToken"}),
+        frozenset({"Bearer", "OperatorSession", "RegisterId", "RegisterKey"})}
     assert set(spec["paths"]["/v1/stores/{storeId}/stock/operations"]["post"]["security"][0]) == {"Bearer", "OperatorSession"}
     procurement = spec["paths"]["/v1/stores/{storeId}/procurement/orders/{id}/approve"]["post"]
     assert set(procurement["security"][0]) == {"Bearer", "OperatorSession"}
@@ -3030,7 +3036,9 @@ def check_register_diagnostics(previous_shift_b):
     operation = purchase["operationId"]
     purchase_path = "/v1/sales/" + operation
     spec = request("/openapi/v1.json", staff=cashier)["paths"]
-    assert set(spec[route]["post"]["security"][0]) == {"Bearer", "OperatorSession", "RegisterId", "RegisterKey"}
+    assert {frozenset(option) for option in spec[route]["post"]["security"]} == {
+        frozenset({"Bearer", "OperatorSession", "RegisterId", "RegisterDeviceToken"}),
+        frozenset({"Bearer", "OperatorSession", "RegisterId", "RegisterKey"})}
     peer_shift = str(uuid.uuid4())
     request("/v1/shifts", {"shiftId": peer_shift, "openingCash": 0}, staff=peer)
     request(f"/v1/shifts/{peer_shift}/close", {"countedCash": 0}, staff=peer)

@@ -116,6 +116,11 @@ internal sealed partial class PosService
                 WHERE (org_id, store_id, id) = ($1, $2, $3)
                 """, scope.Organization, store, id);
             await db.Run(tx, ct, """
+                UPDATE register_device_bindings
+                SET revoked_at = now(), revoked_by = $4, revoked_reason = 'register_revoked', version = version + 1
+                WHERE (org_id, store_id, register_id) = ($1, $2, $3) AND revoked_at IS NULL
+                """, scope.Organization, store, id, scope.Staff);
+            await db.Run(tx, ct, """
                 UPDATE operator_sessions SET revoked_at = now(), revoked_reason = 'register_revoked'
                 WHERE (org_id, store_id, register_id) = ($1, $2, $3) AND revoked_at IS NULL
                 """, scope.Organization, store, id);
