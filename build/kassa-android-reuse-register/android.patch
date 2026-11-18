@@ -309,7 +309,23 @@
  dependencies:
 --- a/apps/mobile-flutter/test/operator_login_test.dart
 +++ b/apps/mobile-flutter/test/operator_login_test.dart
-@@ -61,6 +61,7 @@
+@@ -48,6 +48,8 @@
+   testWidgets('a saved phone opens the employee list and uses their roles and terminal key',
+       (tester) async {
+     final host = _OperatorHost(const FlutterSecureStorage());
++    const relief = '30000000-0000-4000-8000-000000000037';
++    final reliefToken = 'r' * 43;
+     final operators = [
+       {'operatorId': _worker, 'displayName': 'Камола',
+         'roles': ['cashier', 'receiver'], 'isOwner': false,
+@@ -56,11 +58,14 @@
+         'roles': ['admin', 'cashier', 'receiver'], 'isOwner': true,
+         'passwordRequired': false, 'active': true},
+       {'operatorId': _organization, 'displayName': 'Отключённый сотрудник', 'active': false},
++      {'operatorId': relief, 'displayName': 'Абдулазиз', 'roles': ['cashier'],
++        'isOwner': false, 'passwordRequired': true, 'active': true},
+     ];
+     String? deviceId;
      Json? shift;
      var logouts = 0;
      var opened = false;
@@ -317,7 +333,7 @@
      var expired = false;
      final pos = Pos(
        const FlutterSecureStorage(),
-@@ -69,6 +70,17 @@
+@@ -69,6 +74,17 @@
        client: MockClient((request) async {
          expect(request.headers['Authorization'], 'Bearer oidc-host-token');
          final token = request.headers['X-Operator-Session'];
@@ -335,7 +351,32 @@
          switch (request.url.path) {
            case '/v1/me/stores':
              expect(token, isNull);
-@@ -114,7 +126,10 @@
+@@ -89,18 +105,20 @@
+             deviceId ??= body['deviceId'] as String;
+             expect(body['deviceId'], deviceId);
+             final owner = body['operatorId'] == _owner;
++            final nextCashier = body['operatorId'] == relief;
+             if (owner) {
+               expect(host.confirmations, 1);
+               expect(body['password'], isNull);
+-            } else if (body['password'] != '02468135') {
++            } else if (body['password'] != (nextCashier ? '13579246' : '02468135')) {
+               return _reply({'code': 'operator_credentials_invalid'}, 401);
+             }
+             return _reply({'storeId': _store, 'organizationId': _organization,
+-              'sessionId': _sessionId, 'operatorSessionToken': owner ? _ownerToken : _workerToken,
+-              'operator': operators[owner ? 1 : 0]});
++              'sessionId': _sessionId,
++              'operatorSessionToken': owner ? _ownerToken : nextCashier ? reliefToken : _workerToken,
++              'operator': operators[owner ? 1 : nextCashier ? 3 : 0]});
+           case '/v1/shifts/active':
+           case '/v1/shifts':
+-            expect(token, anyOf(_workerToken, _ownerToken));
++            expect(token, anyOf(_workerToken, _ownerToken, reliefToken));
+             expect(request.headers['X-Active-Role'], 'cashier');
+             expect(request.headers['X-Register-Id'], _register);
+             expect(request.headers['X-Register-Key'], _registerKey);
+@@ -114,7 +132,10 @@
              return _reply({'shift': shift});
            case '/v1/me/roles':
              expect(token, _workerToken);
@@ -347,7 +388,7 @@
              return _reply({'storeId': _store, 'staffId': _worker,
                'roles': ['cashier', 'receiver'], 'owner': false});
            case '$_base/receiving/catalog/proposals':
-@@ -122,7 +137,7 @@
+@@ -122,7 +143,7 @@
              expect(request.headers['X-Active-Role'], 'admin');
              return _reply([]);
            case '/v1/operator-sessions/current':
@@ -356,7 +397,18 @@
              expect(request.method, 'DELETE');
              logouts++;
              return http.Response('', 204);
-@@ -179,6 +194,26 @@
+@@ -144,8 +165,8 @@
+       await tester.pumpAndSettle();
+     }
+ 
+-    Future<void> login(String code) async {
+-      await tap(find.text('Камола'));
++    Future<void> login(String code, {String name = 'Камола'}) async {
++      await tap(find.text(name));
+       expect(find.text('Код сотрудника'), findsOneWidget);
+       await tester.enterText(find.byType(TextFormField), code);
+       await tap(find.text('Подтвердить'));
+@@ -179,6 +200,27 @@
      expired = true;
      await tap(find.widgetWithText(TextButton, 'Приёмщик'));
      expect(find.text('Кто работает?'), findsOneWidget);
@@ -373,17 +425,18 @@
 +    await tester.pump();
 +    await tester.pump(const Duration(milliseconds: 350));
 +    await tester.enterText(find.widgetWithText(TextField, 'Фактические наличные'), '125');
++    await tester.pump();
 +    await tap(find.text('Подтвердить'));
 +    expect(closed, true);
 +    expect(logouts, 2);
 +    expect(find.text('Кто работает?'), findsOneWidget);
-+    await login('02468135');
++    await login('13579246', name: 'Абдулазиз');
 +    expect(find.text('Касса телефона'), findsOneWidget);
 +    expect(find.text('Открыть смену'), findsOneWidget);
      expect(host.confirmations, 1);
      final data = await pos.storage.readAll();
      expect(data.values, isNot(contains(_workerToken)));
-@@ -265,6 +300,84 @@
+@@ -265,6 +307,84 @@
      });
    }
  
