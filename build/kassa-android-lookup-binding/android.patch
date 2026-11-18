@@ -1,0 +1,714 @@
+--- a/apps/mobile-flutter/lib/catalog.dart
++++ b/apps/mobile-flutter/lib/catalog.dart
+@@ -588,7 +588,7 @@
+   late final _id = (widget.card?['productId'] as String?) ?? newId();
+   late final _fields = {
+     for (final key in _productFields.keys)
+-      key: (widget.card?[key] as String?) ?? '',
++      key: TextEditingController(text: widget.card?[key] as String?),
+   };
+   late final _barcodes = [
+     for (final barcode
+@@ -602,10 +602,21 @@
+   late bool _expiry = widget.card?['requiresExpiry'] == true;
+ 
+   final _scroll = ScrollController();
++  final _filledFields = <String, String>{};
++  String? _matchedCode;
++  String? _existingProductId;
++  String? _lookupMessage;
++  String? _filledUnit;
++  bool? _filledExpiry;
++  bool _unitEdited = false;
++  bool _expiryEdited = false;
+ 
+   @override
+   void dispose() {
+     _scroll.dispose();
++    for (final controller in _fields.values) {
++      controller.dispose();
++    }
+     super.dispose();
+   }
+ 
+@@ -621,12 +632,7 @@
+   }
+ 
+   Future<void> _save() => task(() async {
+-    final name = _fields['name']!.trim();
+-    if (name.isEmpty) {
+-      throw FormatException(_tr(context, 'Введите название товара.', 'Tovar nomini kiriting.'));
+-    }
+     final codes = <String>{};
+-    final barcodes = <Json>[];
+     for (final (index, barcode) in _barcodes.indexed) {
+       final code = barcode.code.trim();
+       if (!RegExp(r'^\d{1,48}$').hasMatch(code) || !codes.add(code)) {
+@@ -637,6 +643,26 @@
+           ),
+         );
+       }
++    }
++    if (widget.card == null) {
++      for (final code in codes) {
++        final card = await widget.api.existingByBarcode(code);
++        if (!mounted) return;
++        if (card != null) {
++          _fillProduct(code, card, existing: true);
++          return;
++        }
++      }
++      if (codes.isNotEmpty && _fields['name']!.text.trim().isEmpty) {
++        await _fillFromSharedCatalog(codes.first);
++        if (!mounted || _fields['name']!.text.trim().isNotEmpty) return;
++      }
++    }
++    if (_fields['name']!.text.trim().isEmpty) {
++      throw FormatException(_tr(context, 'Введите название товара.', 'Tovar nomini kiriting.'));
++    }
++    final barcodes = <Json>[];
++    for (final (index, barcode) in _barcodes.indexed) {
+       final factor = _catalogNumber(barcode.factor, decimals: 3, digits: 11);
+       if (factor == null ||
+           factor <= 0 ||
+@@ -648,10 +674,10 @@
+           ),
+         );
+       }
+-      barcodes.add({'code': code, 'quantityFactor': factor});
++      barcodes.add({'code': barcode.code.trim(), 'quantityFactor': factor});
+     }
+     await widget.api.saveCard(_id, {
+-      for (final entry in _fields.entries) entry.key: entry.value.trim(),
++      for (final entry in _fields.entries) entry.key: entry.value.text.trim(),
+       'expectedVersion': widget.card?['version'] ?? 0,
+       'unit': _unit,
+       'requiresExpiry': _expiry,
+@@ -660,6 +686,105 @@
+     if (mounted) Navigator.pop(context, _id);
+   });
+ 
++  void _clearMatch() {
++    for (final entry in _filledFields.entries) {
++      final controller = _fields[entry.key]!;
++      if (controller.text == entry.value) controller.clear();
++    }
++    _filledFields.clear();
++    if (_filledUnit != null && !_unitEdited) _unit = 'piece';
++    if (_filledExpiry != null && !_expiryEdited) _expiry = false;
++    _filledUnit = null;
++    _filledExpiry = null;
++    _matchedCode = null;
++    _existingProductId = null;
++    _lookupMessage = null;
++  }
++
++  void _barcodeChanged() {
++    if (!_barcodes.any((entry) => entry.code.trim() == _matchedCode)) {
++      _clearMatch();
++    }
++  }
++
++  void _fillProduct(String code, Json card, {required bool existing}) {
++    _clearMatch();
++    _matchedCode = code;
++    _existingProductId = existing ? card['productId'] as String : null;
++    for (final key in existing ? _productFields.keys : const ['name', 'category', 'brand']) {
++      final value = card[key];
++      if (value is String && value.isNotEmpty && _fields[key]!.text.trim().isEmpty) {
++        _fields[key]!.text = value;
++        _filledFields[key] = value;
++      }
++    }
++    final unit = card['unit'];
++    if (!_unitEdited && (unit == 'piece' || unit == 'kg')) {
++      _unit = _filledUnit = unit as String;
++    }
++    if (!_expiryEdited && card['requiresExpiry'] is bool) {
++      _expiry = card['requiresExpiry'] as bool;
++      _filledExpiry = _expiry;
++    }
++    _lookupMessage = existing
++        ? _tr(context, 'Товар уже есть в каталоге магазина.', 'Tovar do‘kon katalogida bor.')
++        : _tr(context, 'Данные из общего каталога. Проверьте их перед сохранением.',
++            'Umumiy katalogdagi ma’lumotlarni saqlashdan oldin tekshiring.');
++  }
++
++  Future<void> _fillFromSharedCatalog(String code) async {
++    final Json? card;
++    try {
++      card = await widget.api.pos.sharedProduct(code, desk: Desk.admin);
++    } on ApiFailure catch (failure) {
++      if (failure.code != 'shared_product_lookup_unavailable') rethrow;
++      if (!mounted) return;
++      _clearMatch();
++      _matchedCode = code;
++      _lookupMessage = _tr(context,
++        'Общий каталог недоступен. Заполните карточку вручную.',
++        'Umumiy katalog ishlamayapti. Kartochkani qo‘lda to‘ldiring.',
++      );
++      return;
++    }
++    if (!mounted) return;
++    if (card != null) {
++      _fillProduct(code, card, existing: false);
++      return;
++    }
++    _clearMatch();
++    _matchedCode = code;
++    _lookupMessage = _tr(context,
++      'Штрихкод не найден. Заполните карточку вручную.',
++      'Shtrixkod topilmadi. Kartochkani qo‘lda to‘ldiring.',
++    );
++  }
++
++  Future<void> _lookup(String raw) async {
++    if (widget.card != null || busy) return;
++    FocusScope.of(context).unfocus();
++    final code = raw.trim();
++    await task(() async {
++      if (!RegExp(r'^\d{1,48}$').hasMatch(code)) {
++        throw FormatException(_tr(context,
++          'Нужен числовой штрихкод товара.', 'Tovarning raqamli shtrixkodini kiriting.',
++        ));
++      }
++      final card = await widget.api.existingByBarcode(code);
++      if (!mounted) return;
++      if (card == null) {
++        await _fillFromSharedCatalog(code);
++      } else {
++        _fillProduct(code, card, existing: true);
++      }
++    });
++    if (mounted && _scroll.hasClients && (failed || _lookupMessage != null)) {
++      unawaited(_scroll.animateTo(
++        0, duration: const Duration(milliseconds: 180), curve: Curves.easeOut,
++      ));
++    }
++  }
++
+   Future<void> _scan() async {
+     final code = await scanCode(context);
+     if (!mounted || code == null) return;
+@@ -673,6 +798,7 @@
+       return;
+     }
+     setState(() {
++      if (_barcodes.any((entry) => entry.code.trim() == code)) return;
+       final empty = _barcodes
+           .where((entry) => entry.code.trim().isEmpty)
+           .firstOrNull;
+@@ -682,17 +808,17 @@
+         _barcodes[_barcodes.indexOf(empty)] = _BarcodeDraft(code, empty.factor);
+       }
+     });
++    await _lookup(code);
+   }
+ 
+   Widget _field(String key) {
+     final field = _productFields[key]!;
+     return TextFormField(
+       key: ValueKey(key),
+-      initialValue: _fields[key],
++      controller: _fields[key],
+       enabled: !busy,
+       maxLength: field.limit,
+       textInputAction: TextInputAction.next,
+-      onChanged: (value) => _fields[key] = value,
+       decoration: InputDecoration(
+         labelText: _tr(context, field.russian, field.uzbek),
+         counterText: '',
+@@ -714,13 +840,26 @@
+                 enabled: !busy,
+                 maxLength: 48,
+                 keyboardType: TextInputType.number,
++                textInputAction: widget.card == null ? TextInputAction.search : TextInputAction.next,
++                onFieldSubmitted: widget.card == null ? _lookup : null,
+                 decoration: InputDecoration(
+                   labelText: index == 0
+                       ? _tr(context, 'Основной штрихкод', 'Asosiy shtrixkod')
+                       : _tr(context, 'Дополнительный штрихкод', 'Qo‘shimcha shtrixkod'),
+                   counterText: '',
++                  suffixIcon: widget.card == null
++                      ? IconButton(
++                          tooltip: _tr(context, 'Найти по штрихкоду', 'Shtrixkod bo‘yicha qidirish'),
++                          onPressed: busy || barcode.code.trim().isEmpty
++                              ? null : () => _lookup(barcode.code),
++                          icon: const Icon(Icons.search),
++                        )
++                      : null,
+                 ),
+-                onChanged: (value) => barcode.code = value,
++                onChanged: (value) => setState(() {
++                  barcode.code = value;
++                  _barcodeChanged();
++                }),
+               ),
+             ),
+             const SizedBox(width: 4),
+@@ -728,7 +867,10 @@
+               tooltip: _tr(context, 'Удалить код', 'Kodni o‘chirish'),
+               onPressed: busy
+                   ? null
+-                  : () => setState(() => _barcodes.remove(barcode)),
++                  : () => setState(() {
++                      _barcodes.remove(barcode);
++                      _barcodeChanged();
++                    }),
+               icon: const Icon(Icons.delete_outline),
+             ),
+           ],
+@@ -756,8 +898,14 @@
+     final saveButton = SizedBox(
+       width: double.infinity,
+       child: FilledButton(
+-        onPressed: busy ? null : _submit,
+-        child: const _UiText('Сохранить карточку', 'Kartochkani saqlash'),
++        onPressed: busy
++            ? null
++            : _existingProductId == null
++            ? _submit
++            : () => Navigator.pop(context, _existingProductId),
++        child: _existingProductId == null
++            ? const _UiText('Сохранить карточку', 'Kartochkani saqlash')
++            : const _UiText('Открыть карточку', 'Kartochkani ochish'),
+       ),
+     );
+     return PopScope(
+@@ -779,6 +927,8 @@
+               if (busy) const LinearProgressIndicator(),
+               if (status case final message?)
+                 Semantics(liveRegion: true, child: StatusBox(message, error: failed)),
++              if (_lookupMessage case final message?)
++                Semantics(liveRegion: true, child: StatusBox(message, error: false)),
+               Section(
+                 child: Column(
+                   crossAxisAlignment: CrossAxisAlignment.stretch,
+@@ -788,6 +938,7 @@
+                     _field('name'),
+                     const SizedBox(height: 12),
+                     DropdownButtonFormField<String>(
++                      key: ValueKey(_unit),
+                       initialValue: _unit,
+                       decoration: InputDecoration(
+                         labelText: _tr(context, 'Единица учёта', 'Hisob birligi'),
+@@ -798,7 +949,10 @@
+                       ],
+                       onChanged: busy || widget.card != null
+                           ? null
+-                          : (value) => setState(() => _unit = value!),
++                          : (value) => setState(() {
++                              _unit = value!;
++                              _unitEdited = true;
++                            }),
+                     ),
+                   ],
+                 ),
+@@ -856,7 +1010,10 @@
+                         'Требовать срок годности при приёмке',
+                         'Qabulda yaroqlilik muddatini talab qilish',
+                       ),
+-                      onChanged: busy ? null : (value) => setState(() => _expiry = value),
++                      onChanged: busy ? null : (value) => setState(() {
++                        _expiry = value;
++                        _expiryEdited = true;
++                      }),
+                     ),
+                   ],
+                 ),
+--- a/apps/mobile-flutter/lib/catalog_api.dart
++++ b/apps/mobile-flutter/lib/catalog_api.dart
+@@ -36,6 +36,31 @@
+     return rows;
+   }
+ 
++  Future<Json?> existingByBarcode(String code) async {
++    const pageSize = 25;
++    for (var offset = 0; offset <= 10000; offset += pageSize) {
++      final rows = await search(code, offset, admin: true, includeArchived: true);
++      for (final row in rows) {
++        final id = row['productId'];
++        if (id is! String) throw ApiFailure(0, 'invalid_server_response');
++        final Json card;
++        try {
++          card = await product(id);
++        } on ApiFailure catch (failure) {
++          if (failure.code != 'product_not_found') rethrow;
++          continue;
++        }
++        final barcodes = card['barcodes'];
++        if (barcodes is! List) throw ApiFailure(0, 'invalid_server_response');
++        if (barcodes.any((entry) => entry is Json && entry['code'] == code)) {
++          return card;
++        }
++      }
++      if (rows.length < pageSize) return null;
++    }
++    throw ApiFailure(0, 'invalid_server_response');
++  }
++
+   Future<Json> product(String id, {bool admin = true}) async {
+     final data = await pos.api.request(
+       'GET',
+--- a/apps/mobile-flutter/lib/main.dart
++++ b/apps/mobile-flutter/lib/main.dart
+@@ -936,6 +936,100 @@
+   );
+ }
+ 
++class _RegisterBindingDialog extends StatefulWidget {
++  const _RegisterBindingDialog();
++
++  @override
++  State<_RegisterBindingDialog> createState() => _RegisterBindingDialogState();
++}
++
++class _RegisterBindingDialogState extends State<_RegisterBindingDialog> {
++  final _key = TextEditingController();
++  final _form = GlobalKey<FormState>();
++  String? _pasteError;
++
++  @override
++  void dispose() {
++    _key.dispose();
++    super.dispose();
++  }
++
++  Future<void> _paste() async {
++    final data = await Clipboard.getData(Clipboard.kTextPlain);
++    if (!mounted) return;
++    final value = data?.text?.trim();
++    if (value == null || value.isEmpty) {
++      setState(() => _pasteError = _tr(context,
++        'Сначала скопируйте ключ кассы.', 'Avval kassa kalitini nusxalang.',
++      ));
++      return;
++    }
++    _key.text = value;
++    setState(() => _pasteError = null);
++  }
++
++  void _connect() {
++    if (_form.currentState!.validate()) {
++      Navigator.pop(context, _key.text.trim());
++    }
++  }
++
++  @override
++  Widget build(BuildContext context) => AlertDialog(
++    scrollable: true,
++    title: const _UiText('Подключить кассу', 'Kassani ulash'),
++    content: Form(
++      key: _form,
++      child: Column(
++        mainAxisSize: MainAxisSize.min,
++        crossAxisAlignment: CrossAxisAlignment.stretch,
++        children: [
++          const _UiText(
++            'Попросите администратора скопировать ключ этой кассы. После подключения приложение сохранит его на этом телефоне.',
++            'Administratordan shu kassa kalitini nusxalashini so‘rang. Ulangach, ilova kalitni shu telefonda saqlaydi.',
++          ),
++          const SizedBox(height: 12),
++          TextFormField(
++            controller: _key,
++            obscureText: true,
++            enableSuggestions: false,
++            autocorrect: false,
++            decoration: InputDecoration(
++              labelText: _tr(context, 'Ключ кассы', 'Kassa kaliti'),
++              helperText: _pasteError,
++              helperMaxLines: 2,
++              errorMaxLines: 2,
++            ),
++            validator: (value) => RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(value?.trim() ?? '')
++                ? null
++                : _tr(context, 'Вставьте полный ключ кассы.', 'Kassa kalitini to‘liq kiriting.'),
++            onFieldSubmitted: (_) => _connect(),
++          ),
++          const SizedBox(height: 8),
++          Align(
++            alignment: AlignmentDirectional.centerStart,
++            child: TextButton.icon(
++              onPressed: _paste,
++              icon: const Icon(Icons.content_paste_outlined),
++              label: const _UiText('Вставить ключ', 'Kalitni qo‘yish'),
++            ),
++          ),
++        ],
++      ),
++    ),
++    actions: [
++      TextButton(
++        onPressed: () => Navigator.pop(context),
++        child: const _UiText('Отмена', 'Bekor qilish'),
++      ),
++      FilledButton(
++        onPressed: _connect,
++        child: const _UiText('Подтвердить', 'Tasdiqlash'),
++      ),
++    ],
++  );
++}
++
+ class CashierScreen extends StatefulWidget {
+   const CashierScreen(
+     this.pos, {
+@@ -1024,17 +1118,15 @@
+   }
+ 
+   Future<void> configure() => task(() async {
+-    final key = await inputValue(
+-      context,
+-      'Подключить кассу',
+-      'Ключ кассы',
+-      secret: true,
++    final key = await showDialog<String>(
++      context: context,
++      builder: (_) => const _RegisterBindingDialog(),
+     );
+-    if (key == null) return;
+-    ready = false;
++    if (!mounted || key == null) return;
+     await pos.api.bindRegister(key);
++    if (!mounted) return;
+     await reload();
+-    status = 'Касса подключена.';
++    if (mounted) status = _tr(context, 'Касса подключена.', 'Kassa ulandi.');
+   });
+ 
+   Future<void> changeShift({bool handover = false}) => task(() async {
+@@ -1712,7 +1804,7 @@
+             children: [
+               FilledButton(
+                 onPressed: busy ? null : configure,
+-                child: const _UiText('Ключ кассы', 'Kassa kaliti'),
++                child: const _UiText('Подключить кассу', 'Kassani ulash'),
+               ),
+               OutlinedButton(
+                 onPressed: busy ? null : () => task(reload),
+--- a/apps/mobile-flutter/lib/receiving_catalog_api.dart
++++ b/apps/mobile-flutter/lib/receiving_catalog_api.dart
+@@ -5,12 +5,12 @@
+   String get _receivingProductKey =>
+       api.localKey(Desk.receiving, 'create-product');
+ 
+-  Future<Json?> sharedProduct(String barcode) async {
++  Future<Json?> sharedProduct(String barcode, {Desk desk = Desk.receiving}) async {
+     try {
+       final data = await api.request(
+         'GET',
+         '$_receivingCatalog/shared-barcodes/${Uri.encodeComponent(barcode)}',
+-        desk: Desk.receiving,
++        desk: desk,
+       );
+       if (data is! Json ||
+           data['barcode'] != barcode ||
+--- a/apps/mobile-flutter/lib/workplaces.dart
++++ b/apps/mobile-flutter/lib/workplaces.dart
+@@ -183,7 +183,6 @@
+   Set<Desk>? _roles;
+   List<AssignedRegister>? _ownerRegisters;
+   bool _useStore = false;
+-  bool _askingKey = false;
+ 
+   @override
+   void initState() {
+@@ -276,22 +275,6 @@
+             failure.code != 'register_key_required') {
+           rethrow;
+         }
+-        if (!mounted) return;
+-        setState(() => _askingKey = true);
+-        final String? key;
+-        try {
+-          key = await inputValue(
+-            context,
+-            'Подключить кассу',
+-            'Ключ кассы',
+-            secret: true,
+-            hint: register.name,
+-          );
+-        } finally {
+-          if (mounted) setState(() => _askingKey = false);
+-        }
+-        if (key == null || !mounted) return;
+-        await selected.api.bindRegister(key);
+       }
+       await selected.migrateCentralPilotStorage();
+       if (!mounted) return;
+@@ -314,7 +297,7 @@
+       child: _WorkplacePage(
+         title: Text(widget.store.name, overflow: TextOverflow.ellipsis),
+         children: [
+-          if (busy && !_askingKey) const LinearProgressIndicator(),
++          if (busy) const LinearProgressIndicator(),
+           if (status != null) StatusBox(status!, error: failed),
+           if (roles == null && !busy)
+             OutlinedButton(
+--- a/apps/mobile-flutter/pubspec.yaml
++++ b/apps/mobile-flutter/pubspec.yaml
+@@ -1,7 +1,7 @@
+ name: kassa_mobile
+ description: Android POS pilot for Kassa.
+ publish_to: none
+-version: 0.2.86+2106
++version: 0.2.87+2107
+ environment:
+   sdk: ">=3.10.0 <4.0.0"
+ dependencies:
+--- a/apps/mobile-flutter/test/form_layout_test.dart
++++ b/apps/mobile-flutter/test/form_layout_test.dart
+@@ -218,4 +218,105 @@
+     expect(find.text('Yangi xarajat'), findsOneWidget);
+     expect(tester.takeException(), isNull);
+   });
++
++  testWidgets('new product finds an exact store barcode and falls back to shared catalog', (tester) async {
++    FlutterSecureStorage.setMockInitialValues({});
++    const storage = FlutterSecureStorage();
++    const store = '/v1/stores/$testStore';
++    const path = '$store/catalog/products';
++    const localCode = '4780013611498';
++    const sharedCode = '4780000000180';
++    const localId = '5628ec9c-b581-4c27-b832-7738bbddffb1';
++    const skuMatchId = 'b7512aa1-e372-46ec-b6d4-f9cf997ff557';
++    const local = {
++      'productId': localId, 'name': 'Товар в каталоге магазина',
++      'category': 'Напитки', 'brand': 'Марка магазина', 'active': false,
++      'unit': 'piece', 'requiresExpiry': true, 'version': 1,
++      'barcodes': [
++        {'code': '4780013611499', 'quantityFactor': 1},
++        {'code': localCode, 'quantityFactor': 1},
++      ],
++    };
++    final queries = <String>[];
++    var writes = 0;
++    http.Response response(Object data) => http.Response.bytes(
++      utf8.encode(jsonEncode(data)), 200,
++      headers: {'content-type': 'application/json; charset=utf-8'},
++    );
++    final pos = Pos(
++      storage,
++      login: _LayoutLogin(storage),
++      client: MockClient((request) async {
++        if (request.method == 'PUT') writes++;
++        switch (request.url.path) {
++          case '/v1/me/roles':
++            return response({'storeId': testStore, 'roles': ['admin']});
++          case '$store/receiving/catalog/proposals':
++            return response([]);
++          case path:
++            final query = request.url.queryParameters['q'];
++            if (query == null) return response([]);
++            queries.add(query);
++            expect(request.url.queryParameters['includeArchived'], 'true');
++            return response(query == localCode ? [
++              {'productId': skuMatchId, 'sku': localCode, 'barcode': '123'},
++              {'productId': localId, 'barcode': '4780013611499'},
++            ] : []);
++          case '$path/$skuMatchId':
++            return response({
++              'productId': skuMatchId, 'barcodes': [{'code': '123'}],
++            });
++          case '$path/$localId':
++            return response(local);
++          case '$store/receiving/catalog/shared-barcodes/$sharedCode':
++            expect(request.headers['X-Active-Role'], 'admin');
++            return response({
++              'barcode': sharedCode, 'name': 'Товар из общей базы', 'unit': 'kg',
++              'brand': 'Общий бренд', 'category': 'Бакалея', 'requiresExpiry': false,
++              'sku': 'Чужой артикул', 'unitPrice': 3000,
++            });
++          default:
++            fail('Unexpected request ${request.method} ${request.url}');
++        }
++      }),
++    );
++    addTearDown(pos.api.close);
++
++    Future<void> tap(Finder finder) async {
++      await tester.ensureVisible(finder);
++      await tester.pumpAndSettle();
++      await tester.tap(finder);
++      await tester.pumpAndSettle();
++    }
++
++    final barcode = find.widgetWithText(TextFormField, 'Основной штрихкод');
++    final name = find.widgetWithText(TextFormField, 'Название');
++    await tester.pumpWidget(KassaApp(pos: pos, debugPilot: true));
++    await tester.pumpAndSettle();
++    await tap(find.text('Войти в аккаунт'));
++    await tap(find.widgetWithText(NavigationDestination, 'Товары'));
++    await tap(find.text('Каталог товаров'));
++    await tap(find.byTooltip('Добавить товар'));
++    await tap(find.text('Ввести код'));
++    await tester.enterText(barcode, sharedCode);
++    await tap(find.byTooltip('Найти по штрихкоду'));
++    expect(tester.widget<TextFormField>(name).controller!.text, 'Товар из общей базы');
++    expect(find.text('Килограмм'), findsOneWidget);
++
++    await tester.ensureVisible(barcode);
++    await tester.enterText(barcode, localCode);
++    await tester.pumpAndSettle();
++    expect(tester.widget<TextFormField>(name).controller!.text, isEmpty);
++    await tester.testTextInput.receiveAction(TextInputAction.search);
++    await tester.pumpAndSettle();
++    expect(tester.widget<TextFormField>(name).controller!.text, local['name']);
++    expect(find.text('Товар уже есть в каталоге магазина.'), findsOneWidget);
++    expect(find.text('Сохранить карточку'), findsNothing);
++    await tap(find.text('Открыть карточку'));
++    expect(find.text('Карточка товара'), findsOneWidget);
++    expect(find.text('В архиве'), findsOneWidget);
++    expect(queries, [sharedCode, localCode]);
++    expect(writes, 0);
++    expect(tester.takeException(), isNull);
++  });
+ }
+--- a/apps/mobile-flutter/test/workplace_workflow_test.dart
++++ b/apps/mobile-flutter/test/workplace_workflow_test.dart
+@@ -2,6 +2,7 @@
+ import 'dart:convert';
+ 
+ import 'package:flutter/material.dart';
++import 'package:flutter/services.dart';
+ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+ import 'package:flutter_test/flutter_test.dart';
+ import 'package:http/http.dart' as http;
+@@ -95,8 +96,19 @@
+         await tester.pumpAndSettle();
+       }
+ 
++      String? clipboardKey;
++      final messenger = tester.binding.defaultBinaryMessenger;
++      messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
++        if (call.method == 'Clipboard.getData') return {'text': clipboardKey};
++        return null;
++      });
++      addTearDown(() => messenger.setMockMethodCallHandler(SystemChannels.platform, null));
++
+       Future<void> enterKey(String key) async {
+-        await tester.enterText(find.byType(TextFormField), key);
++        expect(find.byType(AlertDialog), findsNothing);
++        await tap(find.widgetWithText(FilledButton, 'Подключить кассу'));
++        clipboardKey = key;
++        await tap(find.text('Вставить ключ'));
+         await tap(find.text('Подтвердить'));
+       }
+ 
+@@ -114,7 +126,6 @@
+       expect(find.textContaining('Нет доступа к кассе'), findsOneWidget);
+       expect(await _storage.readAll(), isEmpty);
+ 
+-      await tap(find.text('Касса А'));
+       await enterKey(_validKey);
+       expect(find.text('Смена закрыта'), findsOneWidget);
+       expect(find.text('Касса А'), findsOneWidget);
+@@ -227,6 +238,8 @@
+       expect(find.text('Отключённая касса'), findsNothing);
+       expect(find.text('Подключить кассу по UUID'), findsNothing);
+       await tap(find.text('Моя новая касса'));
++      expect(find.byType(AlertDialog), findsNothing);
++      await tap(find.widgetWithText(FilledButton, 'Подключить кассу'));
+       await tester.enterText(find.byType(TextFormField), _validKey);
+       await tap(find.text('Подтвердить'));
+       expect(find.text('Смена закрыта'), findsOneWidget);
