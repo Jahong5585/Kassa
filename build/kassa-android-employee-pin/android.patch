@@ -1,0 +1,1600 @@
+--- a/apps/mobile-flutter/lib/language.dart
++++ b/apps/mobile-flutter/lib/language.dart
+@@ -51,6 +51,11 @@
+     'staff_access_denied' => 'Bu bo‘lim uchun ruxsat yo‘q.',
+     'register_access_denied' => 'Kassaga ruxsat yo‘q. Hisob va kalitni tekshiring.',
+     'register_key_required' => 'Kassa kalitini kiriting.',
++    'operator_credentials_invalid' => 'Xodim kodini tekshiring.',
++    'operator_login_rate_limited' => 'Urinishlar soni oshib ketdi. Keyinroq qayta kiring.',
++    'operator_terminal_required' => 'Egasi kassani shu telefonda ulashi kerak.',
++    'operator_login_unavailable' => 'Xodimlar ro‘yxati hozircha mavjud emas. Yana urinib ko‘ring.',
++    'owner_account_mismatch' => 'Egasining ayni shu hisobi bilan kirishni tasdiqlang.',
+     'shift_route_unavailable' => 'Server smenani tekshira olmadi. Administratorga murojaat qiling.',
+     'open_shift_conflict' => 'Administratordan ushbu kassadagi ochiq smenani va hisobingizning boshqa kassalardagi smenalarini tekshirishni so‘rang.',
+     'store_not_found' => 'Do‘kon topilmadi yoki unga ruxsat yo‘q.',
+--- a/apps/mobile-flutter/lib/main.dart
++++ b/apps/mobile-flutter/lib/main.dart
+@@ -1,4 +1,5 @@
+ import 'dart:async';
++import 'dart:math' show Random;
+ import 'dart:convert' show HtmlEscape, JsonEncoder, jsonDecode, jsonEncode, utf8;
+ 
+ import 'package:flutter/foundation.dart' show kDebugMode;
+@@ -55,6 +56,8 @@
+ part 'workplace_ui.dart';
+ part 'workspace_shell.dart';
+ part 'store_management.dart';
++part 'operator_login.dart';
++part 'operator_management.dart';
+ part 'platform.dart';
+ part 'platform_store_commands.dart';
+ part 'store_exceptions.dart';
+@@ -120,8 +123,10 @@
+   _DeskTab? get _currentTab =>
+       _activeTab ?? (desk == null ? null : _tabsFor(desk!).first);
+ 
++  bool get _simpleCashier => desk == Desk.cashier && pos.api.operatorSession != null;
++
+   bool get _hasWorkspaceTabs =>
+-      desk != null &&
++      !_simpleCashier && desk != null &&
+       (desk != Desk.cashier || pos.demo || pos.api.location.registerId != null);
+   Set<Desk> allowed = {};
+   bool signedIn = false;
+@@ -287,10 +292,14 @@
+     if (selected != null) _activateWorkplace(selected);
+   });
+ 
+-  Future<void> openWorkplaces({bool automaticallyOpenOwner = false}) async {
++  Future<void> openWorkplaces({
++    bool automaticallyOpenOwner = false,
++    String? preferredStore,
++  }) async {
+     final selected = await navigator.currentState!.push<_SelectedWorkplace>(
+       MaterialPageRoute(builder: (_) => _WorkplacePicker(
+         _session, automaticallyOpenOwner: automaticallyOpenOwner,
++        preferredStore: preferredStore,
+       )),
+     );
+     if (selected != null) _activateWorkplace(selected);
+@@ -301,12 +310,24 @@
+       selected.pos.api.retireWorkplace();
+       return;
+     }
++    if (selected.pos.api.operatorSession != null) {
++      selected.pos.api.onOperatorSessionExpired = () {
++        WidgetsBinding.instance.addPostFrameCallback((_) {
++          if (mounted && identical(_selected?.pos, selected.pos)) {
++            unawaited(_switchOperator(expired: true));
++          }
++        });
++      };
++    }
+     setState(() {
+       _selected?.pos.api.retireWorkplace();
+       _selected = selected;
+       _activeTab = null;
+       allowed = selected.roles;
+-      desk = selected.register != null
++      desk = (selected.pos.api.operatorSession?.operator.isOwner == true &&
++              allowed.contains(Desk.admin))
++          ? Desk.admin
++          : selected.register != null
+           ? Desk.cashier
+           : allowed.contains(Desk.admin)
+           ? Desk.admin
+@@ -379,7 +400,9 @@
+       ),
+       items: [
+         for (final role in Desk.values)
+-          if (allowed.contains(role))
++          if (allowed.contains(role) &&
++              (role != Desk.cashier || pos.api.operatorSession == null ||
++               pos.api.location.registerId != null))
+             CheckedPopupMenuItem<Object>(
+               value: role,
+               checked: desk == role,
+@@ -400,6 +423,30 @@
+     }
+   }
+ 
++  Future<void> _switchOperator({bool expired = false}) async {
++    final selected = _selected;
++    if (selected == null || selected.pos.api.operatorSession == null) return;
++    final previousRole = desk!;
++    setState(() {
++      selected.pos.api.retireWorkplace();
++      _selected = null;
++      desk = null;
++      allowed = {};
++      error = null;
++    });
++    navigator.currentState?.popUntil((route) => route.isFirst);
++    if (!expired) {
++      try {
++        await selected.pos.api.closeOperatorSession(previousRole);
++      } on Exception {
++        // Local access ends immediately. The remote session also expires.
++      }
++    }
++    if (mounted && signedIn && _selected == null) {
++      await openWorkplaces(automaticallyOpenOwner: true, preferredStore: selected.store.id);
++    }
++  }
++
+   void clearSession() {
+     _selected?.pos.api.retireWorkplace();
+     _selected = null;
+@@ -413,12 +460,21 @@
+ 
+   Future<void> leave() => run(() async {
+     final shouldRevoke = !_session.demo;
++    final previous = _selected;
++    final previousRole = desk;
+     setState(() {
+       clearSession();
+       _restorePending = false;
+     });
+     navigator.currentState?.popUntil((route) => route.isFirst);
+     if (!shouldRevoke) return;
++    if (previous?.pos.api.operatorSession != null && previousRole != null) {
++      try {
++        await previous!.pos.api.closeOperatorSession(previousRole);
++      } on Exception {
++        // The local session is gone even when the server cannot be reached.
++      }
++    }
+     final bool revoked;
+     try {
+       revoked = await _session.login.signOutAndRevoke();
+@@ -515,9 +571,12 @@
+         children: [
+           const _UiStatus('Для работы кассира выберите и подключите кассу.', 'Kassir bo‘lib ishlash uchun kassani tanlang va ulang.'),
+           FilledButton.icon(
+-            onPressed: busy ? null : () => run(openWorkplaces),
++            onPressed: busy ? null : pos.api.operatorSession != null
++                ? _switchOperator : () => run(openWorkplaces),
+             icon: const Icon(Icons.point_of_sale_outlined),
+-            label: const _UiText('Выбрать кассу', 'Kassani tanlash'),
++            label: pos.api.operatorSession != null
++                ? const _UiText('Сменить сотрудника', 'Xodimni almashtirish')
++                : const _UiText('Выбрать кассу', 'Kassani tanlash'),
+           ),
+         ],
+       );
+@@ -630,7 +689,13 @@
+         ),
+       ),
+       _WorkspaceActions([
+-        if (_selected != null)
++        if (pos.api.operatorSession != null)
++          _WorkspaceAction(
++            icon: Icons.switch_account_outlined,
++            title: const _UiText('Сменить сотрудника', 'Xodimni almashtirish'),
++            onTap: busy ? null : _switchOperator,
++          )
++        else if (_selected != null)
+           _WorkspaceAction(
+             icon: Icons.storefront_outlined,
+             title: const _UiText('Магазины и кассы', 'Do‘konlar va kassalar'),
+@@ -645,7 +710,8 @@
+             title: const _UiText('Кабинет разработчика', 'Dasturchi kabineti'),
+             onTap: busy ? null : _openPlatform,
+           ),
+-        _WorkspaceAction(
++        if (pos.api.operatorSession == null || pos.api.storeOwner)
++          _WorkspaceAction(
+           icon: Icons.logout,
+           title: pos.demo
+               ? const _UiText('Завершить обучение', 'O‘quv rejimidan chiqish')
+@@ -697,7 +763,7 @@
+         builder: (context) => Scaffold(
+           appBar: AppBar(
+             title: Text(
+-              _selected?.store.name ?? _tr(context, 'Касса', 'Kassa'),
++              pos.api.operatorSession?.operator.name ?? _selected?.store.name ?? _tr(context, 'Касса', 'Kassa'),
+               overflow: TextOverflow.ellipsis,
+             ),
+             actions: [
+@@ -708,7 +774,13 @@
+                   onPressed: busy ? null : () => _welcomeSettings(context),
+                   icon: const Icon(Icons.more_vert),
+                 ),
+-              if (_selected != null)
++              if (pos.api.operatorSession != null)
++                IconButton(
++                  tooltip: _tr(context, 'Сменить сотрудника', 'Xodimni almashtirish'),
++                  onPressed: busy ? null : _switchOperator,
++                  icon: const Icon(Icons.switch_account_outlined),
++                )
++              else if (_selected != null)
+                 IconButton(
+                   tooltip: _tr(context, 'Магазины и кассы', 'Do‘konlar va kassalar'),
+                   onPressed: busy ? null : () => pos.api.platformWorkplace
+@@ -716,13 +788,13 @@
+                       : run(openWorkplaces),
+                   icon: const Icon(Icons.store_outlined),
+                 ),
+-              if (signedIn && !_hasWorkspaceTabs)
++              if (signedIn && !_hasWorkspaceTabs && pos.api.operatorSession == null)
+                 IconButton(
+                   tooltip: _tr(context, 'Выйти', 'Chiqish'),
+                   onPressed: busy ? null : leave,
+                   icon: const Icon(Icons.logout),
+                 ),
+-              if (desk case final active?)
++              if (desk case final active? when allowed.length > 1 || pos.api.operatorSession == null)
+                 TextButton(
+                   key: roleButton,
+                   style: TextButton.styleFrom(
+@@ -899,6 +971,8 @@
+   bool numeric = false,
+   String? initial,
+   String? hint,
++  int? maxLength,
++  bool trim = true,
+ }) async {
+   var value = initial ?? '';
+   return showDialog<String>(
+@@ -907,6 +981,7 @@
+       title: Text(title),
+       content: TextFormField(
+         initialValue: initial,
++        maxLength: maxLength,
+         autofocus: true,
+         obscureText: secret,
+         enableSuggestions: !secret,
+@@ -916,11 +991,12 @@
+             : TextInputType.text,
+         decoration: InputDecoration(
+           labelText: label,
++          counterText: maxLength == null ? null : '',
+           helperText: hint,
+           helperMaxLines: 3,
+         ),
+         onChanged: (text) => value = text,
+-        onFieldSubmitted: (_) => Navigator.pop(context, value.trim()),
++        onFieldSubmitted: (_) => Navigator.pop(context, trim ? value.trim() : value),
+       ),
+       actions: [
+         TextButton(
+@@ -928,7 +1004,7 @@
+           child: const _UiText('Отмена', 'Bekor qilish'),
+         ),
+         FilledButton(
+-          onPressed: () => Navigator.pop(context, value.trim()),
++          onPressed: () => Navigator.pop(context, trim ? value.trim() : value),
+           child: const _UiText('Подтвердить', 'Tasdiqlash'),
+         ),
+       ],
+@@ -1805,10 +1881,11 @@
+             spacing: 8,
+             runSpacing: 8,
+             children: [
+-              FilledButton(
+-                onPressed: busy ? null : configure,
+-                child: const _UiText('Подключить кассу', 'Kassani ulash'),
+-              ),
++              if (pos.api.operatorSession == null)
++                FilledButton(
++                  onPressed: busy ? null : configure,
++                  child: const _UiText('Подключить кассу', 'Kassani ulash'),
++                ),
+               OutlinedButton(
+                 onPressed: busy ? null : () => task(reload),
+                 child: const _UiText('Проверить доступ', 'Ruxsatni tekshirish'),
+@@ -1816,7 +1893,7 @@
+             ],
+           ),
+         ),
+-      if (!pos.demo && !ready)
++      if (!pos.demo && !ready && pos.api.operatorSession == null)
+         OutlinedButton.icon(
+           onPressed: busy ? null : () => Navigator.of(context).push<void>(
+             MaterialPageRoute(builder: (_) => _CashierReferenceScreen(
+@@ -1921,7 +1998,7 @@
+                               : () => changeShift(handover: true),
+                           child: const _UiText('Закрыть и передать смену', 'Smenani yopish va topshirish'),
+                         ),
+-                      if (!pos.demo)
++                      if (!pos.demo && pos.api.operatorSession == null)
+                         OutlinedButton(
+                           onPressed: busy
+                               ? null
+@@ -2697,8 +2774,11 @@
+     if (api.supportsOperation('GET', '${api.store}/profile'))
+       _action(Icons.storefront_outlined, 'Карточка магазина', 'Do‘kon kartochkasi',
+         (_) => _StoreProfileScreen(api)),
+-    _action(Icons.manage_accounts_outlined, 'Сотрудники и кассы', 'Xodimlar va kassalar',
+-      (_) => _StoreManagementScreen(widget.pos)),
++    if (api.operatorSession == null || api.storeOwner)
++      _action(Icons.manage_accounts_outlined, 'Сотрудники и кассы', 'Xodimlar va kassalar',
++        (_) => api.operatorSession == null
++            ? _StoreManagementScreen(widget.pos)
++            : _OperatorManagementScreen(widget.pos)),
+     _action(Icons.groups_outlined, 'Покупатели', 'Xaridorlar',
+       (_) => _CustomersScreen(api, widget.pos.storage)),
+     _action(Icons.bar_chart_outlined, 'Отчёты магазина', 'Do‘kon hisobotlari',
+--- /dev/null
++++ b/apps/mobile-flutter/lib/operator_api.dart
+@@ -0,0 +1,267 @@
++part of 'pos.dart';
++
++class StoreOperator {
++  const StoreOperator(this.id, this.name, this.roles, {required this.isOwner});
++
++  final String id;
++  final String name;
++  final Set<Desk> roles;
++  final bool isOwner;
++
++  static StoreOperator _fromJson(dynamic data) {
++    if (data is! Json ||
++        !_assignedId(data['operatorId']) ||
++        data['displayName'] is! String ||
++        (data['displayName'] as String).trim().isEmpty ||
++        data['isOwner'] is! bool ||
++        data['passwordRequired'] != (data['isOwner'] == false) ||
++        data['active'] != true) {
++      throw ApiFailure(0, 'invalid_server_response');
++    }
++    return StoreOperator(
++      data['operatorId'] as String,
++      data['displayName'] as String,
++      _operatorRoles(data['roles']),
++      isOwner: data['isOwner'] as bool,
++    );
++  }
++}
++
++class OperatorSession {
++  const OperatorSession._(this.operator, this.token);
++
++  final StoreOperator operator;
++  final String token;
++}
++
++Set<Desk> _operatorRoles(dynamic values) {
++  if (values is! List ||
++      values.isEmpty ||
++      values.any((role) => !Desk.values.any((desk) => desk.code == role)) ||
++      values.toSet().length != values.length) {
++    throw ApiFailure(0, 'invalid_server_response');
++  }
++  return Set.unmodifiable(Desk.values.where((desk) => values.contains(desk.code)));
++}
++
++extension OperatorAccess on ServerApi {
++  Future<List<StoreOperator>?> storeOperators() async {
++    final dynamic data;
++    try {
++      data = await request('GET', '$store/operators');
++    } on ApiFailure catch (failure) {
++      if (failure._routeUnavailable) return null;
++      rethrow;
++    }
++    if (data is! Json || data['storeId'] != storeId || data['items'] is! List) {
++      throw ApiFailure(0, 'invalid_server_response');
++    }
++    final seen = <String>{};
++    return [
++      for (final row in (data['items'] as List))
++        if (row is! Json || row['active'] != false)
++          _checkedOperator(row, seen),
++    ];
++  }
++
++  StoreOperator _checkedOperator(dynamic row, Set<String> seen) {
++    final operator = StoreOperator._fromJson(row);
++    if (!seen.add(operator.id)) throw ApiFailure(0, 'invalid_server_response');
++    return operator;
++  }
++
++  Future<OperatorSession> signInOperator(StoreOperator selection, String? code) async {
++    final deviceKey = 'kassa.operator.device.v1.${origin.origin}';
++    final savedId = await login._storage.read(key: deviceKey);
++    final deviceId = _assignedId(savedId) ? savedId! : newId();
++    if (savedId != deviceId) {
++      await login._storage.write(key: deviceKey, value: deviceId);
++    }
++    final data = await request(
++      'POST', '$store/operator-sessions',
++      body: {
++        'operatorId': selection.id,
++        'password': code,
++        'deviceId': deviceId,
++      },
++    );
++    if (data is! Json || data['storeId'] != storeId ||
++        !_assignedId(data['sessionId']) || !_assignedId(data['organizationId']) ||
++        data['operatorSessionToken'] is! String ||
++        !RegExp(r'^[a-zA-Z0-9_-]{32,200}$').hasMatch(data['operatorSessionToken'] as String)) {
++      throw ApiFailure(0, 'invalid_server_response');
++    }
++    final operator = StoreOperator._fromJson(data['operator']);
++    if (operator.id != selection.id || operator.isOwner != selection.isOwner) {
++      throw ApiFailure(0, 'invalid_server_response');
++    }
++    return OperatorSession._(operator, data['operatorSessionToken'] as String);
++  }
++
++  Future<void> closeOperatorSession(Desk role) async {
++    final opened = operatorSession;
++    if (opened == null) return;
++    final closing = ServerApi._forWorkplace(this, location, operatorSession: opened);
++    try {
++      await closing.request('DELETE', '/v1/operator-sessions/current',
++          desk: opened.operator.roles.contains(role) ? role : opened.operator.roles.first);
++    } on ApiFailure catch (failure) {
++      if (failure.status != 401 && failure.status != 403) rethrow;
++    } finally {
++      closing.retireWorkplace();
++    }
++  }
++
++  String _registerStorageKey(String id) {
++    _ensureWorkplace();
++    return KassaLocation(storeId, id, platformOrganizationId: location.platformOrganizationId)
++        .storageKey(origin.origin, login.subject, Desk.cashier, 'register-key');
++  }
++
++  Future<String?> savedRegisterKey(String id) =>
++      login._storage.read(key: _registerStorageKey(id));
++
++  String get _terminalKey => KassaLocation(storeId, null)
++      .storageKey(origin.origin, login.subject, Desk.admin, 'operator-terminal');
++
++  Future<AssignedRegister?> operatorTerminal() async {
++    final value = await login._storage.read(key: _terminalKey);
++    if (value == null) return null;
++    final data = jsonDecode(value);
++    if (data is! Json || !_assignedId(data['id']) || data['name'] is! String) {
++      throw ApiFailure(0, 'invalid_location');
++    }
++    final id = data['id'] as String;
++    final credential = await savedRegisterKey(id);
++    return credential != null && RegExp(r'^[a-fA-F0-9]{64}$').hasMatch(credential)
++        ? AssignedRegister(id, data['name'] as String)
++        : null;
++  }
++
++  Future<void> setOperatorTerminal(StoreRegister register, {String? issuedKey}) async {
++    if (!storeOwner || operatorSession?.operator.isOwner != true || !register.active) {
++      throw ApiFailure(403, 'owner_access_required');
++    }
++    if (issuedKey != null) {
++      Login._validateRegisterKey(issuedKey);
++      await login._storage.write(key: _registerStorageKey(register.id), value: issuedKey);
++    }
++    if (await savedRegisterKey(register.id) == null) {
++      throw ApiFailure(403, 'register_key_required');
++    }
++    _ensureWorkplace();
++    await login._storage.write(key: _terminalKey,
++        value: jsonEncode({'id': register.id, 'name': register.name}));
++  }
++
++  String get _lastOperatorStoreKey =>
++      'kassa.operator.last-store.v1.${origin.origin}.${login.subject}';
++
++  Future<String?> lastOperatorStore() => login._storage.read(key: _lastOperatorStoreKey);
++
++  Future<void> rememberOperatorStore() =>
++      login._storage.write(key: _lastOperatorStoreKey, value: storeId);
++}
++
++typedef LocalEmployee = ({String id, String name, Set<Desk> roles, bool active, int version});
++
++class OperatorManagementApi {
++  OperatorManagementApi(this.pos);
++  final Pos pos;
++  ServerApi get _api => pos.api;
++  String get _path => '${_api.store}/employees';
++
++  static LocalEmployee _employee(dynamic row) {
++    if (row is! Json || !_assignedId(row['employeeId']) ||
++        row['displayName'] is! String || row['active'] is! bool ||
++        row['version'] is! int || (row['version'] as int) < 1) {
++      throw ApiFailure(0, 'invalid_server_response');
++    }
++    return (id: row['employeeId'] as String, name: row['displayName'] as String,
++      active: row['active'] as bool, version: row['version'] as int,
++      roles: _operatorRoles(row['roles']));
++  }
++
++  Future<List<LocalEmployee>> employees() async {
++    final result = <LocalEmployee>[];
++    int? offset = 0;
++    while (offset != null) {
++      final data = await _api.request('GET', _path, desk: Desk.admin,
++          query: {'offset': '$offset', 'limit': '50'});
++      if (data is! Json || data['items'] is! List ||
++          (data['nextOffset'] != null &&
++           (data['nextOffset'] is! int || (data['nextOffset'] as int) <= offset))) {
++        throw ApiFailure(0, 'invalid_server_response');
++      }
++      result.addAll((data['items'] as List).map(_employee));
++      offset = data['nextOffset'] as int?;
++    }
++    return result;
++  }
++
++  Future<LocalEmployee> createEmployee(String id, String first, String last,
++      Set<Desk> roles, String code) async {
++    final row = _employee(await _api.request('POST', _path, desk: Desk.admin,
++      extraHeaders: {'Idempotency-Key': id},
++      body: {
++        'employeeId': id,
++        'firstName': first,
++        'lastName': last,
++        'roles': roles.map((desk) => desk.code).toList(),
++        'password': code,
++        'reason': 'Создание сотрудника в Android',
++      },
++    ));
++    if (row.id != id || !row.active || !setEquals(row.roles, roles)) {
++      throw ApiFailure(0, 'invalid_server_response');
++    }
++    return row;
++  }
++
++  Future<LocalEmployee> editRoles(LocalEmployee row, Set<Desk> roles) async {
++    final updated = _employee(await _api.request('PUT', '$_path/${row.id}/roles',
++      desk: Desk.admin,
++      body: {
++        'expectedVersion': row.version,
++        'roles': roles.map((desk) => desk.code).toList(),
++        'reason': 'Назначение ролей в Android',
++      },
++    ));
++    if (updated.id != row.id || updated.version != row.version + 1 ||
++        !setEquals(updated.roles, roles)) {
++      throw ApiFailure(0, 'invalid_server_response');
++    }
++    return updated;
++  }
++
++  Future<LocalEmployee> resetCode(LocalEmployee row, String code) async {
++    final updated = _employee(await _api.request('POST', '$_path/${row.id}/reset-password',
++      desk: Desk.admin,
++      body: {
++        'expectedVersion': row.version,
++        'newPassword': code,
++        'reason': 'Смена кода сотрудника в Android',
++      },
++    ));
++    if (updated.id != row.id || updated.version != row.version + 1) {
++      throw ApiFailure(0, 'invalid_server_response');
++    }
++    return updated;
++  }
++
++  Future<StoreRegister> assignCashiers(StoreRegister register, Set<String> ids) async {
++    final row = StoreManagementApi._register(await _api.request(
++      'PUT', '${_api.store}/registers/${register.id}/cashiers', desk: Desk.admin,
++      body: {
++        'expectedVersion': register.version,
++        'cashierIds': ids.toList(),
++        'reason': 'Назначение кассиров на телефон',
++      },
++    ));
++    if (row.id != register.id || !row.active || row.version != register.version + 1 ||
++        !setEquals(row.cashiers.toSet(), ids)) {
++      throw ApiFailure(0, 'invalid_server_response');
++    }
++    return row;
++  }
++}
+--- /dev/null
++++ b/apps/mobile-flutter/lib/operator_login.dart
+@@ -0,0 +1,128 @@
++part of 'main.dart';
++
++class _OperatorLogin extends StatefulWidget {
++  const _OperatorLogin(this.session, this.store, this.operators);
++
++  final Pos session;
++  final AssignedStore store;
++  final List<StoreOperator> operators;
++
++  @override
++  State<_OperatorLogin> createState() => _OperatorLoginState();
++}
++
++class _OperatorLoginState extends State<_OperatorLogin> with Tasks<_OperatorLogin> {
++  late List<StoreOperator> _operators = widget.operators;
++
++  Future<void> _refresh() => task(() async {
++    final host = widget.session.forWorkplace(widget.store.location());
++    try {
++      _operators = await host.api.storeOperators() ??
++          (throw ApiFailure(503, 'operator_login_unavailable'));
++    } finally {
++      host.api.retireWorkplace();
++    }
++  });
++
++  Future<void> _select(StoreOperator operator) async {
++    if (busy) return;
++    String? code;
++    if (!operator.isOwner) {
++      code = await inputValue(
++        context, operator.name, _tr(context, 'Код сотрудника', 'Xodim kodi'),
++        secret: true, maxLength: 128, trim: false,
++      );
++      if (!mounted || code == null) return;
++    }
++    await task(() async {
++      if (code != null && (code!.length < 8 || code!.length > 128)) {
++        throw FormatException(_tr(context, 'Введите код из 8–128 символов.',
++          '8–128 belgidan iborat kodni kiriting.'));
++      }
++      if (operator.isOwner) {
++        try {
++          await widget.session.login.reauthenticateOwner();
++        } on DeviceLoginCancelled {
++          return;
++        }
++      }
++      if (!mounted) return;
++      final host = widget.session.forWorkplace(widget.store.location());
++      try {
++        final terminal = operator.roles.contains(Desk.cashier)
++            ? await host.api.operatorTerminal() : null;
++        if (!operator.isOwner && terminal == null &&
++            operator.roles.length == 1 && operator.roles.contains(Desk.cashier)) {
++          throw ApiFailure(403, 'operator_terminal_required');
++        }
++        final opened = await host.api.signInOperator(operator, code);
++        code = null;
++        final register = opened.operator.roles.contains(Desk.cashier) ? terminal : null;
++        final workplace = widget.session.forWorkplace(
++          KassaLocation(widget.store.id, register?.id,
++            utcOffsetMinutes: widget.store.utcOffsetMinutes),
++          operator: opened,
++        );
++        var selected = false;
++        try {
++          final available = opened.operator.roles;
++          if (register == null && available.length == 1 &&
++              available.contains(Desk.cashier)) {
++            throw ApiFailure(403, 'operator_terminal_required');
++          }
++          try {
++            await host.api.rememberOperatorStore();
++          } on Exception {
++            // A remembered store is just a shortcut for the next login.
++          }
++          if (!mounted) return;
++          Navigator.pop<_SelectedWorkplace>(context, (
++            pos: workplace, store: widget.store, register: register, roles: available,
++          ));
++          selected = true;
++        } finally {
++          if (!selected) {
++            workplace.api.retireWorkplace();
++            await workplace.api.closeOperatorSession(opened.operator.roles.first);
++          }
++        }
++      } finally {
++        host.api.retireWorkplace();
++      }
++    });
++  }
++
++  @override
++  Widget build(BuildContext context) => PopScope(
++    canPop: !busy,
++    child: _WorkplacePage(
++      title: Text(widget.store.name, overflow: TextOverflow.ellipsis),
++      actions: [
++        IconButton(
++          onPressed: busy ? null : _refresh,
++          tooltip: _tr(context, 'Обновить сотрудников', 'Xodimlarni yangilash'),
++          icon: const Icon(Icons.refresh),
++        ),
++      ],
++      children: [
++        const _WorkspaceTitle(_UiText('Кто работает?', 'Kim ishlaydi?')),
++        if (busy) const LinearProgressIndicator(),
++        if (status case final message?) StatusBox(message, error: failed),
++        if (_operators.isEmpty)
++          const _UiStatus('В магазине пока нет сотрудников.', 'Do‘konda hozircha xodimlar yo‘q.'),
++        for (final operator in _operators)
++          _WorkplaceRow(
++            child: ListTile(
++              leading: Icon(operator.isOwner ? Icons.admin_panel_settings_outlined : Icons.person_outline),
++              title: Text(operator.name),
++              subtitle: operator.isOwner
++                  ? const _UiText('Владелец', 'Egasi')
++                  : Text(operator.roles.map((role) => role.nameFor(context)).join(' · ')),
++              trailing: const Icon(Icons.chevron_right),
++              onTap: busy ? null : () => _select(operator),
++            ),
++          ),
++      ],
++    ),
++  );
++}
+--- /dev/null
++++ b/apps/mobile-flutter/lib/operator_management.dart
+@@ -0,0 +1,356 @@
++part of 'main.dart';
++
++class _OperatorManagementScreen extends StatefulWidget {
++  const _OperatorManagementScreen(this.pos);
++
++  final Pos pos;
++
++  @override
++  State<_OperatorManagementScreen> createState() => _OperatorManagementScreenState();
++}
++
++typedef _EmployeeDraft = ({String first, String last, Set<Desk> roles});
++typedef _EmployeeCreation = ({String id, String code, _EmployeeDraft draft});
++
++class _OperatorManagementScreenState extends State<_OperatorManagementScreen>
++    with Tasks<_OperatorManagementScreen> {
++  late final _operators = OperatorManagementApi(widget.pos);
++  late final _registers = StoreManagementApi(widget.pos);
++  List<LocalEmployee> _employees = [];
++  List<StoreRegister> _devices = [];
++  final _usableDevices = <String>{};
++  AssignedRegister? _terminal;
++  _EmployeeCreation? _pendingEmployee;
++  bool _pendingRegister = false;
++  bool _loaded = false;
++
++  @override
++  void initState() {
++    super.initState();
++    task(_load);
++  }
++
++  Future<void> _load() async {
++    _pendingRegister = await _registers.hasPendingKey();
++    _employees = await _operators.employees();
++    _terminal = await widget.pos.api.operatorTerminal();
++    final devices = <StoreRegister>[];
++    final usable = <String>{};
++    int? offset = 0;
++    while (offset != null) {
++      final page = await _registers.registers(offset);
++      for (final device in page.items.where((row) => row.active)) {
++        devices.add(device);
++        if (await widget.pos.api.savedRegisterKey(device.id) != null) {
++          usable.add(device.id);
++        }
++      }
++      offset = page.nextOffset;
++    }
++    _devices = devices;
++    _usableDevices
++      ..clear()
++      ..addAll(usable);
++    _loaded = true;
++  }
++
++  String _newCode() {
++    final random = Random.secure();
++    return List.generate(8, (_) => random.nextInt(10)).join();
++  }
++
++  Future<void> _presentCode(String name, String code) async {
++    if (!mounted) return;
++    await showDialog<void>(
++      context: context,
++      builder: (context) => AlertDialog(
++        title: Text(name),
++        content: Column(
++          mainAxisSize: MainAxisSize.min,
++          crossAxisAlignment: CrossAxisAlignment.start,
++          children: [
++            const _UiText('Передайте этот код сотруднику лично.', 'Bu kodni xodimning o‘ziga bering.'),
++            const SizedBox(height: 12),
++            SelectableText(code, style: Theme.of(context).textTheme.headlineSmall),
++          ],
++        ),
++        actions: [
++          TextButton(
++            onPressed: () => Navigator.pop(context),
++            child: const _UiText('Готово', 'Tayyor'),
++          ),
++        ],
++      ),
++    );
++  }
++
++  Future<void> _add() async {
++    final draft = await _editEmployee();
++    if (!mounted || draft == null) return;
++    _pendingEmployee = (id: newId(), code: _newCode(), draft: draft);
++    await _saveEmployee();
++  }
++
++  Future<void> _saveEmployee() async {
++    final pending = _pendingEmployee;
++    if (pending == null) return;
++    LocalEmployee? saved;
++    await task(() async {
++      try {
++        saved = await _operators.createEmployee(
++          pending.id, pending.draft.first, pending.draft.last,
++          pending.draft.roles, pending.code,
++        );
++        _pendingEmployee = null;
++      } on ApiFailure catch (failure) {
++        if (!failure.uncertain) _pendingEmployee = null;
++        rethrow;
++      }
++    });
++    if (saved case final employee?) {
++      await _presentCode(employee.name, pending.code);
++      if (mounted) await task(_load);
++    }
++  }
++
++  Future<_EmployeeDraft?> _editEmployee({LocalEmployee? employee}) async {
++    var first = '';
++    var last = '';
++    final roles = {...?employee?.roles};
++    if (employee == null) roles.add(Desk.cashier);
++    return showDialog<_EmployeeDraft>(
++      context: context,
++      builder: (context) => StatefulBuilder(
++        builder: (context, update) => AlertDialog(
++          title: employee == null
++              ? const _UiText('Новый сотрудник', 'Yangi xodim')
++              : Text(employee.name),
++          scrollable: true,
++          content: Column(
++            mainAxisSize: MainAxisSize.min,
++            children: [
++              if (employee == null) ...[
++                TextField(
++                  maxLength: 100,
++                  textInputAction: TextInputAction.next,
++                  decoration: InputDecoration(
++                    labelText: _tr(context, 'Имя', 'Ism'), counterText: ''),
++                  onChanged: (value) => update(() => first = value.trim()),
++                ),
++                const SizedBox(height: 12),
++                TextField(
++                  maxLength: 100,
++                  decoration: InputDecoration(
++                    labelText: _tr(context, 'Фамилия', 'Familiya'), counterText: ''),
++                  onChanged: (value) => update(() => last = value.trim()),
++                ),
++              ],
++              const SizedBox(height: 8),
++              for (final role in Desk.values)
++                CheckboxListTile(
++                  contentPadding: EdgeInsets.zero,
++                  title: Text(role.nameFor(context)),
++                  value: roles.contains(role),
++                  onChanged: (selected) => update(() {
++                    if (selected == true) {
++                      roles.add(role);
++                    } else {
++                      roles.remove(role);
++                    }
++                  }),
++                ),
++            ],
++          ),
++          actions: [
++            TextButton(onPressed: () => Navigator.pop(context),
++              child: const _UiText('Отмена', 'Bekor qilish')),
++            FilledButton(
++              onPressed: roles.isEmpty || (employee == null && (first.isEmpty || last.isEmpty))
++                  ? null : () => Navigator.pop(context, (first: first, last: last, roles: roles)),
++              child: const _UiText('Сохранить', 'Saqlash'),
++            ),
++          ],
++        ),
++      ),
++    );
++  }
++
++  Future<void> _changeRoles(LocalEmployee employee) async {
++    final draft = await _editEmployee(employee: employee);
++    if (draft == null || !mounted) return;
++    await task(() async {
++      await _operators.editRoles(employee, draft.roles);
++      await _load();
++    });
++  }
++
++  Future<void> _reset(LocalEmployee employee) async {
++    final confirmed = await showDialog<bool>(
++      context: context,
++      builder: (context) => AlertDialog(
++        title: const _UiText('Выдать новый код?', 'Yangi kod berilsinmi?'),
++        content: const _UiText('Предыдущий код сотрудника перестанет действовать.',
++          'Xodimning avvalgi kodi amal qilmaydi.'),
++        actions: [
++          TextButton(onPressed: () => Navigator.pop(context, false),
++            child: const _UiText('Отмена', 'Bekor qilish')),
++          FilledButton(onPressed: () => Navigator.pop(context, true),
++            child: const _UiText('Выдать код', 'Kod berish')),
++        ],
++      ),
++    );
++    if (!mounted || confirmed != true) return;
++    final code = _newCode();
++    var changed = false;
++    await task(() async {
++      await _operators.resetCode(employee, code);
++      changed = true;
++    });
++    if (changed) {
++      await _presentCode(employee.name, code);
++      if (mounted) await task(_load);
++    }
++  }
++
++  Future<void> _createRegister() async {
++    final name = await inputValue(
++      context, _tr(context, 'Касса для этого телефона', 'Shu telefon uchun kassa'),
++      _tr(context, 'Название кассы', 'Kassa nomi'),
++      maxLength: 120,
++    );
++    if (!mounted || name == null || name.isEmpty) return;
++    final owner = widget.pos.api.staffId;
++    if (owner == null) return;
++    await _install(() => _registers.createRegister(name, owner));
++  }
++
++  Future<void> _install(Future<RegisterKeyIssue?> Function() issueKey) => task(() async {
++    try {
++      final issue = await issueKey();
++      if (issue == null) return;
++      await widget.pos.api.setOperatorTerminal(issue.register, issuedKey: issue.key);
++      await _registers.acknowledgeKey(issue);
++    } finally {
++      _pendingRegister = await _registers.hasPendingKey();
++    }
++    await _load();
++  });
++
++  Future<void> _assign(StoreRegister register) async {
++    final staff = {
++      if (widget.pos.api.operatorSession?.operator case final owner?) owner.id: owner.name,
++      for (final employee in _employees)
++        if (employee.active && employee.roles.contains(Desk.cashier)) employee.id: employee.name,
++    };
++    final selected = register.cashiers.toSet();
++    final saved = await showDialog<Set<String>>(
++      context: context,
++      builder: (context) => StatefulBuilder(
++        builder: (context, update) => AlertDialog(
++          title: Text(register.name),
++          scrollable: true,
++          content: Column(
++            mainAxisSize: MainAxisSize.min,
++            children: [
++              const _UiText('Кассиры этого телефона', 'Shu telefon kassirlari'),
++              for (final entry in staff.entries)
++                CheckboxListTile(
++                  contentPadding: EdgeInsets.zero,
++                  title: Text(entry.value),
++                  value: selected.contains(entry.key),
++                  onChanged: (value) => update(() {
++                    if (value == true) {
++                      selected.add(entry.key);
++                    } else {
++                      selected.remove(entry.key);
++                    }
++                  }),
++                ),
++            ],
++          ),
++          actions: [
++            TextButton(onPressed: () => Navigator.pop(context),
++              child: const _UiText('Отмена', 'Bekor qilish')),
++            FilledButton(
++              onPressed: selected.isEmpty ? null : () => Navigator.pop(context, selected),
++              child: const _UiText('Сохранить', 'Saqlash'),
++            ),
++          ],
++        ),
++      ),
++    );
++    if (saved == null || !mounted) return;
++    await task(() async {
++      await _operators.assignCashiers(register, saved);
++      await _load();
++    });
++  }
++
++  @override
++  Widget build(BuildContext context) => _WorkplacePage(
++    title: const _UiText('Сотрудники и кассы', 'Xodimlar va kassalar'),
++    actions: [
++      IconButton(onPressed: busy ? null : () => task(_load),
++        tooltip: _tr(context, 'Обновить', 'Yangilash'), icon: const Icon(Icons.refresh)),
++    ],
++    children: [
++      if (busy) const LinearProgressIndicator(),
++      if (status case final message?) StatusBox(message, error: failed),
++      if (_loaded) ...[
++        _WorkspaceTitle(Text(_terminal?.name ??
++          _tr(context, 'Касса на этом телефоне', 'Shu telefondagi kassa'))),
++        if (_terminal == null)
++          const _UiStatus('Подключите кассу один раз, чтобы сотрудники могли продавать.',
++            'Xodimlar savdo qilishi uchun kassani bir marta ulang.'),
++        for (final register in _devices.where((row) => _usableDevices.contains(row.id)))
++          _WorkplaceRow(
++            child: ListTile(
++              title: Text(register.name),
++              subtitle: register.id == _terminal?.id
++                  ? const _UiText('На этом телефоне', 'Shu telefonda') : null,
++              trailing: register.id == _terminal?.id
++                  ? IconButton(onPressed: busy ? null : () => _assign(register),
++                      tooltip: _tr(context, 'Назначить кассиров', 'Kassirlarni tayinlash'),
++                      icon: const Icon(Icons.group_add_outlined))
++                  : TextButton(onPressed: busy ? null : () => task(() async {
++                      await widget.pos.api.setOperatorTerminal(register);
++                      await _load();
++                    }), child: const _UiText('Подключить', 'Ulash')),
++            ),
++          ),
++        if (_pendingRegister)
++          OutlinedButton(onPressed: busy ? null : () => _install(_registers.retryKey),
++            child: const _UiText('Завершить подключение', 'Ulashni yakunlash'))
++        else
++          OutlinedButton.icon(onPressed: busy ? null : _createRegister,
++            icon: const Icon(Icons.point_of_sale_outlined),
++            label: const _UiText('Создать кассу для телефона', 'Telefon uchun kassa yaratish')),
++        const SizedBox(height: 12),
++        const _WorkspaceTitle(_UiText('Сотрудники', 'Xodimlar')),
++        FilledButton.icon(onPressed: busy ? null : _pendingEmployee == null ? _add : _saveEmployee,
++          icon: const Icon(Icons.person_add_alt),
++          label: _pendingEmployee == null
++              ? const _UiText('Добавить сотрудника', 'Xodim qo‘shish')
++              : const _UiText('Проверить создание сотрудника', 'Xodim yaratilganini tekshirish')),
++        for (final employee in _employees)
++          _WorkplaceRow(
++            child: ListTile(
++              leading: const Icon(Icons.person_outline),
++              title: Text(employee.name),
++              subtitle: employee.active
++                  ? Text(employee.roles.map((role) => role.nameFor(context)).join(' · '))
++                  : const _UiText('Доступ отключён', 'Ruxsat o‘chirilgan'),
++              trailing: !employee.active ? null : PopupMenuButton<String>(
++                enabled: !busy,
++                onSelected: (action) => action == 'roles' ? _changeRoles(employee) : _reset(employee),
++                itemBuilder: (_) => const [
++                  PopupMenuItem(value: 'roles', child: _UiText('Изменить роли', 'Rollarni o‘zgartirish')),
++                  PopupMenuItem(value: 'code', child: _UiText('Выдать новый код', 'Yangi kod berish')),
++                ],
++              ),
++            ),
++          ),
++      ],
++    ],
++  );
++}
+--- a/apps/mobile-flutter/lib/pos.dart
++++ b/apps/mobile-flutter/lib/pos.dart
+@@ -4,7 +4,7 @@
+ import 'dart:math';
+ import 'dart:typed_data';
+ 
+-import 'package:flutter/foundation.dart' show kDebugMode;
++import 'package:flutter/foundation.dart' show kDebugMode, setEquals;
+ import 'package:flutter_appauth/flutter_appauth.dart';
+ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+ import 'package:http/http.dart' as http;
+@@ -25,6 +25,7 @@
+ part 'shift_reports_api.dart';
+ part 'workplace_api.dart';
+ part 'store_management_api.dart';
++part 'operator_api.dart';
+ part 'platform_api.dart';
+ part 'store_exceptions_api.dart';
+ part 'register_diagnostics.dart';
+@@ -135,6 +136,11 @@
+       'admin_mfa_required' =>
+         'Для входа администратора требуется второй фактор.',
+       'register_key_required' => 'Введите ключ кассы.',
++      'operator_credentials_invalid' => 'Проверьте код сотрудника.',
++      'operator_login_rate_limited' => 'Слишком много попыток. Повторите вход позже.',
++      'operator_terminal_required' => 'Владелец должен подключить кассу на этом телефоне.',
++      'operator_login_unavailable' => 'Список сотрудников пока недоступен. Повторите попытку.',
++      'owner_account_mismatch' => 'Подтвердите вход тем же аккаунтом владельца.',
+       'owner_access_required' =>
+         'Изменить роли сотрудников может владелец магазина.',
+       'invalid_staff_access' => 'Проверьте идентификатор, роль и кассу.',
+@@ -518,6 +524,9 @@
+ 
+   Future<void> signIn() => _signIn(persist: true);
+ 
++  Future<void> reauthenticateOwner() =>
++      _signIn(persist: true, requiredSubject: subject);
++
+   Future<void> signInByDeviceCode() => _signIn(persist: true, deviceCode: true);
+ 
+   Future<void> signInForApproval() => _signIn(persist: false);
+@@ -545,7 +554,11 @@
+     }
+   }
+ 
+-  Future<void> _signIn({required bool persist, bool deviceCode = false}) async {
++  Future<void> _signIn({
++    required bool persist,
++    bool deviceCode = false,
++    String? requiredSubject,
++  }) async {
+     if (_deviceCancellation != null) {
+       throw ApiFailure(409, 'device_login_in_progress');
+     }
+@@ -572,6 +585,9 @@
+       }
+       final sub = _tokenSubject(identity);
+       if (_tokenSubject(access) != sub) throw ApiFailure(401, 'sign_in_required');
++      if (requiredSubject != null && sub != requiredSubject) {
++        throw ApiFailure(403, 'owner_account_mismatch');
++      }
+       final refresh = tokens.refreshToken;
+       if (persist) {
+         if (refresh == null || refresh.isEmpty) {
+@@ -848,6 +864,7 @@
+     http.Client? client,
+     KassaLocation? debugLocation,
+     this.productionContract = _productionApiEnabled,
++    this.operatorSession,
+   }) : _client = client ?? http.Client(),
+       _scopeGeneration = null,
+       _location = kDebugMode && !productionContract
+@@ -856,22 +873,29 @@
+     login._scopedRegisterKey = () => localKey(Desk.cashier, 'register-key');
+   }
+ 
+-  ServerApi._forWorkplace(ServerApi session, this._location)
++  ServerApi._forWorkplace(ServerApi session, this._location, {this.operatorSession})
+     : login = session.login,
+       _client = session._client,
+       productionContract = session.productionContract,
+       _scopeGeneration = session.login._generation {
+     onSessionExpired = () => session.onSessionExpired?.call();
++    if (operatorSession case final opened?) {
++      _allowedRoles = opened.operator.roles;
++      staffId = opened.operator.id;
++      _storeOwner = opened.operator.isOwner;
++    }
+   }
+ 
+   final Login login;
+   final bool productionContract;
++  final OperatorSession? operatorSession;
+   final http.Client _client;
+   final KassaLocation? _location;
+   final int? _scopeGeneration;
+   bool _retired = false;
+   Set<Desk>? _allowedRoles;
+   void Function()? onSessionExpired;
++  void Function()? onOperatorSessionExpired;
+   String? staffId;
+   bool get storeOwner => _storeOwner;
+   bool get platformWorkplace => _location?.platformOrganizationId != null;
+@@ -894,7 +918,7 @@
+ 
+   String localKey(Desk desk, String item) {
+     _ensureWorkplace();
+-    return location.storageKey(origin.origin, login.subject, desk, item);
++    return location.storageKey(origin.origin, operatorSession?.operator.id ?? login.subject, desk, item);
+   }
+ 
+   DateTime storeDate(DateTime time) {
+@@ -1028,13 +1052,16 @@
+     final headers = <String, String>{
+       'Accept': binaryResponse ? '*/*' : 'application/json',
+       for (final entry in (extraHeaders ?? const <String, String>{}).entries)
+-        if (const {
++        if ({
++          if (operatorSession != null && authorization == null) 'idempotency-key',
+           'accept',
+           'content-type',
+           'x-file-name',
+         }.contains(entry.key.toLowerCase()))
+           entry.key: entry.value,
+       if (active != null) 'X-Active-Role': active.code,
++      if (operatorSession != null && authorization == null)
++        'X-Operator-Session': operatorSession!.token,
+       if (platformWorkplace && (authorization == null || identical(authorization, login))) ...{
+         'X-Platform-Organization': location.platformOrganizationId!,
+         'X-Platform-Store': storeId,
+@@ -1046,9 +1073,7 @@
+           registerKeyForVerification ??
+           await (_scopeGeneration == null
+               ? login.readRegisterKey()
+-              : login._storage.read(
+-                  key: localKey(Desk.cashier, 'register-key'),
+-                ));
++              : savedRegisterKey(register));
+       if (key == null) throw ApiFailure(403, 'register_key_required');
+       headers.addAll({'X-Register-Id': register, 'X-Register-Key': key});
+     }
+@@ -1089,11 +1114,6 @@
+       if (auth._generation != generation) {
+         throw ApiFailure(401, 'sign_in_required');
+       }
+-      if (response.statusCode == 401) {
+-        if (attempt == 0) continue;
+-        if (diagnostic) throw ApiFailure(401, 'sign_in_required');
+-        return _expired(auth, generation);
+-      }
+       final success = response.statusCode >= 200 && response.statusCode < 300;
+       if (success && binaryResponse) return response.bodyBytes;
+       dynamic data;
+@@ -1108,6 +1128,18 @@
+       }
+       if (success) return data;
+       final code = data is Json ? data['code'] : null;
++      if (response.statusCode == 401) {
++        if (operatorSession != null && authorization == null &&
++            (code == 'operator_session_expired' || code == 'operator_session_invalid')) {
++          onOperatorSessionExpired?.call();
++          throw ApiFailure(401, code as String);
++        }
++        if (code != 'operator_credentials_invalid') {
++          if (attempt == 0) continue;
++          if (diagnostic) throw ApiFailure(401, 'sign_in_required');
++          return _expired(auth, generation);
++        }
++      }
+       final requestId = response.headers.entries
+               .where((header) => header.key.toLowerCase() == 'x-request-id')
+               .firstOrNull
+@@ -1255,8 +1287,8 @@
+     api = scope;
+   }
+ 
+-  Pos forWorkplace(KassaLocation location) =>
+-      Pos._forWorkplace(storage, login, ServerApi._forWorkplace(api, location));
++  Pos forWorkplace(KassaLocation location, {OperatorSession? operator}) =>
++      Pos._forWorkplace(storage, login, ServerApi._forWorkplace(api, location, operatorSession: operator));
+ 
+   final FlutterSecureStorage storage;
+   late final Login login;
+--- a/apps/mobile-flutter/lib/production_api.dart
++++ b/apps/mobile-flutter/lib/production_api.dart
+@@ -16,6 +16,14 @@
+   'GET /v1/expiry/cashier',
+   'POST /v1/expiry/cashier/shelf-tasks',
+   'GET /v1/me/roles',
++  'GET /v1/stores/{storeId}/operators',
++  'POST /v1/stores/{storeId}/operator-sessions',
++  'DELETE /v1/operator-sessions/current',
++  'GET /v1/stores/{storeId}/employees',
++  'POST /v1/stores/{storeId}/employees',
++  'PUT /v1/stores/{storeId}/employees/{id}/roles',
++  'POST /v1/stores/{storeId}/employees/{id}/reset-password',
++  'PUT /v1/stores/{storeId}/registers/{id}/cashiers',
+   'GET /v1/platform/test-stores',
+   'POST /v1/platform/test-stores',
+   'PATCH /v1/platform/test-stores/{id}',
+--- a/apps/mobile-flutter/lib/workplace_api.dart
++++ b/apps/mobile-flutter/lib/workplace_api.dart
+@@ -149,7 +149,7 @@
+ 
+   Future<void> bindRegister(String key) async {
+     Login._validateRegisterKey(key);
+-    final storageKey = localKey(Desk.cashier, 'register-key');
++    final storageKey = _registerStorageKey(registerId);
+     await currentShift(keyForVerification: key);
+     _ensureWorkplace();
+     await login._storage.write(key: storageKey, value: key);
+--- a/apps/mobile-flutter/lib/workplaces.dart
++++ b/apps/mobile-flutter/lib/workplaces.dart
+@@ -8,10 +8,13 @@
+ });
+ 
+ class _WorkplacePicker extends StatefulWidget {
+-  const _WorkplacePicker(this.session, {required this.automaticallyOpenOwner});
++  const _WorkplacePicker(this.session, {
++    required this.automaticallyOpenOwner, this.preferredStore,
++  });
+ 
+   final Pos session;
+   final bool automaticallyOpenOwner;
++  final String? preferredStore;
+ 
+   @override
+   State<_WorkplacePicker> createState() => _WorkplacePickerState();
+@@ -60,17 +63,43 @@
+     }
+     _nextOffset = page.nextOffset;
+     _loaded = true;
+-    if (widget.automaticallyOpenOwner && !_autoOpenAttempted) {
++    if (widget.automaticallyOpenOwner && !_autoOpenAttempted &&
++        widget.session.login.canUseAdministrativeRoles) {
+       _autoOpenAttempted = true;
+-      if (_stores.length == 1 && _nextOffset == null &&
+-          widget.session.login.canUseAdministrativeRoles) {
+-        await _openOwnerStore(_stores.values.single);
+-      }
++      final preferred = widget.preferredStore ?? await widget.session.api.lastOperatorStore();
++      final store = _stores[preferred] ??
++          (_stores.length == 1 && _nextOffset == null ? _stores.values.single : null);
++      if (mounted && store != null) await _openOwnerStore(store);
++    }
++  }
++
++  Future<List<StoreOperator>?> _operators(AssignedStore store) async {
++    if (store.ownerHint != true || !widget.session.login.canUseAdministrativeRoles) {
++      return null;
++    }
++    final host = widget.session.forWorkplace(store.location());
++    try {
++      return await host.api.storeOperators();
++    } finally {
++      host.api.retireWorkplace();
+     }
+   }
+ 
++  Future<void> _showOperators(AssignedStore store, List<StoreOperator> operators) async {
++    final selected = await Navigator.of(context).push<_SelectedWorkplace>(
++      MaterialPageRoute(builder: (_) => _OperatorLogin(widget.session, store, operators)),
++    );
++    if (mounted && selected != null) Navigator.pop(context, selected);
++  }
++
+   Future<void> _openOwnerStore(AssignedStore store) async {
+     if (store.ownerHint == false) return;
++    final operators = await _operators(store);
++    if (!mounted) return;
++    if (operators != null) {
++      await _showOperators(store, operators);
++      return;
++    }
+     final workplace = widget.session.forWorkplace(store.location());
+     var selected = false;
+     try {
+@@ -103,6 +132,14 @@
+   }
+ 
+   Future<void> _open(AssignedStore store) async {
++    if (busy) return;
++    List<StoreOperator>? operators;
++    await task(() async { operators = await _operators(store); });
++    if (!mounted || failed) return;
++    if (operators != null) {
++      await _showOperators(store, operators!);
++      return;
++    }
+     final selected = await Navigator.of(context).push<_SelectedWorkplace>(
+       MaterialPageRoute(builder: (_) => _StoreWorkplace(
+         widget.session, store,
+--- a/apps/mobile-flutter/pubspec.yaml
++++ b/apps/mobile-flutter/pubspec.yaml
+@@ -1,7 +1,7 @@
+ name: kassa_mobile
+ description: Android POS pilot for Kassa.
+ publish_to: none
+-version: 0.2.87+2107
++version: 0.2.88+2108
+ environment:
+   sdk: ">=3.10.0 <4.0.0"
+ dependencies:
+--- /dev/null
++++ b/apps/mobile-flutter/test/operator_login_test.dart
+@@ -0,0 +1,188 @@
++import 'dart:convert';
++
++import 'package:flutter/material.dart';
++import 'package:flutter_secure_storage/flutter_secure_storage.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:http/http.dart' as http;
++import 'package:http/testing.dart';
++import 'package:kassa_mobile/main.dart';
++import 'package:kassa_mobile/pos.dart';
++
++const _store = '30000000-0000-4000-8000-000000000031';
++const _register = '30000000-0000-4000-8000-000000000032';
++const _owner = '30000000-0000-4000-8000-000000000033';
++const _worker = '30000000-0000-4000-8000-000000000034';
++const _sessionId = '30000000-0000-4000-8000-000000000035';
++const _organization = '30000000-0000-4000-8000-000000000036';
++const _base = '/v1/stores/$_store';
++final _registerKey = 'b' * 64;
++final _ownerToken = 'o' * 43;
++final _workerToken = 'w' * 43;
++
++class _OperatorHost extends Login {
++  _OperatorHost(super.storage);
++
++  int confirmations = 0;
++
++  @override
++  String get subject => 'account-owner';
++
++  @override
++  Future<bool> restore() async => true;
++
++  @override
++  Future<void> reauthenticateOwner() async { confirmations++; }
++
++  @override
++  Future<String> accessToken({bool force = false}) async {
++    expect(force, false, reason: 'An incorrect employee code must not refresh the owner login');
++    return 'oidc-host-token';
++  }
++}
++
++http.Response _reply(Object? value, [int status = 200]) =>
++    http.Response.bytes(utf8.encode(jsonEncode(value)), status,
++        headers: {'content-type': 'application/json; charset=utf-8'});
++
++void main() {
++  testWidgets('a saved phone opens the employee list and uses their roles and terminal key',
++      (tester) async {
++    final host = _OperatorHost(const FlutterSecureStorage());
++    final operators = [
++      {'operatorId': _worker, 'displayName': 'Камола',
++        'roles': ['cashier', 'receiver'], 'isOwner': false,
++        'passwordRequired': true, 'active': true},
++      {'operatorId': _owner, 'displayName': 'Владелец магазина',
++        'roles': ['admin', 'cashier', 'receiver'], 'isOwner': true,
++        'passwordRequired': false, 'active': true},
++      {'operatorId': _organization, 'displayName': 'Отключённый сотрудник', 'active': false},
++    ];
++    String? deviceId;
++    Json? shift;
++    var logouts = 0;
++    var opened = false;
++    var expired = false;
++    final pos = Pos(
++      const FlutterSecureStorage(),
++      login: host,
++      productionContract: true,
++      client: MockClient((request) async {
++        expect(request.headers['Authorization'], 'Bearer oidc-host-token');
++        final token = request.headers['X-Operator-Session'];
++        switch (request.url.path) {
++          case '/v1/me/stores':
++            expect(token, isNull);
++            return _reply({
++              'items': [{
++                'storeId': _store, 'storeName': 'Korzinka',
++                'organizationId': _organization, 'timeZone': 'Asia/Tashkent',
++                'utcOffsetMinutes': 300, 'isOwner': true, 'active': true,
++              }],
++              'nextOffset': null,
++            });
++          case '$_base/operators':
++            expect(token, isNull);
++            return _reply({'storeId': _store, 'items': operators});
++          case '$_base/operator-sessions':
++            expect(token, isNull);
++            final body = jsonDecode(request.body) as Json;
++            deviceId ??= body['deviceId'] as String;
++            expect(body['deviceId'], deviceId);
++            final owner = body['operatorId'] == _owner;
++            if (owner) {
++              expect(host.confirmations, 1);
++              expect(body['password'], isNull);
++            } else if (body['password'] != '02468135') {
++              return _reply({'code': 'operator_credentials_invalid'}, 401);
++            }
++            return _reply({'storeId': _store, 'organizationId': _organization,
++              'sessionId': _sessionId, 'operatorSessionToken': owner ? _ownerToken : _workerToken,
++              'operator': operators[owner ? 1 : 0]});
++          case '/v1/shifts/active':
++          case '/v1/shifts':
++            expect(token, anyOf(_workerToken, _ownerToken));
++            expect(request.headers['X-Active-Role'], 'cashier');
++            expect(request.headers['X-Register-Id'], _register);
++            expect(request.headers['X-Register-Key'], _registerKey);
++            if (request.method == 'POST') {
++              final body = jsonDecode(request.body) as Json;
++              expect(token, _workerToken);
++              shift = {'shiftId': body['shiftId'], 'openingCash': body['openingCash']};
++              opened = true;
++              return _reply(shift);
++            }
++            return _reply({'shift': shift});
++          case '/v1/me/roles':
++            expect(token, _workerToken);
++            if (expired) return _reply({'code': 'operator_session_expired'}, 401);
++            return _reply({'storeId': _store, 'staffId': _worker,
++              'roles': ['cashier', 'receiver'], 'owner': false});
++          case '$_base/receiving/catalog/proposals':
++            expect(token, _ownerToken);
++            expect(request.headers['X-Active-Role'], 'admin');
++            return _reply([]);
++          case '/v1/operator-sessions/current':
++            expect(token, _ownerToken);
++            expect(request.method, 'DELETE');
++            logouts++;
++            return http.Response('', 204);
++          default:
++            fail('Unhandled test request: ${request.method} ${request.url.path}');
++        }
++      }),
++    );
++    final origin = pos.api.origin.origin;
++    FlutterSecureStorage.setMockInitialValues({
++      KassaLocation(_store, _register).storageKey(origin, host.subject, Desk.cashier, 'register-key'):
++        _registerKey,
++      KassaLocation(_store, null).storageKey(origin, host.subject, Desk.admin, 'operator-terminal'):
++        jsonEncode({'id': _register, 'name': 'Касса телефона'}),
++    });
++
++    Future<void> tap(Finder finder) async {
++      await tester.tap(finder);
++      await tester.pumpAndSettle();
++    }
++
++    Future<void> login(String code) async {
++      await tap(find.text('Камола'));
++      expect(find.text('Код сотрудника'), findsOneWidget);
++      await tester.enterText(find.byType(TextFormField), code);
++      await tap(find.text('Подтвердить'));
++    }
++
++    await tester.pumpWidget(KassaApp(pos: pos));
++    await tester.pumpAndSettle();
++    expect(find.text('Кто работает?'), findsOneWidget);
++    expect(find.text('Отключённый сотрудник'), findsNothing);
++    await tap(find.text('Владелец магазина'));
++    expect(find.widgetWithText(TextButton, 'Администратор'), findsOneWidget);
++    await tap(find.byTooltip('Сменить сотрудника'));
++    expect(logouts, 1);
++    await login('02468134');
++    expect(find.text('Проверьте код сотрудника.'), findsOneWidget);
++    await login('02468135');
++    expect(find.text('Касса телефона'), findsOneWidget);
++    expect(find.byType(NavigationBar), findsNothing);
++    expect(find.text('Подключить кассу'), findsNothing);
++    await tester.tap(find.text('Открыть смену'));
++    await tester.pump();
++    await tester.pump(const Duration(milliseconds: 350));
++    await tap(find.text('Подтвердить'));
++    expect(opened, true);
++    expect(find.text('Смена открыта'), findsOneWidget);
++    expect(find.text('Штрихкод'), findsOneWidget);
++    await tap(find.widgetWithText(TextButton, 'Кассир'));
++    expect(find.text('Администратор'), findsNothing);
++    await tap(find.text('Приёмщик'));
++    expect(find.widgetWithText(TextButton, 'Приёмщик'), findsOneWidget);
++    expired = true;
++    await tap(find.widgetWithText(TextButton, 'Приёмщик'));
++    expect(find.text('Кто работает?'), findsOneWidget);
++    expect(host.confirmations, 1);
++    final data = await pos.storage.readAll();
++    expect(data.values, isNot(contains(_workerToken)));
++    expect(data.values, isNot(contains('02468135')));
++    expect(tester.takeException(), isNull);
++  });
++}
+--- a/apps/mobile-flutter/test/session_test.dart
++++ b/apps/mobile-flutter/test/session_test.dart
+@@ -140,6 +140,7 @@
+               'registers': [],
+             }], 'nextOffset': null});
+           }
++          if (path == '/v1/stores/$storeId/operators') return http.Response('', 404);
+           if (path == '/v1/me/roles') {
+             expect(request.url.queryParameters['storeId'], storeId);
+             return _reply({
+@@ -167,6 +168,7 @@
+       expect(authorizationRequests, restored ? 0 : 1);
+       expect(requests, [
+         '/v1/me/stores',
++        '/v1/stores/$storeId/operators',
+         '/v1/me/roles',
+         '/v1/stores/$storeId/receiving/catalog/proposals',
+       ]);
+--- a/apps/mobile-flutter/test/workplace_workflow_test.dart
++++ b/apps/mobile-flutter/test/workplace_workflow_test.dart
+@@ -196,6 +196,8 @@
+                 'owner': true,
+                 'roles': ['admin', 'cashier', 'receiver'],
+               });
++            case '/v1/stores/$_storeA/operators':
++              return _response({}, status: 404);
+             case '/v1/stores/$_storeA/registers':
+               registerRequests++;
+               expect(request.url.queryParameters['offset'], '0');
