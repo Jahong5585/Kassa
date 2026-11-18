@@ -218,7 +218,7 @@
 +
 +// Layout review follows unslop by Damir Sokolovsky (@heydamir), CC BY 4.0.
 +String _operatorLabel(BuildContext context, StoreOperator operator) =>
-+    _locationId.hasMatch(operator.name.trim())
++    isReceiptNumber(operator.name.trim())
 +        ? operator.isOwner
 +            ? _tr(context, 'Владелец магазина', 'Do‘kon egasi')
 +            : _tr(context, 'Сотрудник', 'Xodim')
@@ -354,6 +354,15 @@
  
    @override
    void initState() {
+@@ -311,7 +312,7 @@
+ 
+   Future<void> _assign(StoreRegister register) async {
+     final staff = {
+-      if (widget.pos.api.operatorSession?.operator case final owner?) owner.id: owner.name,
++      if (widget.pos.api.operatorSession?.operator case final owner?) owner.id: _operatorLabel(context, owner),
+       for (final employee in _employees)
+         if (employee.active && employee.roles.contains(Desk.cashier)) employee.id: employee.name,
+     };
 @@ -359,6 +360,65 @@
      });
    }
