@@ -1,6 +1,30 @@
 --- a/apps/mobile-flutter/lib/catalog.dart
 +++ b/apps/mobile-flutter/lib/catalog.dart
-@@ -138,195 +138,268 @@
+@@ -27,6 +27,7 @@
+   late final _reference = CashierReference(widget.pos);
+   List<Json> _quick = [];
+   final _search = TextEditingController();
++  final _catalogScroll = ScrollController();
+   final _rows = <Json>[];
+   var _query = '';
+   var _includeArchived = false;
+@@ -50,6 +51,7 @@
+   @override
+   void dispose() {
+     _search.dispose();
++    _catalogScroll.dispose();
+     super.dispose();
+   }
+ 
+@@ -60,6 +62,7 @@
+ 
+   Future<void> _load({bool reset = false}) async {
+     if (reset) {
++      if (_catalogScroll.hasClients) _catalogScroll.jumpTo(0);
+       _rows.clear();
+       _offset = 0;
+       _more = false;
+@@ -138,195 +141,269 @@
      status = 'Изменение сохранено.';
    });
  
@@ -16,29 +40,6 @@
 -            tooltip: _tr(context, 'Обновить каталог', 'Katalogni yangilash'),
 -            onPressed: busy ? null : () => task(_refresh),
 -            icon: const Icon(Icons.refresh),
--          ),
--      ],
--    ),
--    body: ListView(
--      padding: const EdgeInsets.all(16),
--      children: _spaceFormControls([
--        TextField(
--          controller: _search,
--          enabled: !busy,
--          maxLength: 100,
--          textInputAction: TextInputAction.search,
--          onSubmitted: (_) => _submitSearch(),
--          decoration: InputDecoration(
--            labelText: widget.admin
--                ? _tr(context, 'Название, артикул или штрихкод', 'Nomi, artikuli yoki shtrixkodi')
--                : _tr(context, 'Название товара', 'Tovar nomi'),
--            counterText: '',
--            suffixIcon: IconButton(
--              tooltip: _tr(context, 'Найти', 'Qidirish'),
--              onPressed: busy ? null : _submitSearch,
--              icon: const Icon(Icons.search),
--            ),
--          ),
 +  Future<void> _setArchived(bool include) => task(() async {
 +    _includeArchived = include;
 +    await _load(reset: true);
@@ -87,42 +88,7 @@
 +        value: () => _openCatalogTool(
 +          _StockImportScreen(widget.pos.api, opening: false),
 +          refresh: true,
-         ),
--        if (!widget.admin) ...[
--          OutlinedButton.icon(
--            onPressed: busy ? null : _browseSaved,
--            icon: const Icon(Icons.download_done),
--            label: const _UiText('Карточки на устройстве', 'Qurilmadagi kartochkalar'),
--          ),
--          if (_quick.isNotEmpty) ...[
--            _UiText('Быстрые товары', 'Tez tanlanadigan mahsulotlar', style: Theme.of(context).textTheme.titleSmall),
--            Wrap(
--              spacing: 8,
--              children: [
--                for (final row in _quick)
--                  InputChip(
--                    label: Text(row['name'] as String),
--                    onPressed: busy
--                        ? null
--                        : () => Navigator.pop(context, row['productId'] as String),
--                    onDeleted: busy ? null : () => _pin(row),
--                    deleteButtonTooltipMessage: 'Убрать из быстрых товаров',
--                  ),
--              ],
--            ),
--          ],
--        ],
--        if (widget.admin) ...[
--          Wrap(
--            spacing: 8,
--            children: [
--              TextButton.icon(
--                onPressed: busy ? null : _scan,
--                icon: const Icon(Icons.qr_code_scanner),
--                label: const _UiText('Сканировать', 'Skanerlash'),
--              ),
--              TextButton(
--                onPressed: busy
++        ),
 +        child: const _UiText('Импорт CSV или XLSX', 'CSV yoki XLSX importi'),
 +      ),
 +    ],
@@ -150,12 +116,7 @@
 +                  icon: const Icon(Icons.search),
 +                ),
 +                suffixIcon: value.text.isEmpty
-                     ? null
--                    : () {
--                        _search.clear();
--                        _submitSearch();
--                      },
--                child: const _UiText('Сбросить поиск', 'Qidiruvni tozalash'),
++                    ? null
 +                    : IconButton(
 +                        tooltip: _tr(context, 'Сбросить поиск', 'Qidiruvni tozalash'),
 +                        onPressed: busy ? null : () {
@@ -164,52 +125,9 @@
 +                        },
 +                        icon: const Icon(Icons.close),
 +                      ),
-               ),
--            ],
--          ),
--          SwitchListTile(
--            contentPadding: EdgeInsets.zero,
--            value: _includeArchived,
--            title: const _UiText('Показывать архивные', 'Arxivdagilarni ko‘rsatish'),
--            onChanged: busy
--                ? null
--                : (value) => task(() async {
--                    _includeArchived = value;
--                    await _load(reset: true);
--                  }),
--          ),
--          FilledButton.icon(
--            onPressed: busy || _pending != null ? null : _create,
--            icon: const Icon(Icons.add),
--            label: const _UiText('Добавить товар', 'Tovar qo‘shish'),
--          ),
--          OutlinedButton.icon(
--            onPressed: busy ? null : () => Navigator.of(context).push<void>(
--              MaterialPageRoute(builder: (_) => _CatalogIssuesScreen(
--                CatalogIssuesApi(widget.pos),
--              )),
-             ),
--            icon: const Icon(Icons.flag_outlined),
--            label: const _UiText('Заявки с касс', 'Kassalardan so‘rovlar'),
-           ),
--          OutlinedButton.icon(
--            onPressed: busy || _pending != null
--                ? null
--                : () async {
--                    await Navigator.of(context).push<void>(MaterialPageRoute(
--                      builder: (_) => _CatalogBatchScreen(_api),
--                    ));
--                    if (mounted) await task(_refresh);
--                  },
--            icon: const Icon(Icons.checklist),
--            label: const _UiText('Изменить несколько товаров', 'Bir nechta tovarni o‘zgartirish'),
--          ),
--          OutlinedButton.icon(
--            onPressed: busy ? null : () => Navigator.of(context).push<void>(
--              MaterialPageRoute(builder: (_) => _DiscountPolicyScreen(_api)),
--            ),
--            icon: const Icon(Icons.discount_outlined),
--            label: const _UiText('Правила скидок', 'Chegirma qoidalari'),
++              ),
++            ),
++          ),
 +        ),
 +        const SizedBox(width: 8),
 +        IconButton.filledTonal(
@@ -220,15 +138,28 @@
 +            minimumSize: const Size(48, 48),
 +            shape: const RoundedRectangleBorder(borderRadius: _workplaceControlRadius),
            ),
--          OutlinedButton.icon(
--            onPressed: busy ? null : () => Navigator.of(context).push<void>(
--              MaterialPageRoute(builder: (_) => _ShelfLabelsScreen(_api)),
--            ),
--            icon: const Icon(Icons.print_outlined),
--            label: const _UiText('Полочные ценники', 'Tokcha narx yorliqlari'),
 +        ),
-+      ],
-+    ),
+       ],
+     ),
+-    body: ListView(
+-      padding: const EdgeInsets.all(16),
+-      children: _spaceFormControls([
+-        TextField(
+-          controller: _search,
+-          enabled: !busy,
+-          maxLength: 100,
+-          textInputAction: TextInputAction.search,
+-          onSubmitted: (_) => _submitSearch(),
+-          decoration: InputDecoration(
+-            labelText: widget.admin
+-                ? _tr(context, 'Название, артикул или штрихкод', 'Nomi, artikuli yoki shtrixkodi')
+-                : _tr(context, 'Название товара', 'Tovar nomi'),
+-            counterText: '',
+-            suffixIcon: IconButton(
+-              tooltip: _tr(context, 'Найти', 'Qidirish'),
+-              onPressed: busy ? null : _submitSearch,
+-              icon: const Icon(Icons.search),
+-            ),
 +  );
 +
 +  List<Widget> _notices() => [
@@ -292,13 +223,12 @@
 +            label: const _UiText('С архивными', 'Arxivdagilar bilan'),
 +            onDeleted: busy ? null : () => _setArchived(false),
            ),
--          OutlinedButton(
--            onPressed: busy ? null : () async {
--              await Navigator.of(context).push<void>(MaterialPageRoute(
--                builder: (_) => _StockImportScreen(widget.pos.api, opening: false),
--              ));
--              if (mounted) await task(() => _load(reset: true));
-+        ),
+         ),
+-        if (!widget.admin) ...[
+-          OutlinedButton.icon(
+-            onPressed: busy ? null : _browseSaved,
+-            icon: const Icon(Icons.download_done),
+-            label: const _UiText('Карточки на устройстве', 'Qurilmadagi kartochkalar'),
 +      ..._notices(),
 +    ];
 +    return Column(
@@ -306,6 +236,7 @@
 +        _adminSearch(context),
 +        Expanded(
 +          child: ListView.builder(
++            controller: _catalogScroll,
 +            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
 +            padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
 +            itemCount: headers.length + _rows.length +
@@ -321,15 +252,36 @@
 +                );
 +              }
 +              return _more ? _loadMoreButton() : _emptyResult();
-             },
--            child: const _UiText('Импорт CSV или XLSX', 'CSV yoki XLSX importi'),
++            },
            ),
+-          if (_quick.isNotEmpty) ...[
+-            _UiText('Быстрые товары', 'Tez tanlanadigan mahsulotlar', style: Theme.of(context).textTheme.titleSmall),
+-            Wrap(
+-              spacing: 8,
+-              children: [
+-                for (final row in _quick)
+-                  InputChip(
+-                    label: Text(row['name'] as String),
+-                    onPressed: busy
+-                        ? null
+-                        : () => Navigator.pop(context, row['productId'] as String),
+-                    onDeleted: busy ? null : () => _pin(row),
+-                    deleteButtonTooltipMessage: 'Убрать из быстрых товаров',
+-                  ),
+-              ],
+-            ),
+-          ],
 -        ],
--        if (_pending != null) ...[
--          const _UiStatus('Сервер ещё не подтвердил сохранение товара.', 'Server tovar saqlanganini hali tasdiqlamadi.'),
--          OutlinedButton(
--            onPressed: busy ? null : _retry,
--            child: const _UiText('Проверить сохранение', 'Saqlanganini tekshirish'),
+-        if (widget.admin) ...[
+-          Wrap(
+-            spacing: 8,
+-            children: [
+-              TextButton.icon(
+-                onPressed: busy ? null : _scan,
+-                icon: const Icon(Icons.qr_code_scanner),
+-                label: const _UiText('Сканировать', 'Skanerlash'),
+-              ),
+-              TextButton(
 +        ),
 +      ],
 +    );
@@ -351,8 +303,125 @@
 +            tooltip: _tr(context, 'Найти', 'Qidirish'),
 +            onPressed: busy ? null : _submitSearch,
 +            icon: const Icon(Icons.search),
-           ),
++          ),
++        ),
++      ),
++      OutlinedButton.icon(
++        onPressed: busy ? null : _browseSaved,
++        icon: const Icon(Icons.download_done),
++        label: const _UiText('Карточки на устройстве', 'Qurilmadagi kartochkalar'),
++      ),
++      if (_quick.isNotEmpty) ...[
++        _UiText('Быстрые товары', 'Tez tanlanadigan mahsulotlar', style: Theme.of(context).textTheme.titleSmall),
++        Wrap(
++          spacing: 8,
++          children: [
++            for (final row in _quick)
++              InputChip(
++                label: Text(row['name'] as String),
+                 onPressed: busy
+                     ? null
+-                    : () {
+-                        _search.clear();
+-                        _submitSearch();
+-                      },
+-                child: const _UiText('Сбросить поиск', 'Qidiruvni tozalash'),
++                    : () => Navigator.pop(context, row['productId'] as String),
++                onDeleted: busy ? null : () => _pin(row),
++                deleteButtonTooltipMessage: 'Убрать из быстрых товаров',
+               ),
+-            ],
+-          ),
+-          SwitchListTile(
+-            contentPadding: EdgeInsets.zero,
+-            value: _includeArchived,
+-            title: const _UiText('Показывать архивные', 'Arxivdagilarni ko‘rsatish'),
+-            onChanged: busy
+-                ? null
+-                : (value) => task(() async {
+-                    _includeArchived = value;
+-                    await _load(reset: true);
+-                  }),
+-          ),
+-          FilledButton.icon(
++          ],
++        ),
++      ],
++      ..._notices(),
++      if (_loaded && _rows.isEmpty) _emptyResult(),
++      for (final row in _rows) _productTile(context, row),
++      if (_more) _loadMoreButton(),
++    ]),
++  );
++
++  @override
++  Widget build(BuildContext context) => Scaffold(
++    appBar: AppBar(
++      title: widget.admin
++          ? const _UiText('Каталог товаров', 'Tovarlar katalogi')
++          : const _UiText('Поиск товара', 'Tovar qidirish'),
++      actions: [
++        if (widget.admin) ...[
++          IconButton(
++            tooltip: _tr(context, 'Добавить товар', 'Tovar qo‘shish'),
+             onPressed: busy || _pending != null ? null : _create,
+-            icon: const Icon(Icons.add),
+-            label: const _UiText('Добавить товар', 'Tovar qo‘shish'),
+-          ),
+-          OutlinedButton.icon(
+-            onPressed: busy ? null : () => Navigator.of(context).push<void>(
+-              MaterialPageRoute(builder: (_) => _CatalogIssuesScreen(
+-                CatalogIssuesApi(widget.pos),
+-              )),
+-            ),
+-            icon: const Icon(Icons.flag_outlined),
+-            label: const _UiText('Заявки с касс', 'Kassalardan so‘rovlar'),
+-          ),
+-          OutlinedButton.icon(
+-            onPressed: busy || _pending != null
+-                ? null
+-                : () async {
+-                    await Navigator.of(context).push<void>(MaterialPageRoute(
+-                      builder: (_) => _CatalogBatchScreen(_api),
+-                    ));
+-                    if (mounted) await task(_refresh);
+-                  },
+-            icon: const Icon(Icons.checklist),
+-            label: const _UiText('Изменить несколько товаров', 'Bir nechta tovarni o‘zgartirish'),
+-          ),
+-          OutlinedButton.icon(
+-            onPressed: busy ? null : () => Navigator.of(context).push<void>(
+-              MaterialPageRoute(builder: (_) => _DiscountPolicyScreen(_api)),
+-            ),
+-            icon: const Icon(Icons.discount_outlined),
+-            label: const _UiText('Правила скидок', 'Chegirma qoidalari'),
+-          ),
+-          OutlinedButton.icon(
+-            onPressed: busy ? null : () => Navigator.of(context).push<void>(
+-              MaterialPageRoute(builder: (_) => _ShelfLabelsScreen(_api)),
+-            ),
+-            icon: const Icon(Icons.print_outlined),
+-            label: const _UiText('Полочные ценники', 'Tokcha narx yorliqlari'),
+-          ),
+-          OutlinedButton(
+-            onPressed: busy ? null : () async {
+-              await Navigator.of(context).push<void>(MaterialPageRoute(
+-                builder: (_) => _StockImportScreen(widget.pos.api, opening: false),
+-              ));
+-              if (mounted) await task(() => _load(reset: true));
+-            },
+-            child: const _UiText('Импорт CSV или XLSX', 'CSV yoki XLSX importi'),
+-          ),
 -        ],
+-        if (_pending != null) ...[
+-          const _UiStatus('Сервер ещё не подтвердил сохранение товара.', 'Server tovar saqlanganini hali tasdiqlamadi.'),
+-          OutlinedButton(
+-            onPressed: busy ? null : _retry,
+-            child: const _UiText('Проверить сохранение', 'Saqlanganini tekshirish'),
++            icon: const Icon(Icons.add_rounded, size: 28),
+           ),
++          _catalogMenu(context),
+         ],
 -        if (busy) const LinearProgressIndicator(),
 -        if (status != null) StatusBox(status!, error: failed),
 -        if (_loaded && _rows.isEmpty)
@@ -392,53 +461,8 @@
 -          OutlinedButton(
 -            onPressed: busy ? null : () => task(_load),
 -            child: const _UiText('Показать ещё', 'Yana ko‘rsatish'),
-+        ),
-+      ),
-+      OutlinedButton.icon(
-+        onPressed: busy ? null : _browseSaved,
-+        icon: const Icon(Icons.download_done),
-+        label: const _UiText('Карточки на устройстве', 'Qurilmadagi kartochkalar'),
-+      ),
-+      if (_quick.isNotEmpty) ...[
-+        _UiText('Быстрые товары', 'Tez tanlanadigan mahsulotlar', style: Theme.of(context).textTheme.titleSmall),
-+        Wrap(
-+          spacing: 8,
-+          children: [
-+            for (final row in _quick)
-+              InputChip(
-+                label: Text(row['name'] as String),
-+                onPressed: busy
-+                    ? null
-+                    : () => Navigator.pop(context, row['productId'] as String),
-+                onDeleted: busy ? null : () => _pin(row),
-+                deleteButtonTooltipMessage: 'Убрать из быстрых товаров',
-+              ),
-+          ],
-+        ),
-+      ],
-+      ..._notices(),
-+      if (_loaded && _rows.isEmpty) _emptyResult(),
-+      for (final row in _rows) _productTile(context, row),
-+      if (_more) _loadMoreButton(),
-+    ]),
-+  );
-+
-+  @override
-+  Widget build(BuildContext context) => Scaffold(
-+    appBar: AppBar(
-+      title: widget.admin
-+          ? const _UiText('Каталог товаров', 'Tovarlar katalogi')
-+          : const _UiText('Поиск товара', 'Tovar qidirish'),
-+      actions: [
-+        if (widget.admin) ...[
-+          IconButton(
-+            tooltip: _tr(context, 'Добавить товар', 'Tovar qo‘shish'),
-+            onPressed: busy || _pending != null ? null : _create,
-+            icon: const Icon(Icons.add_rounded, size: 28),
-           ),
+-          ),
 -      ]),
-+          _catalogMenu(context),
-+        ],
 +      ],
 +    ),
 +    body: SafeArea(
