@@ -1,0 +1,1639 @@
+--- a/apps/mobile-flutter/lib/catalog.dart
++++ b/apps/mobile-flutter/lib/catalog.dart
+@@ -141,7 +141,9 @@
+   @override
+   Widget build(BuildContext context) => Scaffold(
+     appBar: AppBar(
+-      title: Text(widget.admin ? 'Каталог товаров' : 'Поиск товара'),
++      title: widget.admin
++          ? const _UiText('Каталог товаров', 'Tovarlar katalogi')
++          : const _UiText('Поиск товара', 'Tovar qidirish'),
+       actions: [
+         if (widget.admin)
+           IconButton(
+@@ -153,7 +155,7 @@
+     ),
+     body: ListView(
+       padding: const EdgeInsets.all(16),
+-      children: [
++      children: _spaceFormControls([
+         TextField(
+           controller: _search,
+           enabled: !busy,
+@@ -162,8 +164,8 @@
+           onSubmitted: (_) => _submitSearch(),
+           decoration: InputDecoration(
+             labelText: widget.admin
+-                ? 'Название, артикул или штрихкод'
+-                : 'Название товара',
++                ? _tr(context, 'Название, артикул или штрихкод', 'Nomi, artikuli yoki shtrixkodi')
++                : _tr(context, 'Название товара', 'Tovar nomi'),
+             counterText: '',
+             suffixIcon: IconButton(
+               tooltip: _tr(context, 'Найти', 'Qidirish'),
+@@ -324,7 +326,7 @@
+             onPressed: busy ? null : () => task(_load),
+             child: const _UiText('Показать ещё', 'Yana ko‘rsatish'),
+           ),
+-      ],
++      ]),
+     ),
+   );
+ }
+@@ -414,22 +416,25 @@
+               style: Theme.of(context).textTheme.headlineSmall,
+             ),
+             Text(_catalogPrice(card)),
+-            Text(card['active'] == true ? 'Активен' : 'В архиве'),
++            Text(card['active'] == true ? _tr(context, 'Активен', 'Faol') : _tr(context, 'В архиве', 'Arxivda')),
+             const SizedBox(height: 12),
+-            Text('Единица учёта · ${card['unit'] == 'kg' ? 'кг' : 'шт.'}'),
++            Text(_tr(context,
++              'Единица учёта · ${card['unit'] == 'kg' ? 'кг' : 'шт.'}',
++              'Hisob birligi · ${card['unit'] == 'kg' ? 'kg' : 'dona'}',
++            )),
+             Text(
+               card['requiresExpiry'] == true
+-                  ? 'При приёмке требуется срок годности'
+-                  : 'При приёмке срок годности необязателен',
++                  ? _tr(context, 'При приёмке требуется срок годности', 'Qabulda yaroqlilik muddati talab qilinadi')
++                  : _tr(context, 'При приёмке срок годности необязателен', 'Qabulda yaroqlilik muddati ixtiyoriy'),
+             ),
+             for (final field in _productFields.entries)
+               if (field.key != 'name' &&
+                   (card[field.key] as String?)?.isNotEmpty == true)
+-                Text('${field.value.label} · ${card[field.key]}'),
++                Text('${_tr(context, field.value.russian, field.value.uzbek)} · ${card[field.key]}'),
+             for (final (index, barcode)
+                 in (card['barcodes'] as List).cast<Json>().indexed)
+               Text(
+-                '${index == 0 ? 'Основной код' : 'Дополнительный код'} '
++                '${index == 0 ? _tr(context, 'Основной код', 'Asosiy kod') : _tr(context, 'Дополнительный код', 'Qo‘shimcha kod')} '
+                 '${barcode['code']} · ×${barcode['quantityFactor']}',
+               ),
+             if ((card['barcodes'] as List).isEmpty)
+@@ -479,12 +484,9 @@
+ }
+ 
+ const _productFields = {
+-  'name': (label: 'Название', limit: 160),
+-  'sku': (label: 'Артикул', limit: 64),
+-  'category': (label: 'Категория', limit: 120),
+-  'brand': (label: 'Бренд', limit: 120),
+-  'supplierRef': (label: 'Код у поставщика', limit: 160),
+-  'taxProfile': (label: 'Налоговый профиль', limit: 80),
++  'name': (russian: 'Название', uzbek: 'Nomi', limit: 160),
++  'sku': (russian: 'Артикул', uzbek: 'Artikul', limit: 64),
++  ..._batchCatalogFields,
+ };
+ 
+ class _BarcodeDraft {
+@@ -522,16 +524,40 @@
+   late String _unit = (widget.card?['unit'] as String?) ?? 'piece';
+   late bool _expiry = widget.card?['requiresExpiry'] == true;
+ 
++  final _scroll = ScrollController();
++
++  @override
++  void dispose() {
++    _scroll.dispose();
++    super.dispose();
++  }
++
++  Future<void> _submit() async {
++    FocusScope.of(context).unfocus();
++    await _save();
++    if (!mounted || !failed || !_scroll.hasClients) return;
++    unawaited(_scroll.animateTo(
++      0,
++      duration: const Duration(milliseconds: 180),
++      curve: Curves.easeOut,
++    ));
++  }
++
+   Future<void> _save() => task(() async {
+     final name = _fields['name']!.trim();
+-    if (name.isEmpty) throw const FormatException('Введите название товара.');
++    if (name.isEmpty) {
++      throw FormatException(_tr(context, 'Введите название товара.', 'Tovar nomini kiriting.'));
++    }
+     final codes = <String>{};
+     final barcodes = <Json>[];
+     for (final (index, barcode) in _barcodes.indexed) {
+       final code = barcode.code.trim();
+       if (!RegExp(r'^\d{1,48}$').hasMatch(code) || !codes.add(code)) {
+         throw FormatException(
+-          'Проверьте штрихкод № ${index + 1}. Введите цифры без повторов кодов.',
++          _tr(context,
++            'Проверьте штрихкод № ${index + 1}. Введите цифры без повторов кодов.',
++            '${index + 1}-shtrixkodni tekshiring. Raqamlarni takrorlanmaydigan kod sifatida kiriting.',
++          ),
+         );
+       }
+       final factor = _catalogNumber(barcode.factor, decimals: 3, digits: 11);
+@@ -539,7 +565,10 @@
+           factor <= 0 ||
+           (_unit == 'piece' && factor % 1 != 0)) {
+         throw FormatException(
+-          'Проверьте количество в упаковке № ${index + 1}.',
++          _tr(context,
++            'Проверьте количество в упаковке № ${index + 1}.',
++            '${index + 1}-qadoqdagi miqdorni tekshiring.',
++          ),
+         );
+       }
+       barcodes.add({'code': code, 'quantityFactor': factor});
+@@ -560,7 +589,9 @@
+     if (!RegExp(r'^\d{1,48}$').hasMatch(code)) {
+       await task(
+         () async =>
+-            throw const FormatException('Нужен числовой штрихкод товара.'),
++            throw FormatException(_tr(context,
++              'Нужен числовой штрихкод товара.', 'Tovarning raqamli shtrixkodini kiriting.',
++            )),
+       );
+       return;
+     }
+@@ -576,113 +607,205 @@
+     });
+   }
+ 
+-  @override
+-  Widget build(BuildContext context) => PopScope(
+-    canPop: !busy,
+-    child: Scaffold(
+-      appBar: AppBar(
+-        title: Text(widget.card == null ? 'Новый товар' : 'Изменить карточку'),
++  Widget _field(String key) {
++    final field = _productFields[key]!;
++    return TextFormField(
++      key: ValueKey(key),
++      initialValue: _fields[key],
++      enabled: !busy,
++      maxLength: field.limit,
++      textInputAction: TextInputAction.next,
++      onChanged: (value) => _fields[key] = value,
++      decoration: InputDecoration(
++        labelText: _tr(context, field.russian, field.uzbek),
++        counterText: '',
+       ),
+-      body: ListView(
+-        padding: const EdgeInsets.all(16),
+-        children: [
+-          for (final field in _productFields.entries)
+-            TextFormField(
+-              initialValue: _fields[field.key],
+-              enabled: !busy,
+-              maxLength: field.value.limit,
+-              onChanged: (value) => _fields[field.key] = value,
+-              decoration: InputDecoration(
+-                labelText: field.value.label,
+-                counterText: '',
+-              ),
+-            ),
+-          DropdownButtonFormField<String>(
+-            initialValue: _unit,
+-            decoration: InputDecoration(labelText: _tr(context, 'Единица учёта', 'Hisob birligi')),
+-            items: const [
+-              DropdownMenuItem(value: 'piece', child: _UiText('Штука', 'Dona')),
+-              DropdownMenuItem(value: 'kg', child: _UiText('Килограмм', 'Kilogramm')),
+-            ],
+-            onChanged: busy || widget.card != null
+-                ? null
+-                : (value) => setState(() => _unit = value!),
++    );
++  }
++
++  Widget _barcodeEntry(int index, _BarcodeDraft barcode) => Padding(
++    key: ObjectKey(barcode),
++    padding: const EdgeInsets.only(bottom: 12),
++    child: Column(
++      crossAxisAlignment: CrossAxisAlignment.stretch,
++      children: [
++        Row(
++          children: [
++            Expanded(
++              child: TextFormField(
++                initialValue: barcode.code,
++                enabled: !busy,
++                maxLength: 48,
++                keyboardType: TextInputType.number,
++                decoration: InputDecoration(
++                  labelText: index == 0
++                      ? _tr(context, 'Основной штрихкод', 'Asosiy shtrixkod')
++                      : _tr(context, 'Дополнительный штрихкод', 'Qo‘shimcha shtrixkod'),
++                  counterText: '',
++                ),
++                onChanged: (value) => barcode.code = value,
++              ),
++            ),
++            const SizedBox(width: 4),
++            IconButton(
++              tooltip: _tr(context, 'Удалить код', 'Kodni o‘chirish'),
++              onPressed: busy
++                  ? null
++                  : () => setState(() => _barcodes.remove(barcode)),
++              icon: const Icon(Icons.delete_outline),
++            ),
++          ],
++        ),
++        const SizedBox(height: 12),
++        TextFormField(
++          initialValue: barcode.factor,
++          enabled: !busy,
++          keyboardType: TextInputType.numberWithOptions(decimal: _unit == 'kg'),
++          decoration: InputDecoration(
++            labelText: _unit == 'kg'
++                ? _tr(context, 'Килограммов в упаковке', 'Qadoqdagi kilogramm')
++                : _tr(context, 'Штук в упаковке', 'Qadoqdagi dona soni'),
+           ),
+-          SwitchListTile(
+-            contentPadding: EdgeInsets.zero,
+-            value: _expiry,
+-            title: const _UiText('Требовать срок годности при приёмке', 'Qabulda yaroqlilik muddatini talab qilish'),
+-            onChanged: busy ? null : (value) => setState(() => _expiry = value),
+-          ),
+-          const SizedBox(height: 8),
+-          _UiText('Штрихкоды', 'Shtrix-kodlar', style: Theme.of(context).textTheme.titleMedium),
+-          for (final (index, barcode) in _barcodes.indexed)
+-            Section(
+-              key: ObjectKey(barcode),
+-              child: Column(
+-                crossAxisAlignment: CrossAxisAlignment.stretch,
+-                children: [
+-                  TextFormField(
+-                    initialValue: barcode.code,
+-                    enabled: !busy,
+-                    maxLength: 48,
+-                    keyboardType: TextInputType.number,
+-                    decoration: InputDecoration(
+-                      labelText: index == 0
+-                          ? 'Основной штрихкод'
+-                          : 'Дополнительный штрихкод',
+-                      counterText: '',
+-                    ),
+-                    onChanged: (value) => barcode.code = value,
+-                  ),
+-                  TextFormField(
+-                    initialValue: barcode.factor,
+-                    enabled: !busy,
+-                    keyboardType: TextInputType.numberWithOptions(
+-                      decimal: _unit == 'kg',
++          onChanged: (value) => barcode.factor = value,
++        ),
++      ],
++    ),
++  );
++
++  @override
++  Widget build(BuildContext context) {
++    final text = Theme.of(context).textTheme;
++    final keyboardOpen = MediaQuery.viewInsetsOf(context).bottom > 0;
++    final saveButton = SizedBox(
++      width: double.infinity,
++      child: FilledButton(
++        onPressed: busy ? null : _submit,
++        child: const _UiText('Сохранить карточку', 'Kartochkani saqlash'),
++      ),
++    );
++    return PopScope(
++      canPop: !busy,
++      child: Scaffold(
++        appBar: AppBar(
++          title: widget.card == null
++              ? const _UiText('Новый товар', 'Yangi tovar')
++              : const _UiText('Изменить карточку', 'Kartochkani tahrirlash'),
++        ),
++        body: SafeArea(
++          top: false,
++          bottom: keyboardOpen,
++          child: ListView(
++            controller: _scroll,
++            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
++            padding: const EdgeInsets.all(16),
++            children: [
++              if (busy) const LinearProgressIndicator(),
++              if (status case final message?)
++                Semantics(liveRegion: true, child: StatusBox(message, error: failed)),
++              Section(
++                child: Column(
++                  crossAxisAlignment: CrossAxisAlignment.stretch,
++                  children: [
++                    _UiText('Основные данные', 'Asosiy ma’lumotlar', style: text.titleMedium),
++                    const SizedBox(height: 12),
++                    _field('name'),
++                    const SizedBox(height: 12),
++                    DropdownButtonFormField<String>(
++                      initialValue: _unit,
++                      decoration: InputDecoration(
++                        labelText: _tr(context, 'Единица учёта', 'Hisob birligi'),
++                      ),
++                      items: const [
++                        DropdownMenuItem(value: 'piece', child: _UiText('Штука', 'Dona')),
++                        DropdownMenuItem(value: 'kg', child: _UiText('Килограмм', 'Kilogramm')),
++                      ],
++                      onChanged: busy || widget.card != null
++                          ? null
++                          : (value) => setState(() => _unit = value!),
+                     ),
+-                    decoration: InputDecoration(
+-                      labelText: _unit == 'kg'
+-                          ? 'Килограммов в упаковке'
+-                          : 'Штук в упаковке',
++                  ],
++                ),
++              ),
++              Section(
++                child: Column(
++                  crossAxisAlignment: CrossAxisAlignment.stretch,
++                  children: [
++                    _UiText('Штрихкоды', 'Shtrixkodlar', style: text.titleMedium),
++                    const SizedBox(height: 12),
++                    for (final (index, barcode) in _barcodes.indexed)
++                      _barcodeEntry(index, barcode),
++                    Wrap(
++                      spacing: 8,
++                      runSpacing: 8,
++                      children: [
++                        FilledButton.tonalIcon(
++                          onPressed: busy || _barcodes.length >= 30 ? null : _scan,
++                          icon: const Icon(Icons.qr_code_scanner),
++                          label: const _UiText('Сканировать', 'Skanerlash'),
++                        ),
++                        OutlinedButton.icon(
++                          onPressed: busy || _barcodes.length >= 30
++                              ? null
++                              : () => setState(() => _barcodes.add(_BarcodeDraft('', '1'))),
++                          icon: const Icon(Icons.add),
++                          label: const _UiText('Ввести код', 'Kod kiritish'),
++                        ),
++                      ],
+                     ),
+-                    onChanged: (value) => barcode.factor = value,
++                  ],
++                ),
++              ),
++              Card(
++                child: ExpansionTile(
++                  maintainState: true,
++                  collapsedShape: const Border(),
++                  shape: const Border(),
++                  tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
++                  childrenPadding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
++                  title: const _UiText('Дополнительно', 'Qo‘shimcha ma’lumotlar'),
++                  subtitle: const _UiText(
++                    'Категория, бренд, срок годности',
++                    'Toifa, brend, yaroqlilik muddati',
+                   ),
+-                  Align(
+-                    alignment: Alignment.centerRight,
+-                    child: TextButton(
+-                      onPressed: busy
+-                          ? null
+-                          : () => setState(() => _barcodes.remove(barcode)),
+-                      child: const _UiText('Удалить код', 'Kodni o‘chirish'),
++                  children: [
++                    for (final key in const ['category', 'brand', 'sku', 'supplierRef', 'taxProfile']) ...[
++                      _field(key),
++                      const SizedBox(height: 12),
++                    ],
++                    SwitchListTile(
++                      contentPadding: EdgeInsets.zero,
++                      value: _expiry,
++                      title: const _UiText(
++                        'Требовать срок годности при приёмке',
++                        'Qabulda yaroqlilik muddatini talab qilish',
++                      ),
++                      onChanged: busy ? null : (value) => setState(() => _expiry = value),
+                     ),
+-                  ),
+-                ],
++                  ],
++                ),
+               ),
+-            ),
+-          OutlinedButton.icon(
+-            onPressed: busy || _barcodes.length >= 30
+-                ? null
+-                : () => setState(() => _barcodes.add(_BarcodeDraft('', '1'))),
+-            icon: const Icon(Icons.add),
+-            label: const _UiText('Добавить штрихкод', 'Shtrixkod qo‘shish'),
+-          ),
+-          OutlinedButton.icon(
+-            onPressed: busy || _barcodes.length >= 30 ? null : _scan,
+-            icon: const Icon(Icons.qr_code_scanner),
+-            label: const _UiText('Сканировать штрихкод', 'Shtrixkodni skanerlash'),
+-          ),
+-          const SizedBox(height: 8),
+-          if (busy) const LinearProgressIndicator(),
+-          if (status != null) StatusBox(status!, error: failed),
+-          FilledButton(
+-            onPressed: busy ? null : _save,
+-            child: const _UiText('Сохранить карточку', 'Kartochkani saqlash'),
++              if (keyboardOpen) saveButton,
++            ],
+           ),
+-        ],
++        ),
++        bottomNavigationBar: keyboardOpen
++            ? null
++            : DecoratedBox(
++                decoration: const BoxDecoration(
++                  color: Colors.white,
++                  border: Border(top: BorderSide(color: _workplaceLine)),
++                ),
++                child: SafeArea(
++                  top: false,
++                  child: Padding(
++                    padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
++                    child: saveButton,
++                  ),
++                ),
++              ),
+       ),
+-    ),
+-  );
++    );
++  }
+ }
+ 
+ num? _catalogNumber(String raw, {required int digits, required int decimals}) {
+@@ -770,7 +893,7 @@
+       appBar: AppBar(title: const _UiText('Розничная цена и архив', 'Chakana narx va arxiv')),
+       body: ListView(
+         padding: const EdgeInsets.all(16),
+-        children: [
++        children: _spaceFormControls([
+           Text(
+             widget.card['name'] as String,
+             style: Theme.of(context).textTheme.titleLarge,
+@@ -780,7 +903,10 @@
+             enabled: !busy,
+             keyboardType: const TextInputType.numberWithOptions(decimal: true),
+             decoration: InputDecoration(
+-              labelText: 'Сум за ${widget.card['unit'] == 'kg' ? 'кг' : 'шт.'}',
++              labelText: _tr(context,
++                'Сум за ${widget.card['unit'] == 'kg' ? 'кг' : 'шт.'}',
++                '${widget.card['unit'] == 'kg' ? 'Kilogramm' : 'Dona'} uchun so‘m',
++              ),
+             ),
+             onChanged: (value) => _price = value,
+           ),
+@@ -829,7 +955,7 @@
+                 _historyLoaded ? 'Показать ещё' : 'Загрузить историю',
+               ),
+             ),
+-        ],
++        ]),
+       ),
+     ),
+   );
+--- a/apps/mobile-flutter/lib/catalog_issues.dart
++++ b/apps/mobile-flutter/lib/catalog_issues.dart
+@@ -59,7 +59,9 @@
+   @override
+   Widget build(BuildContext context) => Scaffold(
+     appBar: AppBar(
+-      title: Text(widget.cashier ? 'Отправка заявки' : 'Заявки с касс'),
++      title: widget.cashier
++          ? const _UiText('Отправка заявки', 'So‘rov yuborish')
++          : const _UiText('Заявки с касс', 'Kassalardan kelgan so‘rovlar'),
+       actions: [
+         IconButton(
+           onPressed: busy ? null : () => task(() => _load(reset: true)),
+--- a/apps/mobile-flutter/lib/catalog_repricing.dart
++++ b/apps/mobile-flutter/lib/catalog_repricing.dart
+@@ -91,7 +91,7 @@
+       scrollable: true,
+       content: Column(
+         mainAxisSize: MainAxisSize.min,
+-        children: [
++        children: _spaceFormControls([
+           DropdownButtonFormField<String>(
+             initialValue: _mode,
+             decoration: InputDecoration(
+@@ -168,7 +168,7 @@
+                   ].join('\n'),
+                 ),
+               ),
+-        ],
++        ]),
+       ),
+       actions: [
+         TextButton(
+--- a/apps/mobile-flutter/lib/checkout_controls.dart
++++ b/apps/mobile-flutter/lib/checkout_controls.dart
+@@ -120,7 +120,7 @@
+     content: SingleChildScrollView(
+       child: Column(
+         mainAxisSize: MainAxisSize.min,
+-        children: [
++        children: _spaceFormControls([
+           Wrap(
+             spacing: 8,
+             children: [
+@@ -209,7 +209,7 @@
+               contentPadding: EdgeInsets.zero,
+               onChanged: (value) => setState(() => confirmed = value == true),
+             ),
+-        ],
++        ]),
+       ),
+     ),
+     actions: [
+@@ -260,9 +260,9 @@
+       key: _form,
+       child: Column(
+         mainAxisSize: MainAxisSize.min,
+-        children: [
++        children: _spaceFormControls([
+           _ReportOptionFilter(
+-            label: 'Вид скидки',
++            label: _tr(context, 'Вид скидки', 'Chegirma turi'),
+             value: _kind,
+             options: const {'amount': 'Сумма', 'percent': 'Процент'},
+             onChanged: (value) => setState(() => _kind = value),
+@@ -292,7 +292,7 @@
+                 : null,
+             onSaved: (input) => _reason = input?.trim(),
+           ),
+-        ],
++        ]),
+       ),
+     ),
+     actions: [
+--- a/apps/mobile-flutter/lib/customer_history.dart
++++ b/apps/mobile-flutter/lib/customer_history.dart
+@@ -212,7 +212,7 @@
+     scrollable: true,
+     content: Column(
+       mainAxisSize: MainAxisSize.min,
+-      children: [
++      children: _spaceFormControls([
+         DropdownButtonFormField<String>(
+           isExpanded: true,
+           decoration: InputDecoration(labelText: _tr(context, 'Канал', 'Kanal')),
+@@ -240,7 +240,7 @@
+           ],
+           onChanged: (value) => setState(() => _granted = value),
+         ),
+-      ],
++      ]),
+     ),
+     actions: [
+       TextButton(onPressed: () => Navigator.pop(context), child: const _UiText('Отмена', 'Bekor qilish')),
+--- a/apps/mobile-flutter/lib/customers.dart
++++ b/apps/mobile-flutter/lib/customers.dart
+@@ -247,7 +247,7 @@
+     body: SafeArea(
+       child: ListView(
+         padding: const EdgeInsets.all(16),
+-        children: [
++        children: _spaceFormControls([
+           if (busy) const LinearProgressIndicator(),
+           if (status != null) StatusBox(status!, error: failed),
+           TextField(
+@@ -325,7 +325,7 @@
+                 child: const _UiText('Показать ещё', 'Yana ko‘rsatish'),
+               ),
+           ],
+-        ],
++        ]),
+       ),
+     ),
+   );
+--- a/apps/mobile-flutter/lib/emergency_shift.dart
++++ b/apps/mobile-flutter/lib/emergency_shift.dart
+@@ -58,7 +58,7 @@
+       content: Column(
+         mainAxisSize: MainAxisSize.min,
+         crossAxisAlignment: CrossAxisAlignment.start,
+-        children: [
++        children: _spaceFormControls([
+           _UiText(
+             'Отложенных корзин · ${widget.parkedCount ?? '—'}',
+             'Kechiktirilgan savatlar · ${widget.parkedCount ?? '—'}',
+@@ -89,7 +89,7 @@
+               labelText: _tr(context, 'Причина', 'Sabab'),
+             ),
+           ),
+-        ],
++        ]),
+       ),
+       actions: [
+         TextButton(
+--- a/apps/mobile-flutter/lib/expenses.dart
++++ b/apps/mobile-flutter/lib/expenses.dart
+@@ -363,7 +363,7 @@
+         key: _form,
+         child: ListView(
+           padding: const EdgeInsets.all(16),
+-          children: [
++          children: _spaceFormControls([
+             OutlinedButton.icon(
+               onPressed: _chooseDate,
+               icon: const Icon(Icons.date_range_outlined),
+@@ -401,7 +401,7 @@
+                   : null,
+             ),
+             FilledButton(onPressed: _save, child: const _UiText('Сохранить расход', 'Xarajatni saqlash')),
+-          ],
++          ]),
+         ),
+       ),
+     );
+--- a/apps/mobile-flutter/lib/expiry.dart
++++ b/apps/mobile-flutter/lib/expiry.dart
+@@ -211,7 +211,7 @@
+         body: SafeArea(
+           child: ListView(
+             padding: const EdgeInsets.all(16),
+-            children: [
++            children: _spaceFormControls([
+               if (busy) const LinearProgressIndicator(),
+               if (status != null) StatusBox(status!, error: failed),
+               ?pendingExpiryCard,
+@@ -258,10 +258,10 @@
+               const SizedBox(height: 8),
+               TextField(
+                 enabled: !busy,
+-                decoration: const InputDecoration(
+-                  prefixIcon: Icon(Icons.search),
+-                  labelText: 'Поиск в загруженных партиях',
+-                  hintText: 'Товар, штрихкод или номер партии',
++                decoration: InputDecoration(
++                  prefixIcon: const Icon(Icons.search),
++                  labelText: _tr(context, 'Поиск в загруженных партиях', 'Yuklangan partiyalardan qidirish'),
++                  hintText: _tr(context, 'Товар, штрихкод или номер партии', 'Tovar, shtrixkod yoki partiya raqami'),
+                 ),
+                 onChanged: (value) =>
+                     setState(() => _query = value.trim().toLowerCase()),
+@@ -311,7 +311,7 @@
+                   onPressed: busy ? null : () => task(_load),
+                   child: const _UiText('Загрузить ещё', 'Yana yuklash'),
+                 ),
+-            ],
++            ]),
+           ),
+         ),
+       ),
+@@ -402,7 +402,7 @@
+       body: SafeArea(
+         child: ListView(
+           padding: const EdgeInsets.all(16),
+-          children: [
++          children: _spaceFormControls([
+             if (busy) const LinearProgressIndicator(),
+             if (status != null) StatusBox(status!, error: failed),
+             ?pendingExpiryCard,
+@@ -437,7 +437,7 @@
+                 onPressed: busy ? null : () => task(_load),
+                 child: const _UiText('Загрузить ещё', 'Yana yuklash'),
+               ),
+-          ],
++          ]),
+         ),
+       ),
+     ),
+@@ -552,7 +552,9 @@
+       canPop: !busy,
+       child: Scaffold(
+         appBar: AppBar(
+-          title: Text(_shelfTask == null ? 'Партия' : 'Задача по полке'),
++          title: _shelfTask == null
++              ? const _UiText('Партия', 'Partiya')
++              : const _UiText('Задача по полке', 'Peshtaxta bo‘yicha vazifa'),
+           actions: [
+             IconButton(
+               tooltip: _tr(context, 'Обновить остатки', 'Qoldiqlarni yangilash'),
+@@ -564,7 +566,7 @@
+         body: SafeArea(
+           child: ListView(
+             padding: const EdgeInsets.all(16),
+-            children: [
++            children: _spaceFormControls([
+               if (busy) const LinearProgressIndicator(),
+               if (status != null) StatusBox(status!, error: failed),
+               ?pendingExpiryCard,
+@@ -673,7 +675,7 @@
+                   child: const _UiText('Закрыть задачу', 'Vazifani yopish'),
+                 ),
+               ],
+-            ],
++            ]),
+           ),
+         ),
+       ),
+--- a/apps/mobile-flutter/lib/inventory.dart
++++ b/apps/mobile-flutter/lib/inventory.dart
+@@ -136,7 +136,7 @@
+             if (index == 0) {
+               return Column(
+                 crossAxisAlignment: CrossAxisAlignment.stretch,
+-                children: [
++                children: _spaceFormControls([
+                   if (busy) const LinearProgressIndicator(),
+                   if (status != null) StatusBox(status!, error: failed),
+                   OutlinedButton(
+@@ -150,10 +150,10 @@
+                   ),
+                   TextField(
+                     controller: _search,
+-                    decoration: const InputDecoration(
+-                      prefixIcon: Icon(Icons.search),
+-                      labelText: 'Поиск в загруженных партиях',
+-                      hintText: 'Товар, штрихкод или номер партии',
++                    decoration: InputDecoration(
++                      prefixIcon: const Icon(Icons.search),
++                      labelText: _tr(context, 'Поиск в загруженных партиях', 'Yuklangan partiyalardan qidirish'),
++                      hintText: _tr(context, 'Товар, штрихкод или номер партии', 'Tovar, shtrixkod yoki partiya raqami'),
+                     ),
+                     onChanged: (value) =>
+                         setState(() => _query = value.trim().toLowerCase()),
+@@ -165,7 +165,7 @@
+                           ? 'Остатков пока нет.'
+                           : 'Совпадений среди загруженных партий нет.',
+                     ),
+-                ],
++                ]),
+               );
+             }
+             if (index > visible.length) {
+@@ -723,9 +723,9 @@
+           ],
+           TextField(
+             controller: _search,
+-            decoration: const InputDecoration(
+-              prefixIcon: Icon(Icons.search),
+-              labelText: 'Товар или номер партии',
++            decoration: InputDecoration(
++              prefixIcon: const Icon(Icons.search),
++              labelText: _tr(context, 'Товар или номер партии', 'Tovar yoki partiya raqami'),
+             ),
+             onChanged: (value) =>
+                 setState(() => _query = value.trim().toLowerCase()),
+@@ -819,7 +819,9 @@
+       onPopInvokedWithResult: (didPop, _) => _exit(didPop),
+       child: Scaffold(
+         appBar: AppBar(
+-          title: Text(_blind ? 'Пересчёт партий' : 'Сверка инвентаризации'),
++          title: _blind
++              ? const _UiText('Пересчёт партий', 'Partiyalarni qayta sanash')
++              : const _UiText('Сверка инвентаризации', 'Inventarizatsiyani solishtirish'),
+           actions: [
+             IconButton(
+               tooltip: _tr(context, 'Обновить документ', 'Hujjatni yangilash'),
+@@ -875,7 +877,7 @@
+         key: form,
+         child: Column(
+           mainAxisSize: MainAxisSize.min,
+-          children: [
++          children: _spaceFormControls([
+             SelectableText('Партия № ${row['lotId']}'),
+             TextFormField(
+               autofocus: true,
+@@ -901,7 +903,7 @@
+               validator: validate,
+               onSaved: (value) => quarantine = parseQuantity(value!)!,
+             ),
+-          ],
++          ]),
+         ),
+       ),
+       actions: [
+--- a/apps/mobile-flutter/lib/main.dart
++++ b/apps/mobile-flutter/lib/main.dart
+@@ -448,7 +448,7 @@
+ 
+   Widget welcome(BuildContext context) => ListView(
+     padding: const EdgeInsets.all(16),
+-    children: [
++    children: _spaceFormControls([
+       _WelcomeBanner(signedIn: signedIn),
+       const SizedBox(height: 24),
+       if (signedIn && _platformIdentity != null)
+@@ -497,7 +497,7 @@
+           ),
+ 
+       ],
+-    ],
++    ]),
+   );
+ 
+   Widget workplace(BuildContext context) {
+@@ -1685,7 +1685,7 @@
+   Widget build(BuildContext context) => widget.historyTab ? _history(context) : ListView(
+     key: const PageStorageKey('cashier-sale'),
+     padding: const EdgeInsets.all(16),
+-    children: [
++    children: _spaceFormControls([
+       _WorkspaceTitle(Text(
+         pos.demo
+             ? _tr(context, 'Учебная касса', 'O‘quv kassasi')
+@@ -1871,7 +1871,7 @@
+         Section(
+           child: Column(
+             crossAxisAlignment: CrossAxisAlignment.stretch,
+-            children: [
++            children: _spaceFormControls([
+               if (ready &&
+                   shift != null &&
+                   !staleBasket &&
+@@ -1959,7 +1959,7 @@
+                 onPressed: canSell && lines.isNotEmpty ? payment : null,
+                 child: const _UiText('К оплате', 'To‘lovga o‘tish'),
+               ),
+-            ],
++            ]),
+           ),
+         ),
+       if (receipt case final result?)
+@@ -1984,7 +1984,7 @@
+             ],
+           ),
+         ),
+-    ],
++    ]),
+   );
+ }
+ 
+@@ -2313,7 +2313,7 @@
+   Widget _productFields(BuildContext context) => Section(
+     child: Column(
+       crossAxisAlignment: CrossAxisAlignment.stretch,
+-      children: [
++      children: _spaceFormControls([
+         _UiText(
+           'Добавить товар', 'Mahsulot qo‘shish',
+           style: Theme.of(context).textTheme.titleMedium,
+@@ -2359,7 +2359,7 @@
+             ],
+             onChanged: busy ? null : (value) => setState(() => unit = value!),
+           ),
+-      ],
++      ]),
+     ),
+   );
+ 
+@@ -2379,7 +2379,7 @@
+             padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+             child: Column(
+               crossAxisAlignment: CrossAxisAlignment.stretch,
+-              children: [
++              children: _spaceFormControls([
+                 TextField(
+                   controller: category,
+                   enabled: !busy,
+@@ -2410,7 +2410,7 @@
+                       labelText: _tr(context, 'Срок хранения, дней', 'Saqlash muddati, kun'),
+                     ),
+                   ),
+-              ],
++              ]),
+             ),
+           ),
+       ],
+--- a/apps/mobile-flutter/lib/platform.dart
++++ b/apps/mobile-flutter/lib/platform.dart
+@@ -164,7 +164,7 @@
+           content: Column(
+             mainAxisSize: MainAxisSize.min,
+             crossAxisAlignment: CrossAxisAlignment.start,
+-            children: [
++            children: _spaceFormControls([
+               Text(store.organizationName),
+               const SizedBox(height: 12),
+               TextFormField(
+@@ -184,7 +184,7 @@
+                 ),
+                 onChanged: (value) => setDialogState(() => reason = value.trim()),
+               ),
+-            ],
++            ]),
+           ),
+           actions: [
+             TextButton(
+@@ -251,7 +251,7 @@
+     body: SafeArea(
+       child: ListView(
+         padding: const EdgeInsets.all(16),
+-        children: [
++        children: _spaceFormControls([
+           if (!_accessLost)
+             SegmentedButton<bool>(
+               showSelectedIcon: false,
+@@ -316,7 +316,7 @@
+               onPressed: busy ? null : () => task(() => _load(more: true)),
+               child: const _UiText('Показать ещё', 'Yana ko‘rsatish'),
+             ),
+-        ],
++        ]),
+       ),
+     ),
+   );
+--- a/apps/mobile-flutter/lib/platform_store_commands.dart
++++ b/apps/mobile-flutter/lib/platform_store_commands.dart
+@@ -70,7 +70,7 @@
+         child: Column(
+           mainAxisSize: MainAxisSize.min,
+           crossAxisAlignment: CrossAxisAlignment.start,
+-          children: [
++          children: _spaceFormControls([
+             Text(location),
+             if (grantOwner)
+               const _UiText(
+@@ -103,7 +103,7 @@
+                   ? _tr(context, 'Укажите причину от 3 символов.', 'Kamida 3 belgidan iborat sababni kiriting.')
+                   : null,
+             ),
+-          ],
++          ]),
+         ),
+       ),
+       actions: [
+--- a/apps/mobile-flutter/lib/procurement.dart
++++ b/apps/mobile-flutter/lib/procurement.dart
+@@ -95,7 +95,7 @@
+     body: SafeArea(
+       child: ListView(
+         padding: const EdgeInsets.all(16),
+-        children: [
++        children: _spaceFormControls([
+           FilledButton.icon(
+             onPressed: busy || _pending != null
+                 ? null
+@@ -144,7 +144,7 @@
+               onPressed: busy ? null : () => task(_page),
+               child: const _UiText('Показать ещё', 'Yana ko‘rsatish'),
+             ),
+-        ],
++        ]),
+       ),
+     ),
+   );
+@@ -336,7 +336,7 @@
+       body: SafeArea(
+         child: ListView(
+           padding: const EdgeInsets.all(16),
+-          children: [
++          children: _spaceFormControls([
+             Text('Поставщик · ${widget.code}'),
+             OutlinedButton.icon(
+               onPressed: busy ? null : _pickDate,
+@@ -379,7 +379,7 @@
+                 onPressed: busy ? null : _save,
+                 child: const _UiText('Сохранить черновик', 'Qoralamani saqlash'),
+               ),
+-          ],
++          ]),
+         ),
+       ),
+     ),
+--- a/apps/mobile-flutter/lib/receipt_quantity_calculator.dart
++++ b/apps/mobile-flutter/lib/receipt_quantity_calculator.dart
+@@ -36,7 +36,7 @@
+         scrollable: true,
+         content: Column(
+           mainAxisSize: MainAxisSize.min,
+-          children: [
++          children: _spaceFormControls([
+             if (byWeight)
+               SwitchListTile(
+                 contentPadding: EdgeInsets.zero,
+@@ -75,7 +75,7 @@
+               onChanged: (value) => adjustment = value,
+             ),
+             if (error != null) StatusBox(error!, error: true),
+-          ],
++          ]),
+         ),
+         actions: [
+           TextButton(
+--- a/apps/mobile-flutter/lib/receipts.dart
++++ b/apps/mobile-flutter/lib/receipts.dart
+@@ -737,7 +737,7 @@
+             if (ready) ...[
+               Section(
+                 child: Column(
+-                  children: [
++                  children: _spaceFormControls([
+                     TextField(
+                       controller: supplier,
+                       enabled: canEditHeader && _orderId == null && _correction == null,
+@@ -828,13 +828,13 @@
+                               }
+                             },
+                     ),
+-                  ],
++                  ]),
+                 ),
+               ),
+               Section(
+                 child: Column(
+                   crossAxisAlignment: CrossAxisAlignment.stretch,
+-                  children: [
++                  children: _spaceFormControls([
+                     TextField(
+                       controller: barcode,
+                       enabled: canEdit,
+@@ -884,7 +884,7 @@
+                           onPressed: !canEdit ? null : () => removeLine(index),
+                         ),
+                       ),
+-                  ],
++                  ]),
+                 ),
+               ),
+               if (canEdit)
+@@ -1032,7 +1032,7 @@
+           key: form,
+           child: Column(
+             mainAxisSize: MainAxisSize.min,
+-            children: [
++            children: _spaceFormControls([
+               TextFormField(
+                 autofocus: previous == null,
+                 key: ValueKey(quantityFieldVersion),
+@@ -1186,7 +1186,7 @@
+                     : null,
+                 onSaved: (value) => price = parseAmount(value ?? ''),
+               ),
+-            ],
++            ]),
+           ),
+         ),
+         actions: [
+--- a/apps/mobile-flutter/lib/sales_history.dart
++++ b/apps/mobile-flutter/lib/sales_history.dart
+@@ -265,7 +265,7 @@
+             Section(
+               child: Column(
+                 crossAxisAlignment: CrossAxisAlignment.stretch,
+-                children: [
++                children: _spaceFormControls([
+                   TextField(
+                     controller: _number,
+                     enabled: !busy,
+@@ -323,7 +323,7 @@
+                       ),
+                     ],
+                   ),
+-                ],
++                ]),
+               ),
+             ),
+             if (_filters.shiftId != null && _loaded)
+@@ -619,7 +619,7 @@
+               Section(
+                 child: Column(
+                   crossAxisAlignment: CrossAxisAlignment.stretch,
+-                  children: [
++                  children: _spaceFormControls([
+                     Text(lines[i]['name'] as String),
+                     Text('Партия ${lines[i]['lotId']}'),
+                     Text(
+@@ -653,7 +653,7 @@
+                               }
+                             }),
+                     ),
+-                  ],
++                  ]),
+                 ),
+               ),
+             TextField(
+--- a/apps/mobile-flutter/lib/shift_cash_count.dart
++++ b/apps/mobile-flutter/lib/shift_cash_count.dart
+@@ -70,7 +70,7 @@
+     content: Column(
+       mainAxisSize: MainAxisSize.min,
+       crossAxisAlignment: CrossAxisAlignment.stretch,
+-      children: [
++      children: _spaceFormControls([
+         if (widget.supportsDenominations)
+           SegmentedButton<bool>(
+             segments: const [
+@@ -134,7 +134,7 @@
+               }),
+             ),
+         ],
+-      ],
++      ]),
+     ),
+     actions: [
+       TextButton(
+--- a/apps/mobile-flutter/lib/shift_reports.dart
++++ b/apps/mobile-flutter/lib/shift_reports.dart
+@@ -381,7 +381,7 @@
+           Section(
+             child: Column(
+               crossAxisAlignment: CrossAxisAlignment.start,
+-              children: [
++              children: _spaceFormControls([
+                 if (summary['businessDate'] case final String date)
+                   _UiText('Торговый день · ${_reportDate(date)}', 'Savdo kuni · ${_reportDate(date)}'),
+                 Text('Открыта · ${_saleTime(summary['openedAt'])}'),
+@@ -484,7 +484,7 @@
+                     onPressed: busy ? null : _reviewShortage,
+                     child: const _UiText('Подтвердить недостачу', 'Kamomadni tasdiqlash'),
+                   ),
+-              ],
++              ]),
+             ),
+           ),
+           _UiText(
+--- a/apps/mobile-flutter/lib/stock_documents.dart
++++ b/apps/mobile-flutter/lib/stock_documents.dart
+@@ -102,7 +102,7 @@
+       ),
+       body: ListView(
+         padding: const EdgeInsets.all(16),
+-        children: [
++        children: _spaceFormControls([
+           if (busy) const LinearProgressIndicator(),
+           if (status != null) StatusBox(status!, error: failed),
+           OutlinedButton(
+@@ -132,7 +132,7 @@
+               onPressed: busy ? null : () => task(() => _load(more: true)),
+               child: const _UiText('Показать ещё', 'Yana ko‘rsatish'),
+             ),
+-        ],
++        ]),
+       ),
+     ),
+   );
+--- a/apps/mobile-flutter/lib/stock_import.dart
++++ b/apps/mobile-flutter/lib/stock_import.dart
+@@ -138,7 +138,9 @@
+     return PopScope(
+       canPop: !busy,
+       child: Scaffold(
+-        appBar: AppBar(title: Text(widget.opening ? 'Начальные остатки' : 'Импорт каталога')),
++        appBar: AppBar(title: widget.opening
++            ? const _UiText('Начальные остатки', 'Boshlang‘ich qoldiqlar')
++            : const _UiText('Импорт каталога', 'Katalogni import qilish')),
+         body: ListView(
+           padding: const EdgeInsets.all(16),
+           children: [
+--- a/apps/mobile-flutter/lib/store_audit.dart
++++ b/apps/mobile-flutter/lib/store_audit.dart
+@@ -124,7 +124,7 @@
+     body: SafeArea(
+       child: ListView(
+         padding: const EdgeInsets.all(16),
+-        children: [
++        children: _spaceFormControls([
+           OutlinedButton(
+             onPressed: busy ? null : _chooseRange,
+             child: Text('${_reportDate(dateText(_range.start))} — '
+@@ -160,7 +160,7 @@
+               onPressed: busy ? null : () => task(() => _load(more: true)),
+               child: const _UiText('Показать ещё', 'Yana ko‘rsatish'),
+             ),
+-        ],
++        ]),
+       ),
+     ),
+   );
+--- a/apps/mobile-flutter/lib/store_profile.dart
++++ b/apps/mobile-flutter/lib/store_profile.dart
+@@ -516,7 +516,7 @@
+       body: SafeArea(
+         child: ListView(
+           padding: const EdgeInsets.all(16),
+-          children: [
++          children: _spaceFormControls([
+             if (busy) const LinearProgressIndicator(),
+             if (status != null) StatusBox(status!, error: failed),
+             if (readiness != null) ...[
+@@ -554,7 +554,7 @@
+               icon: const Icon(Icons.file_download_outlined),
+               label: const _UiText('Сохранить диагностику', 'Diagnostikani saqlash'),
+             ),
+-          ],
++          ]),
+         ),
+       ),
+     );
+--- a/apps/mobile-flutter/lib/store_reports.dart
++++ b/apps/mobile-flutter/lib/store_reports.dart
+@@ -420,7 +420,7 @@
+       ),
+       body: ListView(
+         padding: const EdgeInsets.all(16),
+-        children: [
++        children: _spaceFormControls([
+           if (widget.lot case final lot?) ...[
+             Text(lot.name, style: Theme.of(context).textTheme.titleMedium),
+             SelectableText(_tr(context, 'Партия № ${lot.lotId}', 'Partiya № ${lot.lotId}')),
+@@ -484,7 +484,7 @@
+               }),
+             ),
+             _ReportOptionFilter(
+-              label: 'Статус смены',
++              label: _tr(context, 'Статус смены', 'Smena holati'),
+               value: _shiftStatus,
+               options: const {
+                 'all': 'Все смены',
+@@ -499,7 +499,7 @@
+                     }),
+             ),
+             _ReportOptionFilter(
+-              label: 'Расхождение наличных',
++              label: _tr(context, 'Расхождение наличных', 'Naqd pul tafovuti'),
+               value: _difference,
+               options: const {
+                 'all': 'Любое',
+@@ -642,7 +642,7 @@
+               onPressed: busy ? null : () => task(() => _load(more: true)),
+               child: const _UiText('Показать ещё', 'Yana ko‘rsatish'),
+             ),
+-        ],
++        ]),
+       ),
+     );
+   }
+--- a/apps/mobile-flutter/lib/supplier_returns.dart
++++ b/apps/mobile-flutter/lib/supplier_returns.dart
+@@ -267,7 +267,7 @@
+       child: SingleChildScrollView(
+         child: Column(
+           mainAxisSize: MainAxisSize.min,
+-          children: [
++          children: _spaceFormControls([
+             DropdownButtonFormField<String>(
+               initialValue: _bucket,
+               decoration: InputDecoration(labelText: widget.adjustment
+@@ -308,7 +308,7 @@
+                     : null;
+               },
+             ),
+-          ],
++          ]),
+         ),
+       ),
+     ),
+--- a/apps/mobile-flutter/lib/suppliers.dart
++++ b/apps/mobile-flutter/lib/suppliers.dart
+@@ -109,7 +109,7 @@
+     body: SafeArea(
+       child: ListView(
+         padding: const EdgeInsets.all(16),
+-        children: [
++        children: _spaceFormControls([
+           FilledButton.icon(
+             onPressed: busy || _pending != null ? null : _create,
+             icon: const Icon(Icons.add),
+@@ -158,18 +158,18 @@
+               onPressed: busy ? null : () => task(_loadPage),
+               child: const _UiText('Показать ещё', 'Yana ko‘rsatish'),
+             ),
+-        ],
++        ]),
+       ),
+     ),
+   );
+ }
+ 
+ const _supplierFields = {
+-  'name': (label: 'Название', limit: 160),
+-  'taxId': (label: 'ИНН', limit: 40),
+-  'phone': (label: 'Телефон', limit: 60),
+-  'email': (label: 'Электронная почта', limit: 254),
+-  'paymentTerms': (label: 'Условия оплаты', limit: 500),
++  'name': (russian: 'Название', uzbek: 'Nomi', limit: 160),
++  'taxId': (russian: 'ИНН', uzbek: 'STIR', limit: 40),
++  'phone': (russian: 'Телефон', uzbek: 'Telefon', limit: 60),
++  'email': (russian: 'Электронная почта', uzbek: 'Elektron pochta', limit: 254),
++  'paymentTerms': (russian: 'Условия оплаты', uzbek: 'To‘lov shartlari', limit: 500),
+ };
+ 
+ class _SupplierCardScreen extends StatefulWidget {
+@@ -244,7 +244,7 @@
+                           (card[entry.key] as String?)?.isNotEmpty == true)
+                         ListTile(
+                           contentPadding: EdgeInsets.zero,
+-                          title: Text(entry.value.label),
++                          title: _UiText(entry.value.russian, entry.value.uzbek),
+                           subtitle: SelectableText(card[entry.key] as String),
+                         ),
+                     ListTile(
+@@ -326,14 +326,14 @@
+     canPop: !busy,
+     child: Scaffold(
+       appBar: AppBar(
+-        title: Text(
+-          widget.card == null ? 'Новый поставщик' : 'Изменить карточку',
+-        ),
++        title: widget.card == null
++            ? const _UiText('Новый поставщик', 'Yangi yetkazib beruvchi')
++            : const _UiText('Изменить карточку', 'Kartochkani tahrirlash'),
+       ),
+       body: SafeArea(
+         child: ListView(
+           padding: const EdgeInsets.all(16),
+-          children: [
++          children: _spaceFormControls([
+             TextFormField(
+               initialValue: _code,
+               enabled: !busy,
+@@ -357,7 +357,7 @@
+                   _ => TextInputType.text,
+                 },
+                 decoration: InputDecoration(
+-                  labelText: entry.value.label,
++                  labelText: _tr(context, entry.value.russian, entry.value.uzbek),
+                   counterText: '',
+                 ),
+                 onChanged: (value) => _fields[entry.key] = value,
+@@ -388,7 +388,7 @@
+               onPressed: busy ? null : _save,
+               child: const _UiText('Сохранить карточку', 'Kartochkani saqlash'),
+             ),
+-          ],
++          ]),
+         ),
+       ),
+     ),
+@@ -611,7 +611,9 @@
+   @override
+   Widget build(BuildContext context) => Scaffold(
+     appBar: AppBar(
+-      title: Text(widget.invoices ? 'Проведённые накладные' : 'История оплат'),
++      title: widget.invoices
++          ? const _UiText('Проведённые накладные', 'O‘tkazilgan yukxatlar')
++          : const _UiText('История оплат', 'To‘lovlar tarixi'),
+       actions: [
+         IconButton(
+           onPressed: busy ? null : () => task(_reload),
+@@ -787,7 +789,7 @@
+       body: SafeArea(
+         child: ListView(
+           padding: const EdgeInsets.all(16),
+-          children: [
++          children: _spaceFormControls([
+             const _UiText('Введите данные проведённой оплаты.', 'Amalga oshirilgan to‘lov ma’lumotlarini kiriting.'),
+             const SizedBox(height: 8),
+             TextFormField(
+@@ -819,7 +821,7 @@
+               onPressed: busy ? null : _save,
+               child: const _UiText('Зарегистрировать', 'Ro‘yxatga olish'),
+             ),
+-          ],
++          ]),
+         ),
+       ),
+     ),
+--- a/apps/mobile-flutter/lib/workplace_ui.dart
++++ b/apps/mobile-flutter/lib/workplace_ui.dart
+@@ -1,12 +1,33 @@
+ part of 'main.dart';
+ 
+-const _workplaceSurface = Color(0xfff6f6f0);
++const _workplaceSurface = Color(0xfff2f6f3);
+ const _workplaceLine = Color(0xffdce4dd);
+ const _workplaceInk = Color(0xff1b3027);
+ const _workplaceMeta = Color(0xff50665a);
+ const _workplaceControlRadius = BorderRadius.all(Radius.circular(12));
+ const _kassaFont = 'Roboto';
+ 
++bool _isFormControl(Widget child) =>
++    child is TextField ||
++    child is FormField ||
++    child is _ReportOptionFilter ||
++    child is SwitchListTile ||
++    child is CheckboxListTile ||
++    child is DropdownMenu ||
++    child is SegmentedButton;
++
++List<Widget> _spaceFormControls(List<Widget> children) {
++  return [
++    for (var i = 0; i < children.length; i++) ...[
++      if (i > 0 &&
++          (_isFormControl(children[i - 1]) || children[i - 1] is ButtonStyleButton) &&
++          (_isFormControl(children[i]) || children[i] is ButtonStyleButton))
++        SizedBox(height: _isFormControl(children[i - 1]) || _isFormControl(children[i]) ? 12 : 8),
++      children[i],
++    ],
++  ];
++}
++
+ ThemeData _kassaTheme() {
+   final scheme = ColorScheme.fromSeed(
+     seedColor: _accent,
+@@ -35,6 +56,7 @@
+     appBarTheme: const AppBarTheme(
+       backgroundColor: Colors.white,
+       foregroundColor: _workplaceInk,
++      shape: Border(bottom: BorderSide(color: _workplaceLine)),
+       surfaceTintColor: Colors.transparent,
+       systemOverlayStyle: SystemUiOverlayStyle.dark,
+       titleTextStyle: TextStyle(
+@@ -75,6 +97,9 @@
+     inputDecorationTheme: const InputDecorationTheme(
+       filled: true,
+       fillColor: Colors.white,
++      isDense: true,
++      constraints: BoxConstraints(minHeight: 48),
++      contentPadding: EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+       border: field,
+       enabledBorder: OutlineInputBorder(
+         borderRadius: _workplaceControlRadius,
+--- a/apps/mobile-flutter/pubspec.yaml
++++ b/apps/mobile-flutter/pubspec.yaml
+@@ -1,7 +1,7 @@
+ name: kassa_mobile
+ description: Android POS pilot for Kassa.
+ publish_to: none
+-version: 0.2.83+2103
++version: 0.2.84+2104
+ environment:
+   sdk: ">=3.10.0 <4.0.0"
+ dependencies:
+--- /dev/null
++++ b/apps/mobile-flutter/test/form_layout_test.dart
+@@ -0,0 +1,185 @@
++import 'dart:convert';
++import 'dart:io';
++import 'dart:ui' as ui;
++
++import 'package:flutter/material.dart';
++import 'package:flutter/rendering.dart';
++import 'package:flutter/services.dart';
++import 'package:flutter_secure_storage/flutter_secure_storage.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:http/http.dart' as http;
++import 'package:http/testing.dart';
++import 'package:kassa_mobile/main.dart';
++import 'package:kassa_mobile/pos.dart';
++
++class _LayoutLogin extends Login {
++  _LayoutLogin(super.storage);
++
++  @override
++  String get subject => 'layout-admin-fixture';
++
++  @override
++  Future<void> signIn() async {}
++
++  @override
++  Future<String> accessToken({bool force = false}) async => 'fixture-token';
++}
++
++Future<void> _loadPreviewFont(String family, String variable) async {
++  final path = Platform.environment[variable];
++  if (path == null || path.isEmpty) return;
++  final loader = FontLoader(family)
++    ..addFont(Future.value(ByteData.sublistView(File(path).readAsBytesSync())));
++  await loader.load();
++}
++
++void main() {
++  TestWidgetsFlutterBinding.ensureInitialized();
++  final preview = Platform.environment['KASSA_FORM_PREVIEW'];
++
++  setUpAll(() async {
++    if (preview == null) return;
++    await _loadPreviewFont('Roboto', 'KASSA_PREVIEW_TEXT_FONT');
++    await _loadPreviewFont('MaterialIcons', 'KASSA_PREVIEW_ICONS');
++  });
++
++  testWidgets('compact product editor retains details and shared spacing is used by suppliers and expenses',
++      (tester) async {
++    tester.view.devicePixelRatio = 1;
++    tester.view.physicalSize = const Size(390, 780);
++    addTearDown(tester.view.resetDevicePixelRatio);
++    addTearDown(tester.view.resetPhysicalSize);
++    FlutterSecureStorage.setMockInitialValues({'kassa.ui.language': 'uz'});
++    const storage = FlutterSecureStorage();
++    const store = '/v1/stores/$testStore';
++    const catalog = '$store/catalog/products';
++    Json? card;
++    http.Response response(Object value) => http.Response.bytes(
++      utf8.encode(jsonEncode(value)),
++      200,
++      headers: {'content-type': 'application/json; charset=utf-8'},
++    );
++    final pos = Pos(
++      storage,
++      login: _LayoutLogin(storage),
++      client: MockClient((request) async {
++        final path = request.url.path;
++        switch (path) {
++          case '/v1/me/roles':
++            return response({'storeId': testStore, 'roles': ['admin']});
++          case '$store/receiving/catalog/proposals':
++          case '$store/suppliers':
++          case catalog:
++            return response([]);
++          case '$store/finance/expenses':
++            final query = request.url.queryParameters;
++            return response({
++              'storeId': testStore,
++              'from': query['from'],
++              'to': query['to'],
++              'category': query['category'],
++              'includeReversed': false,
++              'items': [],
++            });
++        }
++        if (path.startsWith('$catalog/')) {
++          if (request.method == 'PUT') {
++            card = {
++              ...(jsonDecode(request.body) as Json),
++              'productId': request.url.pathSegments.last,
++              'version': 1,
++              'active': true,
++            };
++          }
++          return response(card!);
++        }
++        fail('Unexpected request $path');
++      }),
++    );
++    addTearDown(pos.api.close);
++    final boundary = GlobalKey();
++
++    Future<void> tap(Finder finder) async {
++      await tester.ensureVisible(finder);
++      await tester.pumpAndSettle();
++      await tester.tap(finder);
++      await tester.pumpAndSettle();
++    }
++    Future<void> destination(String label) =>
++        tap(find.widgetWithText(NavigationDestination, label));
++
++    Future<void> capture(String filename) async {
++      if (preview == null) return;
++      await tester.runAsync(() async {
++        final render = boundary.currentContext!.findRenderObject() as RenderRepaintBoundary;
++        final screenshot = await render.toImage(pixelRatio: 2);
++        try {
++          final bytes = await screenshot.toByteData(format: ui.ImageByteFormat.png);
++          final file = File('$preview/$filename.png');
++          file.parent.createSync(recursive: true);
++          file.writeAsBytesSync(bytes!.buffer.asUint8List());
++        } finally {
++          screenshot.dispose();
++        }
++      });
++    }
++
++    await tester.pumpWidget(RepaintBoundary(key: boundary, child: KassaApp(pos: pos, debugPilot: true)));
++    await tester.pumpAndSettle();
++    await tap(find.text('Hisobga kirish'));
++    await destination('Tovarlar');
++    await tap(find.text('Tovarlar katalogi'));
++    await tap(find.text('Tovar qo‘shish'));
++    expect(find.text('Yangi tovar'), findsOneWidget);
++    expect(find.text('Новый товар'), findsNothing);
++    final save = find.text('Kartochkani saqlash');
++    final details = find.text('Qo‘shimcha ma’lumotlar');
++    expect(save.hitTestable(), findsOneWidget);
++    expect(find.text('Soliq profili').hitTestable(), findsNothing);
++    expect(details.hitTestable(), findsOneWidget);
++    await capture('01-product');
++
++    await tap(save);
++    expect(find.text('Tovar nomini kiriting.'), findsOneWidget);
++    await tester.enterText(find.widgetWithText(TextFormField, 'Nomi'), 'Sinov choyi');
++    FocusManager.instance.primaryFocus?.unfocus();
++    await tester.pumpAndSettle();
++    await tap(details);
++    final category = find.widgetWithText(TextFormField, 'Toifa');
++    expect(category, findsOneWidget);
++    await tester.ensureVisible(category);
++    await tester.pumpAndSettle();
++    await tester.enterText(category, 'Ichimliklar');
++    FocusManager.instance.primaryFocus?.unfocus();
++    await tester.pumpAndSettle();
++    await tap(details);
++    await tap(save);
++    expect(card?['name'], 'Sinov choyi');
++    expect(card?['category'], 'Ichimliklar');
++    expect(card?['unit'], 'piece');
++    expect(card?['barcodes'], isEmpty);
++
++    await tester.pageBack();
++    await tester.pumpAndSettle();
++    await tester.pageBack();
++    await tester.pumpAndSettle();
++    await tap(find.text('Yetkazib beruvchilar'));
++    await tap(find.text('Yetkazib beruvchi qo‘shish'));
++    expect(find.text('Yangi yetkazib beruvchi'), findsOneWidget);
++    final supplierName = find.widgetWithText(TextFormField, 'Nomi');
++    final taxId = find.widgetWithText(TextFormField, 'STIR');
++    expect(tester.getTopLeft(taxId).dy - tester.getBottomLeft(supplierName).dy, greaterThanOrEqualTo(10));
++    await capture('02-supplier');
++
++    await tester.pageBack();
++    await tester.pumpAndSettle();
++    await tester.pageBack();
++    await tester.pumpAndSettle();
++    await destination('Do‘kon');
++    await tap(find.text('Do‘kon xarajatlari'));
++    await tap(find.text('Xarajat qo‘shish'));
++    expect(find.text('Yangi xarajat'), findsOneWidget);
++    await capture('03-expense');
++    expect(tester.takeException(), isNull);
++  });
++}
