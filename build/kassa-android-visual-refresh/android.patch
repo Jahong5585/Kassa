@@ -213,7 +213,7 @@
 +
 --- /dev/null
 +++ b/apps/mobile-flutter/lib/dashboard.dart
-@@ -0,0 +1,110 @@
+@@ -0,0 +1,113 @@
 +part of 'main.dart';
 +
 +// Layout review follows unslop by Damir Sokolovsky (@heydamir), CC BY 4.0.
@@ -309,12 +309,15 @@
 +                    MaterialPageRoute(builder: action.page)),
 +                  child: Padding(
 +                    padding: const EdgeInsets.all(16),
-+                    child: Row(children: [
-+                      Icon(action.icon, color: Theme.of(context).colorScheme.primary, size: 22),
-+                      const SizedBox(width: 12),
-+                      Expanded(child: Text(_tr(context, action.ru, action.uz),
-+                        style: Theme.of(context).textTheme.titleSmall)),
-+                    ]),
++                    child: Column(
++                      crossAxisAlignment: CrossAxisAlignment.start,
++                      children: [
++                        Icon(action.icon, color: Theme.of(context).colorScheme.primary, size: 22),
++                        const SizedBox(height: 12),
++                        Text(_tr(context, action.ru, action.uz),
++                          style: Theme.of(context).textTheme.titleSmall),
++                      ],
++                    ),
 +                  ),
 +                ),
 +              ),
@@ -606,6 +609,91 @@
          children: children,
        ),
      ),
+--- a/apps/mobile-flutter/lib/store_reports.dart
++++ b/apps/mobile-flutter/lib/store_reports.dart
+@@ -35,59 +35,44 @@
+     body: ListView(
+       padding: const EdgeInsets.all(16),
+       children: [
+-        if (api.supportsOperation('GET', '${api.store}/trading-day'))
+-          Section(
+-            child: ListTile(
+-              contentPadding: EdgeInsets.zero,
+-              leading: const Icon(Icons.today_outlined),
++        _WorkspaceActions([
++          if (api.supportsOperation('GET', '${api.store}/trading-day'))
++            _WorkspaceAction(
++              icon: Icons.today_outlined,
+               title: const _UiText('Торговый день', 'Savdo kuni'),
+-              trailing: const Icon(Icons.chevron_right),
+               onTap: () => Navigator.of(context).push<void>(MaterialPageRoute(
+                 builder: (_) => _StoreProfileScreen(api, tradingDay: true),
+               )),
+             ),
+-          ),
+-        Section(
+-          child: ListTile(
+-            contentPadding: EdgeInsets.zero,
+-            leading: const Icon(Icons.warning_amber_outlined),
+-            title: const _UiText('Проблемы магазина', 'Do‘kon muammolari'),
+-            trailing: const Icon(Icons.chevron_right),
+-            onTap: () => Navigator.of(context).push<void>(
+-              MaterialPageRoute(
+-                builder: (_) => _StoreExceptionsScreen(api),
+-              ),
+-            ),
+-          ),
+-        ),
+-        for (final report in _StoreReport.values)
+-          if (api.supportsOperation(
+-            'GET', '/v1/reports/stores/${api.storeId}/${report.path}',
+-          ))
+-            Section(
+-              child: ListTile(
+-                contentPadding: EdgeInsets.zero,
+-                leading: Icon(report.icon),
++          for (final report in _StoreReport.values)
++            if (api.supportsOperation(
++              'GET', '/v1/reports/stores/${api.storeId}/${report.path}',
++            ))
++              _WorkspaceAction(
++                icon: report.icon,
+                 title: Text(report.title),
+-                trailing: const Icon(Icons.chevron_right),
+                 onTap: () => Navigator.of(context).push<void>(
+-                  MaterialPageRoute(
+-                    builder: (_) => _StoreReportScreen(api, report),
+-                  ),
++                  MaterialPageRoute(builder: (_) => _StoreReportScreen(api, report)),
+                 ),
+               ),
++        ]),
++        const SizedBox(height: 8),
++        _WorkspaceActions([
++          _WorkspaceAction(
++            icon: Icons.warning_amber_outlined,
++            title: const _UiText('Проблемы магазина', 'Do‘kon muammolari'),
++            onTap: () => Navigator.of(context).push<void>(
++              MaterialPageRoute(builder: (_) => _StoreExceptionsScreen(api)),
+             ),
+-        Section(
+-          child: ListTile(
+-            contentPadding: EdgeInsets.zero,
+-            leading: const Icon(Icons.history),
++          ),
++          _WorkspaceAction(
++            icon: Icons.history,
+             title: const _UiText('Журнал магазина', 'Do‘kon jurnali'),
+-            trailing: const Icon(Icons.chevron_right),
+             onTap: () => Navigator.of(context).push<void>(
+               MaterialPageRoute(builder: (_) => _StoreAuditScreen(api)),
+             ),
+           ),
+-        ),
++        ]),
+       ],
+     ),
+   );
 --- a/apps/mobile-flutter/pubspec.yaml
 +++ b/apps/mobile-flutter/pubspec.yaml
 @@ -1,7 +1,7 @@
@@ -644,7 +732,7 @@
      await tap(find.widgetWithText(CheckboxListTile, 'Владелец магазина'));
 --- /dev/null
 +++ b/apps/mobile-flutter/test/workspace_visual_test.dart
-@@ -0,0 +1,188 @@
+@@ -0,0 +1,206 @@
 +import 'dart:convert';
 +import 'dart:io';
 +import 'dart:ui' as ui;
@@ -711,6 +799,8 @@
 +          case '$_base/operator-sessions':
 +            return reply({'storeId':_store,'organizationId':_ownerId,'sessionId':_register,
 +              'operatorSessionToken':'v'*43,'operator':owner});
++          case '/v1/shifts/active':
++            return reply({'shift':null});
 +          case '/v1/me/roles':
 +            return reply({'storeId':_store,'staffId':_ownerId,'owner':true,'roles':owner['roles']});
 +          case '$_base/receiving/catalog/proposals':
@@ -831,5 +921,21 @@
 +    await tap(find.widgetWithText(TextButton,'Приёмщик'));
 +    await tap(find.widgetWithText(CheckedPopupMenuItem<Object>,'Администратор'));
 +    await shot('24-narrow-overview');
++    final origin=pos.api.origin.origin;
++    await pos.storage.write(
++      key:KassaLocation(_store,_register).storageKey(origin,pos.login.subject,Desk.cashier,'register-key'),
++      value:'b'*64);
++    await pos.storage.write(
++      key:KassaLocation(_store,null).storageKey(origin,pos.login.subject,Desk.admin,'operator-terminal'),
++      value:jsonEncode({'id':_register,'name':'Касса3'}));
++    await tap(find.widgetWithText(TextButton,'Администратор'));
++    await tap(find.widgetWithText(CheckedPopupMenuItem<Object>,'Кассир'));
++    await shot('25-narrow-cashier');
++    tester.platformDispatcher.textScaleFactorTestValue=1.5;
++    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
++    await tap(find.widgetWithText(TextButton,'Кассир'));
++    await tap(find.widgetWithText(CheckedPopupMenuItem<Object>,'Администратор'));
++    await shot('26-large-text-overview');
++
 +  });
 +}

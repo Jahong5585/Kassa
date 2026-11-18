@@ -76,7 +76,7 @@ jobs:
           echo 'd00172630bd2867d991dd1ff418c6633893c974e765d7bf5ba3ab1d49c8a2149  build/kassa-android-reuse-register/android.patch' | sha256sum --check
           patch --batch --fuzz=0 -p1 -d compiled-source < build/kassa-android-reuse-register/android.patch
 
-          echo '90b6d7cc4ada08a48045f438349b3ded0a31f2de11c9fba96c8da80828ebcd7f  build/kassa-android-visual-refresh/android.patch' | sha256sum --check
+          echo '0020ac503b08ddecb6d3296af0a9132299942e816bffb871b5f51b95368df65a  build/kassa-android-visual-refresh/android.patch' | sha256sum --check
           patch --batch --fuzz=0 -p1 -d compiled-source < build/kassa-android-visual-refresh/android.patch
 
       - name: Test Android client
