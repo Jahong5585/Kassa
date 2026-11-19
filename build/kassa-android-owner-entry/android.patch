@@ -281,7 +281,7 @@
  dependencies:
 --- /dev/null
 +++ b/apps/mobile-flutter/test/owner_entry_test.dart
-@@ -0,0 +1,94 @@
+@@ -0,0 +1,95 @@
 +import 'dart:convert';
 +import 'package:flutter/material.dart';
 +import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -369,7 +369,8 @@
 +      await tester.tap(find.byTooltip('Сменить сотрудника'));
 +      await tester.pumpAndSettle();
 +      expect(find.text('Кто работает?'), findsOneWidget);
-+      await tester.tap(find.widgetWithText(ListTile, 'Владелец'));
++      await tester.tap(find.byWidgetPredicate((widget) => widget is ListTile &&
++          widget.title is Text && (widget.title as Text).data == 'Владелец'));
 +      await tester.pumpAndSettle();
 +      expect(login.confirmations, 1);
 +      expect(sessions, 2);
