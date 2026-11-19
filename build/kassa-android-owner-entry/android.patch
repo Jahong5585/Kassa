@@ -24,7 +24,16 @@
        )),
      );
      if (selected != null) _activateWorkplace(selected);
-@@ -480,6 +483,7 @@
+@@ -328,6 +331,8 @@
+     setState(() {
+       _selected?.pos.api.retireWorkplace();
+       _selected = selected;
++      _ownerAuthenticated = selected.pos.api.operatorSession?.operator.isOwner == true ||
++          (selected.pos.api.operatorSession == null && selected.pos.api.storeOwner);
+       _cashierScreen = GlobalKey<_CashierScreenState>();
+       _activeTab = null;
+       allowed = selected.roles;
+@@ -480,6 +485,7 @@
    Future<void> _switchOperator({bool expired = false}) async {
      final selected = _selected;
      if (selected == null || selected.pos.api.operatorSession == null) return;
@@ -32,7 +41,7 @@
      final previousRole = desk!;
      setState(() {
        selected.pos.api.retireWorkplace();
-@@ -504,6 +508,7 @@
+@@ -504,6 +510,7 @@
    }
  
    void clearSession() {
@@ -40,6 +49,17 @@
      _selected?.pos.api.retireWorkplace();
      _selected = null;
      _session.api.resetSessionRoles();
+@@ -763,8 +770,8 @@
+             icon: Icons.switch_account_outlined,
+             title: const _UiText('Сменить сотрудника', 'Xodimni almashtirish'),
+             onTap: busy ? null : _switchOperator,
+-          )
+-        else if (_selected != null)
++          ),
++        if (_selected != null && (pos.api.operatorSession == null || pos.api.storeOwner))
+           _WorkspaceAction(
+             icon: Icons.storefront_outlined,
+             title: const _UiText('Магазины и кассы', 'Do‘konlar va kassalar'),
 --- a/apps/mobile-flutter/lib/operator_login.dart
 +++ b/apps/mobile-flutter/lib/operator_login.dart
 @@ -1,11 +1,14 @@
