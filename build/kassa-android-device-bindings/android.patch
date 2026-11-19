@@ -1,0 +1,922 @@
+--- /dev/null
++++ b/apps/mobile-flutter/lib/device_binding_api.dart
+@@ -0,0 +1,169 @@
++part of 'pos.dart';
++
++class RegisterDeviceBinding {
++  const RegisterDeviceBinding(this.id, this.registerId, this.deviceId,
++      this.name, this.version, {required this.revoked});
++  final String id;
++  final String registerId;
++  final String deviceId;
++  final String name;
++  final int version;
++  final bool revoked;
++}
++
++extension RegisterDeviceAccess on ServerApi {
++  Future<String> installationDeviceId() async {
++    final key = 'kassa.operator.device.v1.${origin.origin}';
++    final saved = await login._storage.read(key: key);
++    if (_assignedId(saved)) return saved!;
++    final id = newId();
++    await login._storage.write(key: key, value: id);
++    _ensureWorkplace();
++    return id;
++  }
++
++  String _deviceBindingKey(String id) => KassaLocation(storeId, id)
++      .storageKey(origin.origin, login.subject, Desk.cashier, 'register-device-binding');
++
++  Future<Json?> _savedDeviceBinding(String id) async {
++    _ensureWorkplace();
++    final value = await login._storage.read(key: _deviceBindingKey(id));
++    _ensureWorkplace();
++    if (value == null) return null;
++    try {
++      final data = jsonDecode(value);
++      if (data is Json && data['active'] == true &&
++          data['registerId'] == id && data['storeId'] == storeId &&
++          _assignedId(data['bindingId']) &&
++          data['deviceId'] == await installationDeviceId() &&
++          data['name'] is String &&
++          data['token'] is String &&
++          RegExp(r'^[a-zA-Z0-9_-]{32,256}$').hasMatch(data['token'] as String)) {
++        return data;
++      }
++    } on FormatException {
++      // A broken or revoked binding must never enable the legacy credential.
++    }
++    return {'active': false};
++  }
++
++  Future<bool> hasRegisterCredential(String id) async {
++    final binding = await _savedDeviceBinding(id);
++    return binding != null ? binding['active'] == true : await savedRegisterKey(id) != null;
++  }
++
++  Future<void> _invalidateDeviceBinding(String id, {String? token}) async {
++    final saved = await _savedDeviceBinding(id);
++    if (token != null && saved?['token'] != token) return;
++    // Keep a tombstone so a rejected device token cannot fall back to an old key.
++    await login._storage.write(key: _deviceBindingKey(id), value: '{"active":false}');
++  }
++
++  void _requireBindingOwner() {
++    _ensureWorkplace();
++    if (!storeOwner || operatorSession?.operator.isOwner != true ||
++        !operatorSession!.operator.roles.contains(Desk.admin)) {
++      throw ApiFailure(403, 'owner_access_required');
++    }
++  }
++
++  Future<void> bindRegisterDevice(StoreRegister register) async {
++    _requireBindingOwner();
++    if (!register.active) throw ApiFailure(409, 'register_disabled');
++    final deviceId = await installationDeviceId();
++    final data = await request('POST', '$store/registers/${register.id}/device-bindings',
++      desk: Desk.admin,
++      body: {'deviceName': 'Android · ${register.name}'.substring(0,
++          min(120, 'Android · ${register.name}'.length)),
++        'reason': 'Подключение телефона к существующей кассе'},
++    );
++    if (data is! Json || !_assignedId(data['bindingId']) ||
++        data['storeId'] != storeId || data['registerId'] != register.id ||
++        data['deviceId'] != deviceId || data['version'] is! int ||
++        (data['version'] as int) < 1 || data['registerDeviceToken'] is! String ||
++        !RegExp(r'^[a-zA-Z0-9_-]{32,256}$').hasMatch(data['registerDeviceToken'] as String)) {
++      throw ApiFailure(0, 'invalid_server_response');
++    }
++    _ensureWorkplace();
++    await login._storage.write(key: _deviceBindingKey(register.id), value: jsonEncode({
++      'active': true, 'storeId': storeId, 'registerId': register.id,
++      'bindingId': data['bindingId'], 'deviceId': deviceId,
++      'name': register.name, 'token': data['registerDeviceToken'],
++    }));
++    _ensureWorkplace();
++    await login._storage.write(key: _terminalKey,
++        value: jsonEncode({'id': register.id, 'name': register.name}));
++  }
++
++  Future<List<RegisterDeviceBinding>> registerDeviceBindings(String register) async {
++    _requireBindingOwner();
++    if (!_assignedId(register)) throw ApiFailure(0, 'invalid_api_path');
++    final result = <RegisterDeviceBinding>[];
++    final seen = <String>{};
++    for (var offset = 0;; offset += 50) {
++      final data = await request('GET', '$store/registers/$register/device-bindings',
++          desk: Desk.admin, query: {'offset': '$offset', 'limit': '50'});
++      if (data is! List || data.length > 50) throw ApiFailure(0, 'invalid_server_response');
++      for (final row in data) {
++        if (row is! Json || !_assignedId(row['bindingId']) ||
++            row['storeId'] != storeId || row['registerId'] != register ||
++            !_assignedId(row['deviceId']) || row['deviceName'] is! String ||
++            row['version'] is! int || (row['version'] as int) < 1 ||
++            !seen.add(row['bindingId'] as String)) {
++          throw ApiFailure(0, 'invalid_server_response');
++        }
++        result.add(RegisterDeviceBinding(row['bindingId'] as String, register,
++            row['deviceId'] as String, row['deviceName'] as String,
++            row['version'] as int, revoked: row['revokedAt'] != null));
++      }
++      if (data.length < 50) return result;
++    }
++  }
++
++  Future<void> revokeRegisterDevice(RegisterDeviceBinding binding) async {
++    _requireBindingOwner();
++    await request('POST', '$store/registers/${binding.registerId}/device-bindings/${binding.id}/revoke',
++        desk: Desk.admin, body: {'expectedVersion': binding.version,
++          'reason': 'Отключение устройства владельцем в Android'});
++    final local = await _savedDeviceBinding(binding.registerId);
++    if (local?['bindingId'] == binding.id) {
++      await _invalidateDeviceBinding(binding.registerId);
++    }
++  }
++
++  Future<AssignedRegister?> resolveOperatorTerminal() async {
++    final opened = operatorSession;
++    if (opened == null) return operatorTerminal();
++    if (!opened.operator.roles.contains(Desk.cashier)) return null;
++    final terminal = await operatorTerminal();
++    // Old servers do not advertise registerId. Preserve already saved legacy keys.
++    if (!opened.hasRegisterContract &&
++        (terminal == null || await _savedDeviceBinding(terminal.id) == null)) {
++      return terminal;
++    }
++    final data = await request('GET', '/v1/operator-sessions/current/registers', desk: Desk.cashier);
++    if (data is! Json || data['items'] is! List) throw ApiFailure(0, 'invalid_server_response');
++    final seen = <String>{};
++    AssignedRegister? bound;
++    var legacyAllowed = false;
++    for (final row in data['items'] as List) {
++      if (row is! Json || !_assignedId(row['registerId']) || row['name'] is! String ||
++          row['active'] is! bool || row['assigned'] is! bool ||
++          row['boundToCurrentDevice'] is! bool || !seen.add(row['registerId'] as String) ||
++          (row['bindingId'] != null && !_assignedId(row['bindingId']))) {
++        throw ApiFailure(0, 'invalid_server_response');
++      }
++      if (row['active'] != true || row['assigned'] != true) continue;
++      final id = row['registerId'] as String;
++      final local = await _savedDeviceBinding(id);
++      if (id == terminal?.id && local == null) legacyAllowed = true;
++      if (row['boundToCurrentDevice'] == true) {
++        if (bound != null || row['bindingId'] == null) throw ApiFailure(0, 'invalid_server_response');
++        if (local?['active'] == true && local?['bindingId'] == row['bindingId']) {
++          bound = AssignedRegister(id, row['name'] as String);
++        }
++      }
++    }
++    return bound ?? (legacyAllowed ? terminal : null);
++  }
++}
+--- a/apps/mobile-flutter/lib/language.dart
++++ b/apps/mobile-flutter/lib/language.dart
+@@ -50,7 +50,12 @@
+     'sign_in_required' => 'Davom etish uchun qayta kiring.',
+     'staff_access_denied' => 'Bu bo‘lim uchun ruxsat yo‘q.',
+     'register_access_denied' => 'Kassaga ruxsat yo‘q. Hisob va kalitni tekshiring.',
+-    'register_key_required' => 'Kassa kalitini kiriting.',
++    'register_key_required' => 'Egadan kassani telefonga ulashni so‘rang.',
++    'register_assignment_required' => 'Egadan sizni ushbu kassaga kassir etib tayinlashni so‘rang.',
++    'register_device_binding_invalid' => 'Telefon ulanishi bekor qilingan. Egadan kassani qayta ulashni so‘rang.',
++    'register_device_binding_shift_open' => 'Boshqa kassani ulashdan avval joriy smenani yoping.',
++    'register_device_binding_version_conflict' => 'Ulanish o‘zgargan. Qurilmalar ro‘yxatini yangilang.',
++    'operator_register_mismatch' => 'Kassa o‘zgargan. Xodimni almashtirib, qayta kiring.',
+     'operator_credentials_invalid' => 'Xodim kodini tekshiring.',
+     'operator_login_rate_limited' => 'Urinishlar soni oshib ketdi. Keyinroq qayta kiring.',
+     'operator_register_denied' => 'Egadan shu telefon kassasiga tayinlovni tekshirishni so‘rang.',
+--- a/apps/mobile-flutter/lib/main.dart
++++ b/apps/mobile-flutter/lib/main.dart
+@@ -440,7 +440,7 @@
+     final current = _selected;
+     final operator = current?.pos.api.operatorSession;
+     if (current == null || operator == null) return;
+-    final terminal = await current.pos.api.operatorTerminal();
++    final terminal = await current.pos.api.resolveOperatorTerminal();
+     if (!mounted || !identical(_selected?.pos, current.pos) || !allowed.contains(Desk.cashier)) return;
+     if (current.register?.id == terminal?.id) {
+       setState(() => desk = Desk.cashier);
+--- a/apps/mobile-flutter/lib/operator_api.dart
++++ b/apps/mobile-flutter/lib/operator_api.dart
+@@ -28,10 +28,12 @@
+ }
+ 
+ class OperatorSession {
+-  const OperatorSession._(this.operator, this.token);
++  const OperatorSession._(this.operator, this.token, {this.registerId, this.hasRegisterContract = false});
+ 
+   final StoreOperator operator;
+   final String token;
++  final String? registerId;
++  final bool hasRegisterContract;
+ }
+ 
+ Set<Desk> _operatorRoles(dynamic values) {
+@@ -71,12 +73,7 @@
+   }
+ 
+   Future<OperatorSession> signInOperator(StoreOperator selection, String? code) async {
+-    final deviceKey = 'kassa.operator.device.v1.${origin.origin}';
+-    final savedId = await login._storage.read(key: deviceKey);
+-    final deviceId = _assignedId(savedId) ? savedId! : newId();
+-    if (savedId != deviceId) {
+-      await login._storage.write(key: deviceKey, value: deviceId);
+-    }
++    final deviceId = await installationDeviceId();
+     final data = await request(
+       'POST', '$store/operator-sessions',
+       body: {
+@@ -95,7 +92,11 @@
+     if (operator.id != selection.id || operator.isOwner != selection.isOwner) {
+       throw ApiFailure(0, 'invalid_server_response');
+     }
+-    return OperatorSession._(operator, data['operatorSessionToken'] as String);
++    if (data['registerId'] != null && !_assignedId(data['registerId'])) {
++      throw ApiFailure(0, 'invalid_server_response');
++    }
++    return OperatorSession._(operator, data['operatorSessionToken'] as String,
++        registerId: data['registerId'] as String?, hasRegisterContract: data.containsKey('registerId'));
+   }
+ 
+   Future<void> closeOperatorSession(Desk role) async {
+@@ -135,6 +136,9 @@
+     }
+     if (data is! Json || !_assignedId(data['id']) || data['name'] is! String) return null;
+     final id = data['id'] as String;
++    final binding = await _savedDeviceBinding(id);
++    if (binding != null) return binding['active'] == true
++        ? AssignedRegister(id, binding['name'] as String) : null;
+     final credential = await savedRegisterKey(id);
+     return credential != null && RegExp(r'^[a-fA-F0-9]{64}$').hasMatch(credential)
+         ? AssignedRegister(id, data['name'] as String)
+--- a/apps/mobile-flutter/lib/operator_login.dart
++++ b/apps/mobile-flutter/lib/operator_login.dart
+@@ -49,17 +49,23 @@
+       if (!mounted) return;
+       final host = widget.session.forWorkplace(widget.store.location());
+       try {
+-        final terminal = await host.api.operatorTerminal();
+         final opened = await host.api.signInOperator(operator, code);
+         code = null;
+-        final register = opened.operator.roles.contains(Desk.cashier) ? terminal : null;
+-        final workplace = widget.session.forWorkplace(
++        AssignedRegister? register;
++        var workplace = widget.session.forWorkplace(
+           KassaLocation(widget.store.id, register?.id,
+             utcOffsetMinutes: widget.store.utcOffsetMinutes),
+           operator: opened,
+         );
+         var selected = false;
+         try {
++          register = await workplace.api.resolveOperatorTerminal();
++          if (register != null) {
++            workplace.api.retireWorkplace();
++            workplace = widget.session.forWorkplace(
++              KassaLocation(widget.store.id, register!.id,
++                utcOffsetMinutes: widget.store.utcOffsetMinutes), operator: opened);
++          }
+           final available = opened.operator.roles;
+           try {
+             await host.api.rememberOperatorStore();
+--- a/apps/mobile-flutter/lib/operator_management.dart
++++ b/apps/mobile-flutter/lib/operator_management.dart
+@@ -18,7 +18,6 @@
+   late final _registers = StoreManagementApi(widget.pos);
+   List<LocalEmployee> _employees = [];
+   List<StoreRegister> _devices = [];
+-  final _usableDevices = <String>{};
+   AssignedRegister? _terminal;
+   _EmployeeCreation? _pendingEmployee;
+   bool _pendingRegister = false;
+@@ -36,23 +35,16 @@
+     _employees = await _operators.employees();
+     _terminal = await widget.pos.api.operatorTerminal();
+     final devices = <StoreRegister>[];
+-    final usable = <String>{};
+     int? offset = 0;
+     while (offset != null) {
+       final page = await _registers.registers(offset);
+       for (final device in page.items.where((row) => row.active)) {
+         devices.add(device);
+-        if (await widget.pos.api.savedRegisterKey(device.id) != null) {
+-          usable.add(device.id);
+-        }
+       }
+       offset = page.nextOffset;
+     }
+     _devices = devices;
+     if (!devices.any((device) => device.id == _terminal?.id)) _terminal = null;
+-    _usableDevices
+-      ..clear()
+-      ..addAll(usable);
+     _loaded = true;
+   }
+ 
+@@ -226,76 +218,83 @@
+     await _install(() => _registers.createRegister(name, owner));
+   }
+ 
+-  Future<void> _connect(StoreRegister register, {bool updateKey = false}) async {
+-    if (!updateKey && _usableDevices.contains(register.id)) {
+-      await task(() async {
+-        await widget.pos.api.setOperatorTerminal(register);
+-        await _load();
+-      });
+-      return;
+-    }
+-
+-    final recover = await showDialog<bool>(
+-      context: context,
+-      builder: (context) => AlertDialog(
+-        title: Text(register.name),
+-        content: const _UiText(
+-          'Подключите эту кассу с её действующим ключом. Если ключ утерян, можно выпустить новый.',
+-          'Kassani amaldagi kaliti bilan ulang. Kalit yo‘qolgan bo‘lsa, yangisini yarating.',
++  Future<void> _connect(StoreRegister register) async {
++    final current = _terminal;
++    if (current != null) {
++      final confirmed = await showDialog<bool>(
++        context: context,
++        builder: (context) => AlertDialog(
++          title: Text(register.name),
++          content: Text(current.id == register.id
++              ? _tr(context, 'Обновить подключение этого телефона?', 'Shu telefon ulanishi yangilansinmi?')
++              : _tr(context, 'Переключить телефон с «${current.name}» на «${register.name}»? Сначала закройте текущую смену.',
++                  'Telefon «${current.name}» o‘rniga «${register.name}»ga ulansinmi? Avval joriy smenani yoping.')),
++          actions: [
++            TextButton(onPressed: () => Navigator.pop(context, false),
++              child: const _UiText('Отмена', 'Bekor qilish')),
++            FilledButton(onPressed: () => Navigator.pop(context, true),
++              child: const _UiText('Подключить', 'Ulash')),
++          ],
+         ),
+-        actions: [
+-          TextButton(onPressed: () => Navigator.pop(context), child: const _UiText('Отмена', 'Bekor qilish')),
+-          TextButton(onPressed: () => Navigator.pop(context, true), child: const _UiText('Ключ утерян', 'Kalit yo‘qolgan')),
+-          FilledButton(onPressed: () => Navigator.pop(context, false), child: const _UiText('Вставить ключ', 'Kalitni qo‘yish')),
+-        ],
+-      ),
+-    );
+-    if (!mounted || recover == null) return;
+-    if (recover) {
+-      await _recoverRegister(register);
+-      return;
++      );
++      if (!mounted || confirmed != true) return;
+     }
+-    final key = await showDialog<String>(
+-      context: context,
+-      builder: (_) => const _RegisterBindingDialog(),
+-    );
+-    if (!mounted || key == null) return;
+     await task(() async {
+-      final api = widget.pos.api;
+-      if (register.cashiers.contains(api.staffId)) {
+-        final verification = widget.pos.forWorkplace(
+-          KassaLocation(api.storeId, register.id),
+-          operator: api.operatorSession,
+-        );
+-        try {
+-          await verification.api.currentShift(keyForVerification: key);
+-        } finally {
+-          verification.api.retireWorkplace();
+-        }
+-      }
+-      await api.setOperatorTerminal(register, issuedKey: key);
++      await widget.pos.api.bindRegisterDevice(register);
+       await _load();
+     });
+   }
+ 
+-  Future<void> _recoverRegister(StoreRegister register) async {
++  Future<void> _bindings(StoreRegister register) async {
++    List<RegisterDeviceBinding>? bindings;
++    String? deviceId;
++    await task(() async {
++      bindings = await widget.pos.api.registerDeviceBindings(register.id);
++      deviceId = await widget.pos.api.installationDeviceId();
++    });
++    if (!mounted || bindings == null) return;
++    final active = bindings!.where((row) => !row.revoked).toList();
++    final selected = await showDialog<RegisterDeviceBinding>(
++      context: context,
++      builder: (context) => AlertDialog(
++        title: const _UiText('Устройства кассы', 'Kassa qurilmalari'),
++        scrollable: true,
++        content: Column(mainAxisSize: MainAxisSize.min, children: [
++          if (active.isEmpty) const _UiText('Подключённых устройств нет.', 'Ulangan qurilmalar yo‘q.'),
++          for (final binding in active)
++            ListTile(
++              contentPadding: EdgeInsets.zero,
++              leading: const Icon(Icons.devices_outlined),
++              title: Text(binding.name),
++              subtitle: binding.deviceId == deviceId
++                  ? const _UiText('Этот телефон', 'Shu telefon') : null,
++              trailing: IconButton(icon: const Icon(Icons.link_off_outlined),
++                tooltip: _tr(context, 'Отключить устройство', 'Qurilmani uzish'),
++                onPressed: () => Navigator.pop(context, binding)),
++            ),
++        ]),
++        actions: [TextButton(onPressed: () => Navigator.pop(context),
++          child: const _UiText('Готово', 'Tayyor'))],
++      ),
++    );
++    if (!mounted || selected == null) return;
+     final confirmed = await showDialog<bool>(
+       context: context,
+       builder: (context) => AlertDialog(
+-        title: Text(register.name),
+-        content: const _UiText(
+-          'Новый ключ будет автоматически сохранён на этом телефоне. Другие устройства с этой кассой потребуется подключить заново.',
+-          'Yangi kalit shu telefonda saqlanadi. Bu kassaning boshqa qurilmalarini qayta ulash kerak.',
+-        ),
++        title: const _UiText('Отключить устройство?', 'Qurilma uzilsinmi?'),
++        content: Text(_tr(context, '«${selected.name}» потеряет доступ к продажам на этой кассе. Другие устройства продолжат работу.',
++          '«${selected.name}» bu kassada sotuv qila olmaydi. Boshqa qurilmalar ishlashda davom etadi.')),
+         actions: [
+-          TextButton(onPressed: () => Navigator.pop(context), child: const _UiText('Отмена', 'Bekor qilish')),
+-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const _UiText('Заменить ключ', 'Kalitni almashtirish')),
++          TextButton(onPressed: () => Navigator.pop(context, false), child: const _UiText('Отмена', 'Bekor qilish')),
++          FilledButton(onPressed: () => Navigator.pop(context, true), child: const _UiText('Отключить', 'Uzish')),
+         ],
+       ),
+     );
+-    if (mounted && confirmed == true) {
+-      await _install(() => _registers.rotateKey(register));
+-    }
++    if (!mounted || confirmed != true) return;
++    await task(() async {
++      await widget.pos.api.revokeRegisterDevice(selected);
++      await _load();
++    });
+   }
+ 
+   Future<void> _install(Future<RegisterKeyIssue?> Function() issueKey) => task(() async {
+@@ -303,6 +302,7 @@
+       final issue = await issueKey();
+       if (issue == null) return;
+       await widget.pos.api.setOperatorTerminal(issue.register, issuedKey: issue.key);
++      await widget.pos.api.bindRegisterDevice(issue.register);
+       await _registers.acknowledgeKey(issue);
+     } finally {
+       _pendingRegister = await _registers.hasPendingKey();
+@@ -380,19 +380,23 @@
+               leading: Icon(register.id == _terminal?.id
+                   ? Icons.settings_outlined : Icons.link_outlined),
+               title: register.id == _terminal?.id
+-                  ? const _UiText('Настройка подключения', 'Ulanish sozlamasi')
++                  ? const _UiText('Обновить подключение', 'Ulanishni yangilash')
+                   : const _UiText('Подключить к телефону', 'Telefonga ulash'),
+               onTap: () => Navigator.pop(sheetContext, 'connect'),
+             ),
++            ListTile(
++              leading: const Icon(Icons.devices_outlined),
++              title: const _UiText('Устройства кассы', 'Kassa qurilmalari'),
++              onTap: () => Navigator.pop(sheetContext, 'bindings'),
++            ),
+           ],
+         ),
+       ),
+     );
+     if (!mounted) return;
+     if (action == 'cashiers') await _assign(register);
+-    if (action == 'connect') {
+-      await _connect(register, updateKey: register.id == _terminal?.id);
+-    }
++    if (action == 'connect') await _connect(register);
++    if (action == 'bindings') await _bindings(register);
+   }
+ 
+   Widget _employeeRow(LocalEmployee employee) => _WorkplaceRow(
+--- a/apps/mobile-flutter/lib/pos.dart
++++ b/apps/mobile-flutter/lib/pos.dart
+@@ -26,6 +26,7 @@
+ part 'workplace_api.dart';
+ part 'store_management_api.dart';
+ part 'operator_api.dart';
++part 'device_binding_api.dart';
+ part 'platform_api.dart';
+ part 'store_exceptions_api.dart';
+ part 'register_diagnostics.dart';
+@@ -135,7 +136,12 @@
+         'Этот аккаунт не имеет доступа к выбранному разделу.',
+       'admin_mfa_required' =>
+         'Для входа администратора требуется второй фактор.',
+-      'register_key_required' => 'Введите ключ кассы.',
++      'register_key_required' => 'Попросите владельца подключить кассу к телефону.',
++      'register_assignment_required' => 'Попросите владельца назначить вас кассиром этой кассы.',
++      'register_device_binding_invalid' => 'Подключение телефона отозвано. Попросите владельца подключить кассу заново.',
++      'register_device_binding_shift_open' => 'Перед подключением другой кассы закройте смену на текущей.',
++      'register_device_binding_version_conflict' => 'Подключение уже изменено. Обновите список устройств.',
++      'operator_register_mismatch' => 'Касса изменилась. Смените сотрудника и войдите снова.',
+       'operator_credentials_invalid' => 'Проверьте код сотрудника.',
+       'operator_login_rate_limited' => 'Слишком много попыток. Повторите вход позже.',
+       'operator_register_denied' => 'Попросите владельца проверить назначение на кассу этого телефона.',
+@@ -1070,13 +1076,18 @@
+     };
+     if (cashier) {
+       final register = registerId;
+-      final key =
+-          registerKeyForVerification ??
+-          await (_scopeGeneration == null
+-              ? login.readRegisterKey()
+-              : savedRegisterKey(register));
+-      if (key == null) throw ApiFailure(403, 'register_key_required');
+-      headers.addAll({'X-Register-Id': register, 'X-Register-Key': key});
++      final binding = registerKeyForVerification == null
++          ? await _savedDeviceBinding(register) : null;
++      headers['X-Register-Id'] = register;
++      if (binding != null) {
++        if (binding['active'] != true) throw ApiFailure(403, 'register_device_binding_invalid');
++        headers['X-Register-Device-Token'] = binding['token'] as String;
++      } else {
++        final key = registerKeyForVerification ?? await (_scopeGeneration == null
++            ? login.readRegisterKey() : savedRegisterKey(register));
++        if (key == null) throw ApiFailure(403, 'register_key_required');
++        headers['X-Register-Key'] = key;
++      }
+     }
+     if (body != null) headers['Content-Type'] = 'application/json';
+     for (var attempt = 0; attempt < 2; attempt++) {
+@@ -1141,6 +1152,10 @@
+           return _expired(auth, generation);
+         }
+       }
++      if (cashier && code == 'register_device_binding_invalid' &&
++          headers['X-Register-Device-Token'] != null) {
++        await _invalidateDeviceBinding(registerId, token: headers['X-Register-Device-Token']);
++      }
+       final requestId = response.headers.entries
+               .where((header) => header.key.toLowerCase() == 'x-request-id')
+               .firstOrNull
+--- a/apps/mobile-flutter/lib/production_api.dart
++++ b/apps/mobile-flutter/lib/production_api.dart
+@@ -19,6 +19,10 @@
+   'GET /v1/stores/{storeId}/operators',
+   'POST /v1/stores/{storeId}/operator-sessions',
+   'DELETE /v1/operator-sessions/current',
++  'GET /v1/operator-sessions/current/registers',
++  'POST /v1/stores/{storeId}/registers/{registerId}/device-bindings',
++  'GET /v1/stores/{storeId}/registers/{registerId}/device-bindings',
++  'POST /v1/stores/{storeId}/registers/{registerId}/device-bindings/{bindingId}/revoke',
+   'GET /v1/stores/{storeId}/employees',
+   'POST /v1/stores/{storeId}/employees',
+   'PUT /v1/stores/{storeId}/employees/{id}/roles',
+--- a/apps/mobile-flutter/pubspec.yaml
++++ b/apps/mobile-flutter/pubspec.yaml
+@@ -1,7 +1,7 @@
+ name: kassa_mobile
+ description: Android POS pilot for Kassa.
+ publish_to: none
+-version: 0.2.91+2111
++version: 0.2.92+2112
+ environment:
+   sdk: ">=3.10.0 <4.0.0"
+ dependencies:
+--- /dev/null
++++ b/apps/mobile-flutter/test/device_binding_test.dart
+@@ -0,0 +1,232 @@
++import 'dart:convert';
++
++import 'package:flutter_secure_storage/flutter_secure_storage.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:http/http.dart' as http;
++import 'package:http/testing.dart';
++import 'package:kassa_mobile/pos.dart';
++
++const store = '41000000-0000-4000-8000-000000000001';
++const register = '41000000-0000-4000-8000-000000000002';
++const owner = '41000000-0000-4000-8000-000000000003';
++const worker = '41000000-0000-4000-8000-000000000004';
++const binding = '41000000-0000-4000-8000-000000000005';
++const organization = '41000000-0000-4000-8000-000000000006';
++const session = '41000000-0000-4000-8000-000000000007';
++const device = '41000000-0000-4000-8000-000000000008';
++const otherDevice = '41000000-0000-4000-8000-000000000009';
++const prefix = '/v1/stores/$store/registers/$register/device-bindings';
++final token = 'x' * 43;
++final legacyKey = 'a' * 64;
++
++class Host extends Login {
++  Host(super.storage, {this.account = 'owner-account'});
++  final String account;
++  @override
++  String get subject => account;
++  @override
++  Future<String> accessToken({bool force = false}) async => 'host-bearer';
++}
++
++http.Response reply(Object? data, [int status = 200]) =>
++    http.Response(jsonEncode(data), status, headers: {'content-type': 'application/json'});
++
++Json operatorData(bool isOwner) => {
++  'operatorId': isOwner ? owner : worker, 'displayName': isOwner ? 'Owner' : 'Worker',
++  'isOwner': isOwner, 'passwordRequired': !isOwner, 'active': true,
++  'roles': isOwner ? ['admin', 'cashier', 'receiver'] : ['cashier', 'receiver'],
++};
++Json bindingData() => {'bindingId': binding, 'storeId': store, 'registerId': register,
++  'deviceId': device, 'deviceName': 'Phone', 'registerDeviceToken': token, 'version': 1};
++Json allowed({bool assigned = true, String? bindingId = binding}) => {'items': [
++  {'registerId': register, 'name': 'Existing till', 'active': true, 'version': 1,
++    'assigned': assigned, 'boundToCurrentDevice': bindingId != null, 'bindingId': bindingId},
++]};
++final StoreRegister till = (id: register, name: 'Existing till', active: true, version: 1, cashiers: [owner, worker]);
++
++void main() {
++  TestWidgetsFlutterBinding.ensureInitialized();
++  const storage = FlutterSecureStorage();
++  late Pos root;
++  late Pos host;
++  late String origin;
++  var failBinding = false;
++  var revoked = false;
++  var assigned = true;
++  var bindingId = binding;
++  var cashRequests = 0;
++  var bindingRequests = 0;
++  var responseDevice = device;
++  var bindingStatus = 200;
++  final sent = <http.Request>[];
++
++  Future<Pos> signIn({bool isOwner = true}) async {
++    final opened = await host.api.signInOperator(StoreOperator(isOwner ? owner : worker,
++        'User', isOwner ? {Desk.admin, Desk.cashier, Desk.receiving} : {Desk.cashier, Desk.receiving},
++        isOwner: isOwner), isOwner ? null : '12345678');
++    expect(opened.hasRegisterContract, true);
++    expect(opened.registerId, register);
++    return root.forWorkplace(KassaLocation(store, register), operator: opened);
++  }
++
++  setUp(() async {
++    failBinding = false; revoked = false; assigned = true; bindingId = binding;
++    responseDevice = device; bindingStatus = 200; cashRequests = 0; bindingRequests = 0; sent.clear();
++    root = Pos(storage, login: Host(storage), productionContract: true,
++      client: MockClient((request) async {
++        sent.add(request);
++        expect(request.headers['Authorization'], 'Bearer host-bearer');
++        if (request.url.path == '/v1/stores/$store/operator-sessions') {
++          final body = jsonDecode(request.body) as Json;
++          expect(body['deviceId'], device);
++          final isOwner = body['operatorId'] == owner;
++          return reply({'storeId': store, 'organizationId': organization, 'sessionId': session,
++            'registerId': register, 'operatorSessionToken': (isOwner ? 'o' : 'w') * 43,
++            'operator': operatorData(isOwner)});
++        }
++        if (request.url.path == '/v1/operator-sessions/current/registers') {
++          expect(request.headers['X-Register-Key'], isNull);
++          expect(request.headers['X-Register-Device-Token'], isNull);
++          expect(request.headers['X-Active-Role'], 'cashier');
++          return reply(allowed(assigned: assigned, bindingId: bindingId));
++        }
++        if (request.url.path == prefix) {
++          expect(request.headers['X-Active-Role'], 'admin');
++          expect(request.headers['X-Operator-Session'], 'o' * 43);
++          if (request.method == 'GET') return reply([
++            {...(bindingData()..remove('registerDeviceToken')), 'revokedAt': null},
++          ]);
++          bindingRequests++;
++          if (bindingStatus != 200) return reply({'code': 'register_device_binding_shift_open'}, bindingStatus);
++          return reply({...bindingData(), 'deviceId': responseDevice});
++        }
++        if (request.url.path == '$prefix/$binding/revoke') {
++          expect(jsonDecode(request.body), {'expectedVersion': 1,
++            'reason': 'Отключение устройства владельцем в Android'});
++          revoked = true;
++          return http.Response('', 204);
++        }
++        if (request.url.path == '/v1/operator-sessions/current') return http.Response('', 204);
++        if (request.url.path == '/v1/shifts/active') {
++          cashRequests++;
++          expect(request.headers['X-Register-Id'], register);
++          if (request.headers['X-Register-Device-Token'] != null) {
++            expect(request.headers['X-Register-Device-Token'], token);
++            expect(request.headers['X-Register-Key'], isNull);
++          } else {
++            expect(request.headers['X-Register-Key'], legacyKey);
++          }
++          return failBinding || revoked
++              ? reply({'code': 'register_device_binding_invalid'}, 403) : reply({'shift': null});
++        }
++        fail('Unexpected route ${request.method} ${request.url.path}');
++      }),
++    );
++    host = root.forWorkplace(KassaLocation(store, null));
++    origin = root.api.origin.origin;
++    FlutterSecureStorage.setMockInitialValues({'kassa.operator.device.v1.$origin': device});
++  });
++  tearDown(() => root.api.close());
++
++  test('existing register binds once, restores for staff, survives logout and prefers device token', () async {
++    final admin = await signIn();
++    await admin.api.setOperatorTerminal(till, issuedKey: legacyKey);
++    await admin.api.bindRegisterDevice(till);
++    expect(bindingRequests, 1);
++    expect(await admin.api.savedRegisterKey(register), legacyKey);
++    await admin.api.closeOperatorSession(Desk.admin);
++    final staff = await signIn(isOwner: false);
++    expect((await staff.api.resolveOperatorTerminal())?.id, register);
++    await staff.api.currentShift();
++    expect(sent.last.headers['X-Operator-Session'], 'w' * 43);
++    expect(bindingRequests, 1);
++    expect((await host.api.operatorTerminal())?.name, 'Existing till');
++  });
++
++  test('revoked device token is removed and cannot fall back to a retained legacy key', () async {
++    final admin = await signIn();
++    await admin.api.setOperatorTerminal(till, issuedKey: legacyKey);
++    await admin.api.bindRegisterDevice(till);
++    failBinding = true;
++    await expectLater(admin.api.currentShift(), throwsA(isA<ApiFailure>().having((e) => e.code,
++        'code', 'register_device_binding_invalid')));
++    expect(cashRequests, 1);
++    expect(await host.api.operatorTerminal(), isNull);
++    expect((await storage.readAll()).values.any((v) => v.contains(token)), false);
++    await expectLater(admin.api.currentShift(), throwsA(isA<ApiFailure>()));
++    expect(cashRequests, 1, reason: 'No retry with X-Register-Key after rejection');
++    expect(await admin.api.savedRegisterKey(register), legacyKey);
++    failBinding = false;
++    await admin.api.bindRegisterDevice(till);
++    await admin.api.currentShift();
++    expect(cashRequests, 2);
++  });
++
++  test('owner lists and revokes one device without removing the register or general key', () async {
++    final admin = await signIn();
++    await admin.api.setOperatorTerminal(till, issuedKey: legacyKey);
++    await admin.api.bindRegisterDevice(till);
++    final rows = await admin.api.registerDeviceBindings(register);
++    expect(rows.single.deviceId, device);
++    await admin.api.revokeRegisterDevice(rows.single);
++    expect(revoked, true);
++    expect(await host.api.operatorTerminal(), isNull);
++    expect(await host.api.savedRegisterKey(register), legacyKey);
++    await expectLater(admin.api.currentShift(), throwsA(isA<ApiFailure>()));
++    expect(cashRequests, 0);
++  });
++
++  test('staff cannot create, list or revoke device bindings', () async {
++    final staff = await signIn(isOwner: false);
++    final before = sent.length;
++    await expectLater(staff.api.bindRegisterDevice(till), throwsA(isA<ApiFailure>()));
++    await expectLater(staff.api.registerDeviceBindings(register), throwsA(isA<ApiFailure>()));
++    await expectLater(staff.api.revokeRegisterDevice(const RegisterDeviceBinding(
++        binding, register, device, 'Phone', 1, revoked: false)), throwsA(isA<ApiFailure>()));
++    expect(sent.length, before);
++  });
++
++  test('unassigned employee and mismatched binding cannot restore the till', () async {
++    final admin = await signIn();
++    await admin.api.bindRegisterDevice(till);
++    final staff = await signIn(isOwner: false);
++    assigned = false;
++    expect(await staff.api.resolveOperatorTerminal(), isNull);
++    expect(await host.api.operatorTerminal(), isNotNull, reason: 'Other assigned cashiers retain the phone binding');
++    assigned = true;
++    bindingId = otherDevice;
++    expect(await staff.api.resolveOperatorTerminal(), isNull);
++  });
++
++  test('server cannot save a binding for another installation and conflicts preserve existing credentials', () async {
++    final admin = await signIn();
++    responseDevice = otherDevice;
++    await expectLater(admin.api.bindRegisterDevice(till), throwsA(isA<ApiFailure>()));
++    expect(await host.api.operatorTerminal(), isNull);
++    responseDevice = device;
++    await admin.api.bindRegisterDevice(till);
++    bindingStatus = 409;
++    await expectLater(admin.api.bindRegisterDevice(till), throwsA(isA<ApiFailure>().having((e) => e.code,
++        'code', 'register_device_binding_shift_open')));
++    expect((await host.api.operatorTerminal())?.id, register);
++  });
++
++  test('binding belongs to the owner account, store and stable installation', () async {
++    final admin = await signIn();
++    await admin.api.bindRegisterDevice(till);
++    final anotherAccount = Pos(storage, login: Host(storage, account: 'another'), productionContract: true)
++        .forWorkplace(KassaLocation(store, register));
++    expect(await anotherAccount.api.operatorTerminal(), isNull);
++    expect(await root.forWorkplace(KassaLocation(organization, register)).api.operatorTerminal(), isNull);
++    await storage.write(key: 'kassa.operator.device.v1.$origin', value: otherDevice);
++    expect(await host.api.operatorTerminal(), isNull);
++  });
++
++  test('saved legacy key still works before migration', () async {
++    final admin = await signIn();
++    await admin.api.setOperatorTerminal(till, issuedKey: legacyKey);
++    await admin.api.currentShift();
++    expect(sent.last.headers['X-Register-Key'], legacyKey);
++    expect(bindingRequests, 0);
++  });
++}
+--- a/apps/mobile-flutter/test/operator_login_test.dart
++++ b/apps/mobile-flutter/test/operator_login_test.dart
+@@ -18,6 +18,9 @@
+ final _registerKey = 'b' * 64;
+ final _ownerToken = 'o' * 43;
+ final _workerToken = 'w' * 43;
++const _device = '30000000-0000-4000-8000-000000000038';
++const _binding = '30000000-0000-4000-8000-000000000039';
++final _deviceToken = 'd' * 43;
+ 
+ class _OperatorHost extends Login {
+   _OperatorHost(super.storage);
+@@ -45,7 +48,7 @@
+         headers: {'content-type': 'application/json; charset=utf-8'});
+ 
+ void main() {
+-  testWidgets('a saved phone opens the employee list and uses their roles and terminal key',
++  testWidgets('a saved phone opens the employee list and uses their roles and device binding',
+       (tester) async {
+     final host = _OperatorHost(const FlutterSecureStorage());
+     const relief = '30000000-0000-4000-8000-000000000037';
+@@ -77,7 +80,8 @@
+         if (shift != null && request.url.path == "/v1/shifts/${shift!['shiftId']}/close") {
+           expect(token, _workerToken);
+           expect(request.headers['X-Register-Id'], _register);
+-          expect(request.headers['X-Register-Key'], _registerKey);
++          expect(request.headers['X-Register-Key'], isNull);
++          expect(request.headers['X-Register-Device-Token'], _deviceToken);
+           final body = jsonDecode(request.body) as Json;
+           expect(body['countedCash'], 125);
+           final ended = {...shift!, 'countedCash': 125};
+@@ -113,15 +117,23 @@
+               return _reply({'code': 'operator_credentials_invalid'}, 401);
+             }
+             return _reply({'storeId': _store, 'organizationId': _organization,
+-              'sessionId': _sessionId,
++              'sessionId': _sessionId, 'registerId': _register,
+               'operatorSessionToken': owner ? _ownerToken : nextCashier ? reliefToken : _workerToken,
+               'operator': operators[owner ? 1 : nextCashier ? 3 : 0]});
++          case '/v1/operator-sessions/current/registers':
++            expect(token, anyOf(_workerToken, _ownerToken, reliefToken));
++            expect(request.headers['X-Register-Device-Token'], isNull);
++            return _reply({'items': [{
++              'registerId': _register, 'name': 'Касса телефона', 'active': true, 'version': 1,
++              'assigned': true, 'boundToCurrentDevice': true, 'bindingId': _binding,
++            }]});
+           case '/v1/shifts/active':
+           case '/v1/shifts':
+             expect(token, anyOf(_workerToken, _ownerToken, reliefToken));
+             expect(request.headers['X-Active-Role'], 'cashier');
+             expect(request.headers['X-Register-Id'], _register);
+-            expect(request.headers['X-Register-Key'], _registerKey);
++            expect(request.headers['X-Register-Key'], isNull);
++          expect(request.headers['X-Register-Device-Token'], _deviceToken);
+             if (request.method == 'POST') {
+               final body = jsonDecode(request.body) as Json;
+               expect(token, _workerToken);
+@@ -154,6 +166,10 @@
+     );
+     final origin = pos.api.origin.origin;
+     FlutterSecureStorage.setMockInitialValues({
++      'kassa.operator.device.v1.$origin': _device,
++      KassaLocation(_store, _register).storageKey(origin, host.subject, Desk.cashier, 'register-device-binding'):
++        jsonEncode({'active': true, 'storeId': _store, 'registerId': _register,
++          'bindingId': _binding, 'deviceId': _device, 'name': 'Касса телефона', 'token': _deviceToken}),
+       KassaLocation(_store, _register).storageKey(origin, host.subject, Desk.cashier, 'register-key'):
+         _registerKey,
+       KassaLocation(_store, null).storageKey(origin, host.subject, Desk.admin, 'operator-terminal'):
+@@ -316,6 +332,7 @@
+       'roles': ['admin', 'cashier', 'receiver'], 'isOwner': true,
+       'passwordRequired': false, 'active': true,
+     };
++    String? deviceId;
+     var version = 1;
+     var cashiers = [_worker];
+     final root = Pos(storage, login: _OperatorHost(storage), productionContract: true,
+@@ -329,8 +346,17 @@
+           case ('GET', '$_base/operators'):
+             return _reply({'storeId': _store, 'items': [owner]});
+           case ('POST', '$_base/operator-sessions'):
++            deviceId = (jsonDecode(request.body) as Json)['deviceId'] as String;
+             return _reply({'storeId': _store, 'organizationId': _organization,
+               'sessionId': _sessionId, 'operatorSessionToken': _ownerToken, 'operator': owner});
++          case ('POST', '$_base/registers/$_register/device-bindings'):
++            expect(request.headers['X-Operator-Session'], _ownerToken);
++            expect(request.headers['X-Active-Role'], 'admin');
++            expect(request.headers['X-Register-Key'], isNull);
++            expect((jsonDecode(request.body) as Json).containsKey('deviceId'), false);
++            return _reply({'bindingId': _binding, 'storeId': _store,
++              'registerId': _register, 'deviceId': deviceId, 'deviceName': 'Android · Касса3',
++              'registerDeviceToken': _deviceToken, 'version': 1});
+           case ('GET', '/v1/me/roles'):
+             return _reply({'storeId': _store, 'staffId': _owner, 'roles': owner['roles'], 'owner': true});
+           case ('GET', '$_base/receiving/catalog/proposals'):
+@@ -371,12 +397,12 @@
+     expect(find.text('Создать кассу для телефона'), findsNothing);
+     await tap(find.byTooltip('Действия кассы'));
+     await tap(find.text('Подключить к телефону'));
+-    await tap(find.text('Вставить ключ'));
+-    await tester.enterText(find.byType(TextFormField), _registerKey);
+-    await tap(find.text('Подтвердить'));
++    expect(find.text('Вставить ключ'), findsNothing);
++    expect(find.text('Ключ кассы'), findsNothing);
+     final host = root.forWorkplace(KassaLocation(_store, null));
+     expect((await host.api.operatorTerminal())?.id, _register);
+-    expect(await host.api.savedRegisterKey(_register), _registerKey);
++    expect(await host.api.savedRegisterKey(_register), isNull);
++    expect(await host.api.hasRegisterCredential(_register), true);
+     expect(find.textContaining('На этом телефоне'), findsOneWidget);
+ 
+     await tap(find.byTooltip('Действия кассы'));
