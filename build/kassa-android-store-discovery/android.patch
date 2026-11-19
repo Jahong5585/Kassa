@@ -1,0 +1,376 @@
+--- a/apps/mobile-flutter/lib/language.dart
++++ b/apps/mobile-flutter/lib/language.dart
+@@ -41,6 +41,7 @@
+ 
+ String _apiMessage(BuildContext context, ApiFailure failure) {
+   final uzbek = switch (failure.code) {
++    'store_discovery_unavailable' => 'Do‘konlar ro‘yxati serverda hozircha mavjud emas. Qayta yuklang.',
+     'platform_access_denied' => 'Dasturchi kabinetiga kirish huquqi yo‘q.',
+     'platform_write_denied' => 'Hisob faqat ko‘rish huquqiga ega.',
+     'platform_mfa_required' => 'Ish joyini ochish uchun MFA bilan kiring.',
+--- a/apps/mobile-flutter/lib/main.dart
++++ b/apps/mobile-flutter/lib/main.dart
+@@ -612,6 +612,9 @@
+           ]),
+         ),
+       ),
++      const SizedBox(height: 16),
++      Text(_tr(context, 'Версия $kassaBuildVersion', 'Versiya $kassaBuildVersion'),
++        textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodySmall),
+     ],
+   );
+ 
+--- a/apps/mobile-flutter/lib/pos.dart
++++ b/apps/mobile-flutter/lib/pos.dart
+@@ -40,6 +40,8 @@
+ part 'catalog_issues_api.dart';
+ part 'receipt_stock_adjustment_api.dart';
+ 
++const kassaBuildVersion = '0.2.93';
++
+ typedef Json = Map<String, dynamic>;
+ 
+ String newId() {
+@@ -222,7 +224,7 @@
+       'store_selection_required' => 'Сначала выберите магазин.',
+       'store_not_found' => 'У вашей учётной записи нет доступа к магазину.',
+       'store_discovery_unavailable' =>
+-        'Для рабочего входа центральному API нужен маршрут GET /v1/me/stores.',
++        'Список магазинов сейчас недоступен на сервере. Повторите загрузку.',
+       'product_not_found' => 'Товар не найден.',
+       'operating_expense_pending' => 'Сначала проверьте предыдущий расход.',
+       'operating_expenses_unavailable' =>
+@@ -910,7 +912,6 @@
+   String? _workingShiftPath;
+ 
+   Uri get origin => validateKassaOrigin(apiOrigin, debug: kDebugMode);
+-  bool get supportsManualWorkplace => productionContract && !login._native;
+   bool get hasLocation => _location != null;
+   KassaLocation get location =>
+       _location ?? (throw ApiFailure(503, 'store_discovery_unavailable'));
+@@ -1066,6 +1067,8 @@
+           'x-file-name',
+         }.contains(entry.key.toLowerCase()))
+           entry.key: entry.value,
++      if (discovery) 'Cache-Control': 'no-cache, no-store',
++      if (discovery) 'Pragma': 'no-cache',
+       if (active != null) 'X-Active-Role': active.code,
+       if (operatorSession != null && authorization == null)
+         'X-Operator-Session': operatorSession!.token,
+--- a/apps/mobile-flutter/lib/workplace_api.dart
++++ b/apps/mobile-flutter/lib/workplace_api.dart
+@@ -78,7 +78,8 @@
+       );
+     } on ApiFailure catch (failure) {
+       if (failure._routeUnavailable) {
+-        throw ApiFailure(503, 'store_discovery_unavailable');
++        throw ApiFailure(failure.status, 'store_discovery_unavailable',
++            requestId: failure.requestId, emptyResponse: failure.emptyResponse);
+       }
+       rethrow;
+     }
+--- a/apps/mobile-flutter/lib/workplaces.dart
++++ b/apps/mobile-flutter/lib/workplaces.dart
+@@ -25,7 +25,8 @@
+   final _stores = <String, AssignedStore>{};
+   int? _nextOffset;
+   bool _loaded = false;
+-  bool _usesManualSelection = false;
++  ApiFailure? _discoveryFailure;
++  int _requestedOffset = 0;
+   bool _autoOpenAttempted = false;
+ 
+   @override
+@@ -35,27 +36,14 @@
+   }
+ 
+   Future<void> _load({bool more = false}) async {
+-    if (_usesManualSelection) {
+-      _stores.clear();
+-      for (final store in await widget.session.api.platformTestStores()) {
+-        _stores[store.id] = store;
+-      }
+-      _loaded = true;
+-      return;
+-    }
++    _discoveryFailure = null;
++    _requestedOffset = more ? _nextOffset! : 0;
+     final ({List<AssignedStore> items, int? nextOffset}) page;
+     try {
+-      page = await widget.session.api.assignedStores(
+-        offset: more ? _nextOffset! : 0,
+-      );
++      page = await widget.session.api.assignedStores(offset: _requestedOffset);
+     } on ApiFailure catch (failure) {
+-      if (failure.code != 'store_discovery_unavailable' ||
+-          !widget.session.api.supportsManualWorkplace ||
+-          _loaded) {
+-        rethrow;
+-      }
+-      _usesManualSelection = true;
+-      return;
++      _discoveryFailure = failure;
++      rethrow;
+     }
+     if (!more) _stores.clear();
+     for (final store in page.items) {
+@@ -116,19 +104,14 @@
+     }
+   }
+ 
+-  Future<void> _openById() async {
+-    final entered = await inputValue(
+-      context,
+-      _tr(context, 'Открыть назначенный магазин', 'Biriktirilgan do‘konni ochish'),
+-      _tr(context, 'UUID магазина', 'Do‘kon UUID raqami'),
+-    );
+-    if (!mounted || entered == null) return;
+-    final id = entered.toLowerCase();
+-    if (!isReceiptNumber(id) || id == '00000000-0000-0000-0000-000000000000') {
+-      await task(() async { throw ApiFailure(0, 'invalid_location'); });
+-      return;
+-    }
+-    await _open(_stores[id] ?? AssignedStore(id, id, 'Asia/Tashkent', 300, const []));
++  String get _discoveryDetails {
++    final failure = _discoveryFailure;
++    return [
++      'Kassa Android $kassaBuildVersion',
++      'GET ${widget.session.api.origin.origin}/v1/me/stores?offset=$_requestedOffset',
++      if (failure != null) 'HTTP ${failure.status} · ${failure.code}',
++      if (failure?.requestId case final id?) 'Request ID: $id',
++    ].join('\n');
+   }
+ 
+   Future<void> _open(AssignedStore store) async {
+@@ -143,7 +126,7 @@
+     final selected = await Navigator.of(context).push<_SelectedWorkplace>(
+       MaterialPageRoute(builder: (_) => _StoreWorkplace(
+         widget.session, store,
+-        manualSelection: _usesManualSelection || !store.registerAssignmentsKnown,
++        manualSelection: !store.registerAssignmentsKnown,
+       )),
+     );
+     if (mounted && selected != null) Navigator.pop(context, selected);
+@@ -153,43 +136,45 @@
+   Widget build(BuildContext context) => _WorkplacePage(
+     title: const _UiText('Доступные магазины', 'Mavjud do‘konlar'),
+     actions: [
+-      if (!_usesManualSelection || _loaded)
+-        IconButton(
+-          onPressed: busy ? null : () => task(_load),
+-          tooltip: _tr(context, 'Обновить магазины', 'Do‘konlarni yangilash'),
+-          icon: const Icon(Icons.refresh),
+-        ),
++      IconButton(
++        onPressed: busy ? null : () => task(_load),
++        tooltip: _tr(context, 'Обновить магазины', 'Do‘konlarni yangilash'),
++        icon: const Icon(Icons.refresh),
++      ),
+     ],
+     children: [
+       if (busy) const LinearProgressIndicator(),
+       if (status != null) StatusBox(status!, error: failed),
+-      if (_usesManualSelection) ...[
+-        const _UiStatus(
+-          'Сервер не вернул список доступных магазинов.',
+-          'Server mavjud do‘konlar ro‘yxatini yubormadi.',
+-        ),
+-        FilledButton(
+-          onPressed: busy ? null : _openById,
+-          child: const _UiText('Открыть магазин по UUID', 'Do‘konni UUID orqali ochish'),
+-        ),
+-        const SizedBox(height: 4),
+-        OutlinedButton(
++      if (failed) ...[
++        FilledButton.icon(
+           onPressed: busy ? null : () => task(_load),
+-          child: const _UiText('Тестовые магазины', 'Sinov do‘konlari'),
++          icon: const Icon(Icons.refresh),
++          label: const _UiText('Повторить загрузку', 'Qayta yuklash'),
+         ),
+-        const SizedBox(height: 12),
++        if (_discoveryFailure != null)
++          ExpansionTile(
++            tilePadding: EdgeInsets.zero,
++            title: const _UiText('Сведения об ошибке', 'Xato tafsilotlari'),
++            children: [
++              SelectableText(_discoveryDetails),
++              Align(alignment: Alignment.centerLeft, child: TextButton.icon(
++                onPressed: () async {
++                  await Clipboard.setData(ClipboardData(text: _discoveryDetails));
++                },
++                icon: const Icon(Icons.copy_outlined, size: 18),
++                label: const _UiText('Скопировать', 'Nusxalash'),
++              )),
++            ],
++          ),
+       ],
+       if (_loaded && !failed && _stores.isEmpty)
+-        if (_usesManualSelection)
+-          const _UiStatus('В списке нет тестовых магазинов.', 'Ro‘yxatda sinov do‘konlari yo‘q.')
+-        else
+-          const _UiStatus('К аккаунту пока не подключён ни один магазин.', 'Hisobga hali hech bir do‘kon biriktirilmagan.'),
++        const _UiStatus('К аккаунту пока не подключён ни один магазин.', 'Hisobga hali hech bir do‘kon biriktirilmagan.'),
+       for (final store in _stores.values)
+         _WorkplaceRow(
+           child: ListTile(
+             leading: const Icon(Icons.store_outlined, size: 20),
+             title: Text(store.name),
+-            subtitle: Text(_usesManualSelection ? store.id : store.timeZone),
++            subtitle: Text(store.timeZone),
+             trailing: const Icon(Icons.chevron_right, size: 20),
+             onTap: busy ? null : () => _open(store),
+           ),
+@@ -199,6 +184,9 @@
+           onPressed: busy ? null : () => task(() => _load(more: true)),
+           child: const _UiText('Показать ещё', 'Yana ko‘rsatish'),
+         ),
++      const SizedBox(height: 16),
++      Text(_tr(context, 'Версия $kassaBuildVersion', 'Versiya $kassaBuildVersion'),
++        textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodySmall),
+     ],
+   );
+ }
+--- a/apps/mobile-flutter/pubspec.yaml
++++ b/apps/mobile-flutter/pubspec.yaml
+@@ -1,7 +1,7 @@
+ name: kassa_mobile
+ description: Android POS pilot for Kassa.
+ publish_to: none
+-version: 0.2.92+2112
++version: 0.2.93+2113
+ environment:
+   sdk: ">=3.10.0 <4.0.0"
+ dependencies:
+--- a/apps/mobile-flutter/test/production_api_test.dart
++++ b/apps/mobile-flutter/test/production_api_test.dart
+@@ -170,71 +170,80 @@
+     expect(sale['total'], quote.total);
+   });
+ 
+-  testWidgets('lists platform test stores and checks roles before opening', (
+-    tester,
+-  ) async {
++  testWidgets('store discovery retries the real endpoint after a missing route and recovers', (tester) async {
+     final paths = <String>[];
++    var attempts = 0;
+     final session = _session((request) async {
++      paths.add(request.url.path);
++      expect(request.url.path, '/v1/me/stores');
++      expect(request.url.queryParameters, {'offset': '0'});
+       expect(request.headers['Authorization'], 'Bearer test-token');
++      expect(request.headers['X-Operator-Session'], isNull);
+       expect(request.headers['X-Register-Key'], isNull);
+-      final path = request.url.path;
+-      paths.add(path);
+-      if (path == '/v1/me/stores') return _json({}, 404);
+-      if (path == '/v1/platform/test-stores') {
+-        return _json({
+-          'items': [
+-            {'id': _store, 'name': 'Учебный магазин'},
+-          ],
+-        });
+-      }
+-      expect(path, '/v1/me/roles');
+-      expect(request.url.queryParameters['storeId'], _store);
+-      return _json({'code': 'store_not_found'}, 404);
++      expect(request.headers['X-Register-Device-Token'], isNull);
++      expect(request.headers['Cache-Control'], 'no-cache, no-store');
++      if (++attempts == 1) return _json({'traceId': 'store-route-request-404'}, 404);
++      if (attempts == 2) return _json({'code': 'temporarily_unavailable'}, 503);
++      return _json({'items': [{
++        'organizationId': _otherStore, 'storeId': _store, 'storeName': 'Настоящий магазин',
++        'isOwner': false, 'active': true, 'timeZone': 'Asia/Tashkent', 'utcOffsetMinutes': 300,
++      }], 'nextOffset': null});
+     });
+     await tester.pumpWidget(KassaApp(pos: session));
+     await tester.pumpAndSettle();
++    expect(find.text('Версия $kassaBuildVersion'), findsOneWidget);
+     await tester.tap(find.text('Войти в аккаунт'));
+     await tester.pumpAndSettle();
+-    expect(paths, ['/v1/me/stores']);
+-    await tester.tap(find.text('Тестовые магазины'));
+-    await tester.pumpAndSettle();
+-    expect(find.text('Учебный магазин'), findsOneWidget);
+-    await tester.tap(find.text('Учебный магазин'));
+-    await tester.pumpAndSettle();
+-    expect(find.text('Войти без кассы'), findsNothing);
+-    expect(find.textContaining('нет доступа к магазину'), findsOneWidget);
+-    expect(paths, ['/v1/me/stores', '/v1/platform/test-stores', '/v1/me/roles']);
++    expect(find.textContaining('Список магазинов сейчас недоступен'), findsOneWidget);
++    expect(find.textContaining('К аккаунту пока не подключён'), findsNothing);
++    expect(find.text('Открыть магазин по UUID'), findsNothing);
++    expect(find.text('Тестовые магазины'), findsNothing);
++    await tester.tap(find.text('Сведения об ошибке'));
++    await tester.pumpAndSettle();
++    final details = tester.widget<SelectableText>(find.byType(SelectableText)).data!;
++    expect(details, contains('HTTP 404'));
++    expect(details, contains('store-route-request-404'));
++    expect(details, contains('/v1/me/stores?offset=0'));
++    expect(details, isNot(contains('test-token')));
++    await tester.tap(find.text('Повторить загрузку'));
++    await tester.pumpAndSettle();
++    expect(attempts, 2);
++    await tester.tap(find.byTooltip('Обновить магазины'));
++    await tester.pumpAndSettle();
++    expect(find.text('Настоящий магазин'), findsOneWidget);
++    expect(find.text('Повторить загрузку'), findsNothing);
++    expect(find.text('Сведения об ошибке'), findsNothing);
++    expect(paths, ['/v1/me/stores', '/v1/me/stores', '/v1/me/stores']);
+   });
+ 
+-  testWidgets('ordinary assigned store works without platform permission', (
+-    tester,
+-  ) async {
+-    final paths = <String>[];
++  testWidgets('empty assigned store list is distinct from a failed request', (tester) async {
+     final session = _session((request) async {
+-      final path = request.url.path;
+-      paths.add(path);
+-      if (path == '/v1/me/stores') return _json({}, 404);
+-      if (path == '/v1/platform/test-stores') return _json({}, 403);
+-      expect(path, '/v1/me/roles');
+-      expect(request.url.queryParameters['storeId'], _store);
+-      return _json({
+-        'storeId': _store,
+-        'roles': ['receiver'],
+-      });
++      expect(request.url.path, '/v1/me/stores');
++      return _json({'items': [], 'nextOffset': null});
+     });
+     await tester.pumpWidget(KassaApp(pos: session));
+     await tester.pumpAndSettle();
+     await tester.tap(find.text('Войти в аккаунт'));
+     await tester.pumpAndSettle();
+-    await tester.tap(find.text('Тестовые магазины'));
+-    await tester.pumpAndSettle();
+-    expect(find.textContaining('Кабинет разработчика'), findsNothing);
+-    await tester.tap(find.text('Открыть магазин по UUID'));
+-    await tester.pumpAndSettle();
+-    await tester.enterText(find.byType(TextFormField), _store);
+-    await tester.tap(find.text('Подтвердить'));
+-    await tester.pumpAndSettle();
+-    expect(find.text('Войти без кассы'), findsOneWidget);
+-    expect(paths, ['/v1/me/stores', '/v1/platform/test-stores', '/v1/me/roles']);
++    expect(find.text('К аккаунту пока не подключён ни один магазин.'), findsOneWidget);
++    expect(find.text('Повторить загрузку'), findsNothing);
++    expect(find.text('Открыть магазин по UUID'), findsNothing);
++    expect(find.text('Тестовые магазины'), findsNothing);
++    expect(find.byTooltip('Обновить магазины'), findsOneWidget);
+   });
++
++  for (final status in [404, 405, 403, 500]) {
++    test('store discovery preserves HTTP $status and the server request id', () async {
++      final session = _session((request) async => _json({
++        'traceId': 'request-$status',
++        if (status == 403) 'code': 'store_access_denied',
++      }, status));
++      addTearDown(session.api.close);
++      await expectLater(session.api.assignedStores(), throwsA(isA<ApiFailure>()
++          .having((e) => e.status, 'status', status)
++          .having((e) => e.requestId, 'requestId', 'request-$status')
++          .having((e) => e.code, 'code', status == 404 || status == 405
++              ? 'store_discovery_unavailable' : status == 403 ? 'store_access_denied' : 'request_failed')));
++    });
++  }
+ }
