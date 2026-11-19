@@ -1,0 +1,458 @@
+--- a/apps/mobile-flutter/lib/main.dart
++++ b/apps/mobile-flutter/lib/main.dart
+@@ -132,6 +132,7 @@
+       (desk != Desk.cashier || pos.demo || pos.api.location.registerId != null);
+   Set<Desk> allowed = {};
+   bool signedIn = false;
++  bool _ownerAuthenticated = false;
+   PlatformIdentity? _platformIdentity;
+   static const _platformAction = 'platform';
+   bool busy = false;
+@@ -241,6 +242,7 @@
+     _session.api.origin;
+     if (!mounted) return;
+     await _session.login.signIn();
++    _ownerAuthenticated = true;
+     await _enterAccount();
+   });
+ 
+@@ -306,6 +308,7 @@
+       MaterialPageRoute(builder: (_) => _WorkplacePicker(
+         _session, automaticallyOpenOwner: automaticallyOpenOwner,
+         preferredStore: preferredStore,
++        ownerAuthenticated: _ownerAuthenticated,
+       )),
+     );
+     if (selected != null) _activateWorkplace(selected);
+@@ -480,6 +483,7 @@
+   Future<void> _switchOperator({bool expired = false}) async {
+     final selected = _selected;
+     if (selected == null || selected.pos.api.operatorSession == null) return;
++    _ownerAuthenticated = false;
+     final previousRole = desk!;
+     setState(() {
+       selected.pos.api.retireWorkplace();
+@@ -504,6 +508,7 @@
+   }
+ 
+   void clearSession() {
++    _ownerAuthenticated = false;
+     _selected?.pos.api.retireWorkplace();
+     _selected = null;
+     _session.api.resetSessionRoles();
+--- a/apps/mobile-flutter/lib/operator_login.dart
++++ b/apps/mobile-flutter/lib/operator_login.dart
+@@ -1,11 +1,14 @@
+ part of 'main.dart';
+ 
+ class _OperatorLogin extends StatefulWidget {
+-  const _OperatorLogin(this.session, this.store, this.operators);
++  const _OperatorLogin(this.session, this.store, this.operators, {
++    this.ownerAuthenticated = false,
++  });
+ 
+   final Pos session;
+   final AssignedStore store;
+   final List<StoreOperator> operators;
++  final bool ownerAuthenticated;
+ 
+   @override
+   State<_OperatorLogin> createState() => _OperatorLoginState();
+@@ -14,6 +17,17 @@
+ class _OperatorLoginState extends State<_OperatorLogin> with Tasks<_OperatorLogin> {
+   late List<StoreOperator> _operators = widget.operators;
+ 
++  @override
++  void initState() {
++    super.initState();
++    if (widget.ownerAuthenticated) {
++      WidgetsBinding.instance.addPostFrameCallback((_) {
++        final owner = _operators.where((operator) => operator.isOwner).singleOrNull;
++        if (mounted && owner != null) unawaited(_select(owner));
++      });
++    }
++  }
++
+   Future<void> _refresh() => task(() async {
+     final host = widget.session.forWorkplace(widget.store.location());
+     try {
+@@ -39,7 +53,7 @@
+         throw FormatException(_tr(context, 'Введите код из 8–128 символов.',
+           '8–128 belgidan iborat kodni kiriting.'));
+       }
+-      if (operator.isOwner) {
++      if (operator.isOwner && !widget.ownerAuthenticated) {
+         try {
+           await widget.session.login.reauthenticateOwner();
+         } on DeviceLoginCancelled {
+--- a/apps/mobile-flutter/lib/pos.dart
++++ b/apps/mobile-flutter/lib/pos.dart
+@@ -222,7 +222,7 @@
+       'store_selection_required' => 'Сначала выберите магазин.',
+       'store_not_found' => 'У вашей учётной записи нет доступа к магазину.',
+       'store_discovery_unavailable' =>
+-        'Для рабочего входа центральному API нужен маршрут GET /v1/me/stores.',
++        'Не удалось загрузить магазины. Повторите загрузку.',
+       'product_not_found' => 'Товар не найден.',
+       'operating_expense_pending' => 'Сначала проверьте предыдущий расход.',
+       'operating_expenses_unavailable' =>
+--- a/apps/mobile-flutter/lib/workplaces.dart
++++ b/apps/mobile-flutter/lib/workplaces.dart
+@@ -10,11 +10,13 @@
+ class _WorkplacePicker extends StatefulWidget {
+   const _WorkplacePicker(this.session, {
+     required this.automaticallyOpenOwner, this.preferredStore,
++    this.ownerAuthenticated = false,
+   });
+ 
+   final Pos session;
+   final bool automaticallyOpenOwner;
+   final String? preferredStore;
++  final bool ownerAuthenticated;
+ 
+   @override
+   State<_WorkplacePicker> createState() => _WorkplacePickerState();
+@@ -25,7 +27,6 @@
+   final _stores = <String, AssignedStore>{};
+   int? _nextOffset;
+   bool _loaded = false;
+-  bool _usesManualSelection = false;
+   bool _autoOpenAttempted = false;
+ 
+   @override
+@@ -35,28 +36,9 @@
+   }
+ 
+   Future<void> _load({bool more = false}) async {
+-    if (_usesManualSelection) {
+-      _stores.clear();
+-      for (final store in await widget.session.api.platformTestStores()) {
+-        _stores[store.id] = store;
+-      }
+-      _loaded = true;
+-      return;
+-    }
+-    final ({List<AssignedStore> items, int? nextOffset}) page;
+-    try {
+-      page = await widget.session.api.assignedStores(
+-        offset: more ? _nextOffset! : 0,
+-      );
+-    } on ApiFailure catch (failure) {
+-      if (failure.code != 'store_discovery_unavailable' ||
+-          !widget.session.api.supportsManualWorkplace ||
+-          _loaded) {
+-        rethrow;
+-      }
+-      _usesManualSelection = true;
+-      return;
+-    }
++    final page = await widget.session.api.assignedStores(
++      offset: more ? _nextOffset! : 0,
++    );
+     if (!more) _stores.clear();
+     for (final store in page.items) {
+       _stores[store.id] = store;
+@@ -66,7 +48,7 @@
+     if (widget.automaticallyOpenOwner && !_autoOpenAttempted &&
+         widget.session.login.canUseAdministrativeRoles) {
+       _autoOpenAttempted = true;
+-      final preferred = widget.preferredStore ?? await widget.session.api.lastOperatorStore();
++      final preferred = widget.preferredStore;
+       final store = _stores[preferred] ??
+           (_stores.length == 1 && _nextOffset == null ? _stores.values.single : null);
+       if (mounted && store != null) await _openOwnerStore(store);
+@@ -87,7 +69,8 @@
+ 
+   Future<void> _showOperators(AssignedStore store, List<StoreOperator> operators) async {
+     final selected = await Navigator.of(context).push<_SelectedWorkplace>(
+-      MaterialPageRoute(builder: (_) => _OperatorLogin(widget.session, store, operators)),
++      MaterialPageRoute(builder: (_) => _OperatorLogin(widget.session, store, operators,
++        ownerAuthenticated: widget.ownerAuthenticated)),
+     );
+     if (mounted && selected != null) Navigator.pop(context, selected);
+   }
+@@ -116,21 +99,6 @@
+     }
+   }
+ 
+-  Future<void> _openById() async {
+-    final entered = await inputValue(
+-      context,
+-      _tr(context, 'Открыть назначенный магазин', 'Biriktirilgan do‘konni ochish'),
+-      _tr(context, 'UUID магазина', 'Do‘kon UUID raqami'),
+-    );
+-    if (!mounted || entered == null) return;
+-    final id = entered.toLowerCase();
+-    if (!isReceiptNumber(id) || id == '00000000-0000-0000-0000-000000000000') {
+-      await task(() async { throw ApiFailure(0, 'invalid_location'); });
+-      return;
+-    }
+-    await _open(_stores[id] ?? AssignedStore(id, id, 'Asia/Tashkent', 300, const []));
+-  }
+-
+   Future<void> _open(AssignedStore store) async {
+     if (busy) return;
+     List<StoreOperator>? operators;
+@@ -143,7 +111,7 @@
+     final selected = await Navigator.of(context).push<_SelectedWorkplace>(
+       MaterialPageRoute(builder: (_) => _StoreWorkplace(
+         widget.session, store,
+-        manualSelection: _usesManualSelection || !store.registerAssignmentsKnown,
++        manualSelection: !store.registerAssignmentsKnown,
+       )),
+     );
+     if (mounted && selected != null) Navigator.pop(context, selected);
+@@ -153,7 +121,6 @@
+   Widget build(BuildContext context) => _WorkplacePage(
+     title: const _UiText('Доступные магазины', 'Mavjud do‘konlar'),
+     actions: [
+-      if (!_usesManualSelection || _loaded)
+         IconButton(
+           onPressed: busy ? null : () => task(_load),
+           tooltip: _tr(context, 'Обновить магазины', 'Do‘konlarni yangilash'),
+@@ -163,33 +130,19 @@
+     children: [
+       if (busy) const LinearProgressIndicator(),
+       if (status != null) StatusBox(status!, error: failed),
+-      if (_usesManualSelection) ...[
+-        const _UiStatus(
+-          'Сервер не вернул список доступных магазинов.',
+-          'Server mavjud do‘konlar ro‘yxatini yubormadi.',
+-        ),
+-        FilledButton(
+-          onPressed: busy ? null : _openById,
+-          child: const _UiText('Открыть магазин по UUID', 'Do‘konni UUID orqali ochish'),
+-        ),
+-        const SizedBox(height: 4),
++      if (failed)
+         OutlinedButton(
+           onPressed: busy ? null : () => task(_load),
+-          child: const _UiText('Тестовые магазины', 'Sinov do‘konlari'),
++          child: const _UiText('Повторить загрузку', 'Qayta yuklash'),
+         ),
+-        const SizedBox(height: 12),
+-      ],
+       if (_loaded && !failed && _stores.isEmpty)
+-        if (_usesManualSelection)
+-          const _UiStatus('В списке нет тестовых магазинов.', 'Ro‘yxatda sinov do‘konlari yo‘q.')
+-        else
+-          const _UiStatus('К аккаунту пока не подключён ни один магазин.', 'Hisobga hali hech bir do‘kon biriktirilmagan.'),
++        const _UiStatus('К аккаунту пока не подключён ни один магазин.', 'Hisobga hali hech bir do‘kon biriktirilmagan.'),
+       for (final store in _stores.values)
+         _WorkplaceRow(
+           child: ListTile(
+             leading: const Icon(Icons.store_outlined, size: 20),
+             title: Text(store.name),
+-            subtitle: Text(_usesManualSelection ? store.id : store.timeZone),
++            subtitle: Text(store.timeZone),
+             trailing: const Icon(Icons.chevron_right, size: 20),
+             onTap: busy ? null : () => _open(store),
+           ),
+--- a/apps/mobile-flutter/pubspec.yaml
++++ b/apps/mobile-flutter/pubspec.yaml
+@@ -1,7 +1,7 @@
+ name: kassa_mobile
+ description: Android POS pilot for Kassa.
+ publish_to: none
+-version: 0.2.92+2112
++version: 0.2.93+2113
+ environment:
+   sdk: ">=3.10.0 <4.0.0"
+ dependencies:
+--- /dev/null
++++ b/apps/mobile-flutter/test/owner_entry_test.dart
+@@ -0,0 +1,94 @@
++import 'dart:convert';
++import 'package:flutter/material.dart';
++import 'package:flutter_secure_storage/flutter_secure_storage.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:http/http.dart' as http;
++import 'package:http/testing.dart';
++import 'package:kassa_mobile/main.dart';
++import 'package:kassa_mobile/pos.dart';
++
++const store = '50000000-0000-4000-8000-000000000001';
++const otherStore = '50000000-0000-4000-8000-000000000002';
++const ownerId = '50000000-0000-4000-8000-000000000003';
++const org = '50000000-0000-4000-8000-000000000004';
++const sessionId = '50000000-0000-4000-8000-000000000005';
++
++class OwnerLogin extends Login {
++  OwnerLogin(super.storage);
++  int logins = 0;
++  int confirmations = 0;
++  @override
++  String get subject => 'owner';
++  @override
++  Future<void> signIn() async { logins++; }
++  @override
++  Future<bool> restore() async => false;
++  @override
++  Future<void> reauthenticateOwner() async { confirmations++; }
++  @override
++  Future<String> accessToken({bool force = false}) async => 'owner-bearer';
++}
++
++http.Response reply(Object? data) => http.Response.bytes(utf8.encode(jsonEncode(data)), 200,
++    headers: {'content-type': 'application/json; charset=utf-8'});
++
++void main() {
++  for (final multiple in [false, true]) {
++    testWidgets('fresh owner enters without a second login (multiple=$multiple)', (tester) async {
++      FlutterSecureStorage.setMockInitialValues({});
++      const storage = FlutterSecureStorage();
++      final login = OwnerLogin(storage);
++      final owner = {'operatorId': ownerId, 'displayName': 'Владелец', 'roles': ['admin', 'cashier', 'receiver'],
++        'isOwner': true, 'passwordRequired': false, 'active': true};
++      var sessions = 0;
++      final paths = <String>[];
++      final pos = Pos(storage, login: login, productionContract: true,
++        client: MockClient((request) async {
++          paths.add(request.url.path);
++          if (request.url.path == '/v1/me/stores') return reply({'items': [
++            for (final id in [store, if (multiple) otherStore]) {
++              'organizationId': org, 'storeId': id, 'storeName': id == store ? 'Первый магазин' : 'Второй магазин',
++              'timeZone': 'Asia/Tashkent', 'utcOffsetMinutes': 300, 'isOwner': true, 'active': true,
++            },
++          ], 'nextOffset': null});
++          if (request.url.path == '/v1/stores/$store/operators') return reply({'storeId': store, 'items': [owner]});
++          if (request.url.path == '/v1/stores/$store/operator-sessions') {
++            sessions++;
++            expect((jsonDecode(request.body) as Json)['password'], isNull);
++            return reply({'storeId': store, 'organizationId': org, 'sessionId': sessionId,
++              'registerId': null, 'operatorSessionToken': 'o' * 43, 'operator': owner});
++          }
++          if (request.url.path == '/v1/operator-sessions/current/registers') return reply({'items': []});
++          if (request.url.path == '/v1/stores/$store/receiving/catalog/proposals') return reply([]);
++          if (request.url.path == '/v1/operator-sessions/current') return http.Response('', 204);
++          fail('Unexpected request ${request.url}');
++        }));
++      await storage.write(key: 'kassa.operator.last-store.v1.${pos.api.origin.origin}.owner', value: store);
++      await tester.pumpWidget(KassaApp(pos: pos));
++      await tester.pumpAndSettle();
++      await tester.tap(find.text('Войти в аккаунт'));
++      await tester.pumpAndSettle();
++      if (multiple) {
++        expect(find.text('Первый магазин'), findsOneWidget);
++        expect(find.text('Второй магазин'), findsOneWidget);
++        expect(sessions, 0, reason: 'A remembered store must not hide the other stores');
++        await tester.tap(find.text('Первый магазин'));
++        await tester.pumpAndSettle();
++      }
++      expect(login.logins, 1);
++      expect(login.confirmations, 0);
++      expect(sessions, 1);
++      expect(find.widgetWithText(TextButton, 'Администратор'), findsOneWidget);
++      expect(find.text('Кто работает?'), findsNothing);
++      expect(paths.any((path) => path.contains('test-stores')), false);
++      // Returning from the shared employee chooser requires owner authentication.
++      await tester.tap(find.byTooltip('Сменить сотрудника'));
++      await tester.pumpAndSettle();
++      expect(find.text('Кто работает?'), findsOneWidget);
++      await tester.tap(find.text('Владелец'));
++      await tester.pumpAndSettle();
++      expect(login.confirmations, 1);
++      expect(sessions, 2);
++    });
++  }
++}
+--- a/apps/mobile-flutter/test/production_api_test.dart
++++ b/apps/mobile-flutter/test/production_api_test.dart
+@@ -170,71 +170,50 @@
+     expect(sale['total'], quote.total);
+   });
+ 
+-  testWidgets('lists platform test stores and checks roles before opening', (
+-    tester,
+-  ) async {
++  testWidgets('missing discovery offers retry and recovers without UUID or test stores', (tester) async {
+     final paths = <String>[];
++    var available = false;
+     final session = _session((request) async {
+-      expect(request.headers['Authorization'], 'Bearer test-token');
+-      expect(request.headers['X-Register-Key'], isNull);
+-      final path = request.url.path;
+-      paths.add(path);
+-      if (path == '/v1/me/stores') return _json({}, 404);
+-      if (path == '/v1/platform/test-stores') {
+-        return _json({
+-          'items': [
+-            {'id': _store, 'name': 'Учебный магазин'},
+-          ],
+-        });
+-      }
+-      expect(path, '/v1/me/roles');
+-      expect(request.url.queryParameters['storeId'], _store);
+-      return _json({'code': 'store_not_found'}, 404);
++      paths.add(request.url.path);
++      expect(request.url.path, '/v1/me/stores');
++      if (!available) return _json({}, 404);
++      return _json({'items': [{
++        'storeId': _store, 'name': 'Мой магазин', 'timeZone': 'Asia/Tashkent',
++        'utcOffsetMinutes': 300, 'registers': [],
++      }], 'nextOffset': null});
+     });
+     await tester.pumpWidget(KassaApp(pos: session));
+     await tester.pumpAndSettle();
+     await tester.tap(find.text('Войти в аккаунт'));
+     await tester.pumpAndSettle();
+-    expect(paths, ['/v1/me/stores']);
+-    await tester.tap(find.text('Тестовые магазины'));
++    expect(find.text('Открыть магазин по UUID'), findsNothing);
++    expect(find.text('Тестовые магазины'), findsNothing);
++    expect(find.text('Повторить загрузку'), findsOneWidget);
++    available = true;
++    await tester.tap(find.text('Повторить загрузку'));
+     await tester.pumpAndSettle();
+-    expect(find.text('Учебный магазин'), findsOneWidget);
+-    await tester.tap(find.text('Учебный магазин'));
+-    await tester.pumpAndSettle();
+-    expect(find.text('Войти без кассы'), findsNothing);
+-    expect(find.textContaining('нет доступа к магазину'), findsOneWidget);
+-    expect(paths, ['/v1/me/stores', '/v1/platform/test-stores', '/v1/me/roles']);
++    expect(find.text('Мой магазин'), findsOneWidget);
++    expect(paths, ['/v1/me/stores', '/v1/me/stores']);
+   });
+ 
+-  testWidgets('ordinary assigned store works without platform permission', (
+-    tester,
+-  ) async {
++  testWidgets('ordinary assigned store opens directly from the personal list', (tester) async {
+     final paths = <String>[];
+     final session = _session((request) async {
+-      final path = request.url.path;
+-      paths.add(path);
+-      if (path == '/v1/me/stores') return _json({}, 404);
+-      if (path == '/v1/platform/test-stores') return _json({}, 403);
+-      expect(path, '/v1/me/roles');
+-      expect(request.url.queryParameters['storeId'], _store);
+-      return _json({
+-        'storeId': _store,
+-        'roles': ['receiver'],
+-      });
++      paths.add(request.url.path);
++      if (request.url.path == '/v1/me/stores') return _json({'items': [{
++        'storeId': _store, 'name': 'Мой магазин', 'timeZone': 'Asia/Tashkent',
++        'utcOffsetMinutes': 300, 'registers': [], 'isOwner': false,
++      }], 'nextOffset': null});
++      expect(request.url.path, '/v1/me/roles');
++      return _json({'storeId': _store, 'roles': ['receiver']});
+     });
+     await tester.pumpWidget(KassaApp(pos: session));
+     await tester.pumpAndSettle();
+     await tester.tap(find.text('Войти в аккаунт'));
+     await tester.pumpAndSettle();
+-    await tester.tap(find.text('Тестовые магазины'));
+-    await tester.pumpAndSettle();
+-    expect(find.textContaining('Кабинет разработчика'), findsNothing);
+-    await tester.tap(find.text('Открыть магазин по UUID'));
+-    await tester.pumpAndSettle();
+-    await tester.enterText(find.byType(TextFormField), _store);
+-    await tester.tap(find.text('Подтвердить'));
++    await tester.tap(find.text('Мой магазин'));
+     await tester.pumpAndSettle();
+     expect(find.text('Войти без кассы'), findsOneWidget);
+-    expect(paths, ['/v1/me/stores', '/v1/platform/test-stores', '/v1/me/roles']);
++    expect(paths, ['/v1/me/stores', '/v1/me/roles']);
+   });
+ }

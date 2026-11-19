@@ -1,0 +1,177 @@
+name: Build Kassa Android 0.2.93
+
+on:
+  push:
+    branches: ['codex/android-owner-entry-0.2.93']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.0'
+          channel: stable
+
+      - name: Restore Android source
+        shell: bash
+        run: |
+          cat build/kassa-android-0.2.72/source.zip.part.* > source.zip
+          echo 'e5cd036e3eae92aa1b3b2c8424220b9b685c26e3324c4c28ba29551ea162f522  source.zip' | sha256sum --check
+          unzip -q source.zip -d compiled-source
+          patch --batch -p1 -d compiled-source < build/kassa-first-login/android.patch
+          echo '5289966787cc40e1e3e74fcdc00f5ba9588258dea619404393214e84cc8d4627  build/kassa-account-login/android.patch' | sha256sum --check
+          patch --batch --fuzz=0 -p1 -d compiled-source < build/kassa-account-login/android.patch
+          echo 'b474f28db9e848bcb90780fece8a3b1c6930786607c49e3d6819df65439904ed  build/kassa-owner-login/android.patch' | sha256sum --check
+          patch --batch --fuzz=0 -p1 -d compiled-source < build/kassa-owner-login/android.patch
+          echo 'bb5c4b3f684dbb4ed1d11491ef2324ae61c663290f4268ef7ab3011f9b2ae844  build/kassa-owner-keycloak/android.patch' | sha256sum --check
+          patch --batch --fuzz=0 -p1 -d compiled-source < build/kassa-owner-keycloak/android.patch
+          echo '39c2ebdd6537933aa4a593edc49087dcf1677356578ef22baee32d010fbdc011  build/kassa-owner-registers/android.patch' | sha256sum --check
+          patch --batch --fuzz=0 -p1 -d compiled-source < build/kassa-owner-registers/android.patch
+          echo '2d869a8e7f6b6fa3aae834103266ea393bfb3f1d8d9f4b4e13a937d3e6937515  build/kassa-android-design/android.patch' | sha256sum --check
+          patch --batch --fuzz=0 -p1 -d compiled-source < build/kassa-android-design/android.patch
+          echo '75ecb1f51f0113dd28611bfc57bcd2cafe336b9998bc175cf1e5043a8814e829  build/kassa-shift-conflict/android.patch' | sha256sum --check
+          patch --batch --fuzz=0 -p1 -d compiled-source < build/kassa-shift-conflict/android.patch
+
+          echo 'a5990fb2968634fb0afc6a4c0137f735bdfd0a15a7c9ac859c2b103010a5d742  build/kassa-receiving-design/android.patch' | sha256sum --check
+          patch --batch --fuzz=0 -p1 -d compiled-source < build/kassa-receiving-design/android.patch
+
+          echo '78696fdca0458763ba8d1ee6aef2bd9c244b020c1ed47feaa51c2e6ccd49b78d  build/kassa-android-workspaces/android.patch' | sha256sum --check
+          patch --batch --fuzz=0 -p1 -d compiled-source < build/kassa-android-workspaces/android.patch
+
+          echo 'f1b6411041b0c15819a1dcbe77c94e919ad9543803652f359daf73c6d3f6e937  build/kassa-android-expenses-uz/android.patch' | sha256sum --check
+          patch --batch --fuzz=0 -p1 -d compiled-source < build/kassa-android-expenses-uz/android.patch
+
+          echo '276484d0aff8f7f3a999f9dd7d228de1b704f610ebd5474a2ea778e347e39fb8  build/kassa-android-form-layout/android.patch' | sha256sum --check
+          patch --batch --fuzz=0 -p1 -d compiled-source < build/kassa-android-form-layout/android.patch
+
+          echo 'f98c69ccaa52a84029952f46e20c8e6a43ada9bcae412ba310d052343c8bc72e  build/kassa-android-blue-palette/android.patch' | sha256sum --check
+          patch --batch --fuzz=0 -p1 -d compiled-source < build/kassa-android-blue-palette/android.patch
+
+          echo '740a41c14cd74971ea2fb2e807ebc932ab6105bfa106d3973b5b3536f39e34c4  build/kassa-android-compact-catalog/android.patch' | sha256sum --check
+          patch --batch --fuzz=0 -p1 -d compiled-source < build/kassa-android-compact-catalog/android.patch
+
+          echo '54698ac6c7d14c7ee2401a1f7e97c2c6e4a8f589041fa6057ae2113dcde64500  build/kassa-android-lookup-binding/android.patch' | sha256sum --check
+          patch --batch --fuzz=0 -p1 -d compiled-source < build/kassa-android-lookup-binding/android.patch
+
+          echo '942c8a2854adfa0b17653b8a9b61b4bb2a0b36aae82758b31d2d31bb1a7ebf4f  build/kassa-android-employee-pin/android.patch' | sha256sum --check
+          patch --batch --fuzz=0 -p1 -d compiled-source < build/kassa-android-employee-pin/android.patch
+
+          echo 'bc5a7d65efbcf89614d5d598cfe7b078d6e7e82ba518b4c9ea04b66254a5bb01  build/kassa-android-cashier-visible/android.patch' | sha256sum --check
+          patch --batch --fuzz=0 -p1 -d compiled-source < build/kassa-android-cashier-visible/android.patch
+
+          echo 'd00172630bd2867d991dd1ff418c6633893c974e765d7bf5ba3ab1d49c8a2149  build/kassa-android-reuse-register/android.patch' | sha256sum --check
+          patch --batch --fuzz=0 -p1 -d compiled-source < build/kassa-android-reuse-register/android.patch
+
+          echo '0020ac503b08ddecb6d3296af0a9132299942e816bffb871b5f51b95368df65a  build/kassa-android-visual-refresh/android.patch' | sha256sum --check
+          patch --batch --fuzz=0 -p1 -d compiled-source < build/kassa-android-visual-refresh/android.patch
+
+          echo '294e6a801c1f436af0595e7912b972c5d6215d6853b8cc78b62c71aa1f7b787d  build/kassa-android-device-bindings/android.patch' | sha256sum --check
+          patch --batch --fuzz=0 -p1 -d compiled-source < build/kassa-android-device-bindings/android.patch
+
+          echo '4e506a8a22921cc742be3b65703189fbcd03cc1af15cb6133a96348940af64bc  build/kassa-android-owner-entry/android.patch' | sha256sum --check
+          patch --batch --fuzz=0 -p1 -d compiled-source < build/kassa-android-owner-entry/android.patch
+
+      - name: Test Android client
+        working-directory: compiled-source/apps/mobile-flutter
+        shell: bash
+        run: |
+          flutter pub get --enforce-lockfile
+          flutter test --no-pub --reporter expanded
+
+      - name: Render phone screens
+        working-directory: compiled-source/apps/mobile-flutter
+        shell: bash
+        run: |
+          export KASSA_PREVIEW_TEXT_FONT="$(fc-match -f '%{file}' 'Roboto')"
+          flutter_bin="$(dirname "$(readlink -f "$(command -v flutter)")")"
+          export KASSA_PREVIEW_ICONS="$(find "$flutter_bin/cache/artifacts/material_fonts" -iname '*materialicons*' -type f -print -quit)"
+          KASSA_WORKSPACE_PREVIEW=visual-review flutter test --no-pub test/workspace_visual_test.dart --reporter expanded
+          KASSA_FORM_PREVIEW=visual-review flutter test --no-pub test/form_layout_test.dart --reporter expanded
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kassa-Android-0.2.93-SCREENS
+          path: compiled-source/apps/mobile-flutter/visual-review/*.png
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Install Android build components
+        shell: bash
+        run: |
+          sdk="$RUNNER_TEMP/kassa-android-sdk"
+          tools="$RUNNER_TEMP/kassa-android-tools.zip"
+          curl --fail --location --silent --show-error --retry 3 \
+            https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip -o "$tools"
+          echo "4e4c464f145a7512b57d088ac6c278c03c9eea610886b35a5e0804e74eedf583  $tools" | sha256sum --check
+          mkdir -p "$sdk/cmdline-tools"
+          unzip -q "$tools" -d "$sdk/cmdline-tools"
+          mv "$sdk/cmdline-tools/cmdline-tools" "$sdk/cmdline-tools/latest"
+          manager="$sdk/cmdline-tools/latest/bin/sdkmanager"
+          set +o pipefail
+          yes | "$manager" --sdk_root="$sdk" --licenses >/dev/null
+          set -o pipefail
+          "$manager" --sdk_root="$sdk" --install 'platform-tools' 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358'
+          printf 'ANDROID_HOME=%s\nANDROID_SDK_ROOT=%s\n' "$sdk" "$sdk" >> "$GITHUB_ENV"
+          echo "$sdk/platform-tools" >> "$GITHUB_PATH"
+
+      - name: Compile and sign the test APK
+        working-directory: compiled-source/apps/mobile-flutter
+        shell: bash
+        run: |
+          sed -i 's/applicationId = "uz.qrspace.kassa.mobile.multirolepilot"/applicationId = "uz.qrspace.kassa.mobile.multirolepilot.ownerentry"/' android/app/build.gradle.kts
+          store_password="$(openssl rand -hex 20)"
+          echo "::add-mask::$store_password"
+          keytool -genkeypair -noprompt -storetype PKCS12 \
+            -keystore "$RUNNER_TEMP/kassa-test.p12" \
+            -storepass "$store_password" -keypass "$store_password" \
+            -alias kassa-test -keyalg RSA -keysize 2048 -validity 3650 \
+            -dname 'CN=Kassa Android Test Build'
+          printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=kassa-test\nkeyPassword=%s\n' \
+            "$RUNNER_TEMP/kassa-test.p12" "$store_password" "$store_password" > android/key.properties
+          flutter build apk --release --no-pub --target-platform android-arm,android-arm64 \
+            --dart-define=KASSA_PRODUCTION_API=true --dart-define=KASSA_NATIVE_INVITATION=true
+
+      - name: Verify test APK
+        shell: bash
+        run: |
+          mkdir -p apk-delivery
+          cd apk-delivery
+          apk=Kassa_Android_0.2.93_TEST.apk
+          cp ../compiled-source/apps/mobile-flutter/build/app/outputs/flutter-apk/app-release.apk "$apk"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$apk" | tee APK-SIGNATURE.txt
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" > badging.txt
+          grep -F "package: name='uz.qrspace.kassa.mobile.multirolepilot.ownerentry' versionCode='2113' versionName='0.2.93'" badging.txt
+          grep -Fx "application-label:'Касса · Роли 0.2.93'" badging.txt
+          unzip -Z1 "$apk" | grep -Fx 'lib/arm64-v8a/libapp.so'
+          unzip -Z1 "$apk" | grep -Fx 'lib/armeabi-v7a/libapp.so'
+          unzip -p "$apk" lib/arm64-v8a/libapp.so > "$RUNNER_TEMP/kassa-libapp.so"
+          grep -aFo 'https://kassa.qr-space.uz' "$RUNNER_TEMP/kassa-libapp.so" | sort -u
+          grep -aFo '/v1/mobile/auth/' "$RUNNER_TEMP/kassa-libapp.so" | sort -u
+          sha256sum "$apk" | tee SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kassa-Android-0.2.93-TEST
+          path: |
+            apk-delivery/Kassa_Android_0.2.93_TEST.apk
+            apk-delivery/SHA256SUMS.txt
+            apk-delivery/APK-SIGNATURE.txt
+            apk-delivery/badging.txt
+          if-no-files-found: error
+          retention-days: 7
+
+
