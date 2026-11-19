@@ -369,7 +369,7 @@
 +      await tester.tap(find.byTooltip('Сменить сотрудника'));
 +      await tester.pumpAndSettle();
 +      expect(find.text('Кто работает?'), findsOneWidget);
-+      await tester.tap(find.text('Владелец'));
++      await tester.tap(find.widgetWithText(ListTile, 'Владелец'));
 +      await tester.pumpAndSettle();
 +      expect(login.confirmations, 1);
 +      expect(sessions, 2);
@@ -409,7 +409,7 @@
 +      if (!available) return _json({}, 404);
 +      return _json({'items': [{
 +        'storeId': _store, 'name': 'Мой магазин', 'timeZone': 'Asia/Tashkent',
-+        'utcOffsetMinutes': 300, 'registers': [],
++        'utcOffsetMinutes': 300, 'registers': [], 'isOwner': false,
 +      }], 'nextOffset': null});
      });
      await tester.pumpWidget(KassaApp(pos: session));
@@ -476,3 +476,15 @@
 +    expect(paths, ['/v1/me/stores', '/v1/me/roles']);
    });
  }
+--- a/apps/mobile-flutter/test/workplace_workflow_test.dart
++++ b/apps/mobile-flutter/test/workplace_workflow_test.dart
+@@ -264,7 +264,8 @@
+       await tester.pumpAndSettle();
+       await tester.tap(find.text('Войти в аккаунт'));
+       await tester.pumpAndSettle();
+-      expect(find.textContaining('GET /v1/me/stores'), findsOneWidget);
++      expect(find.text('Повторить загрузку'), findsOneWidget);
++      expect(find.text('Открыть магазин по UUID'), findsNothing);
+       await tester.pageBack();
+       await tester.pumpAndSettle();
+       expect(find.text('Выбрать магазин и кассу'), findsOneWidget);
