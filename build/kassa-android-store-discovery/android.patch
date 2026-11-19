@@ -374,3 +374,16 @@
 +    });
 +  }
  }
+--- a/apps/mobile-flutter/test/workplace_workflow_test.dart
++++ b/apps/mobile-flutter/test/workplace_workflow_test.dart
+@@ -264,7 +264,9 @@
+       await tester.pumpAndSettle();
+       await tester.tap(find.text('Войти в аккаунт'));
+       await tester.pumpAndSettle();
+-      expect(find.textContaining('GET /v1/me/stores'), findsOneWidget);
++      expect(find.textContaining('Список магазинов сейчас недоступен'), findsOneWidget);
++      expect(find.text('Повторить загрузку'), findsOneWidget);
++      expect(find.text('Открыть магазин по UUID'), findsNothing);
+       await tester.pageBack();
+       await tester.pumpAndSettle();
+       expect(find.text('Выбрать магазин и кассу'), findsOneWidget);
