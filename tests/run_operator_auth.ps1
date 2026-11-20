@@ -31,6 +31,8 @@ try {
     $env:ASPNETCORE_URLS = "http://127.0.0.1:$ApiPort"
     $env:ConnectionStrings__Pos = "Host=127.0.0.1;Port=$DatabasePort;Database=kasa;Username=kasa_api;Password=$($env:POS_DB_APP_PASSWORD);Maximum Pool Size=1;Timeout=5"
     $env:RateLimiting__PermitLimit = '2000'
+    $env:Purchasing__RequireReceiptAttachment = 'false'
+    $env:Purchasing__RequireReceiptCosts = 'true'
     $env:POS_TEST_URL = $env:ASPNETCORE_URLS
     $env:POS_TEST_OPERATOR_PASSWORD = 'Op9!' + [Guid]::NewGuid().ToString('N').Substring(0, 20)
     $env:POS_TEST_MOBILE_OWNER_PASSWORD = 'Ow9!' + [Guid]::NewGuid().ToString('N').Substring(0, 20)
@@ -72,6 +74,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Operator integration checks failed.' }
     python (Join-Path $root 'tests\mobile_auth.py')
     if ($LASTEXITCODE -ne 0) { throw 'Mobile authentication integration checks failed.' }
+    python (Join-Path $root 'tests\receiving_api.py')
+    if ($LASTEXITCODE -ne 0) { throw 'Desktop receiving API integration checks failed.' }
 
     Get-Content -LiteralPath (Join-Path $root 'tests\operator_auth_security.sql') -Raw |
         docker compose --file (Join-Path $root 'compose.yaml') --project-name $project exec -T `

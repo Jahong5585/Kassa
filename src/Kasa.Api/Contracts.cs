@@ -203,7 +203,13 @@ public sealed record RefundableLine(Guid ProductId, Guid LotId, string Name, str
     decimal SoldAmount, decimal ReturnedQuantity, decimal ReturnedAmount);
 public sealed record RefundOptions(Guid SourceRegisterId, Guid SaleId, string Method, IReadOnlyList<RefundableLine> Lines);
 
-public sealed record ReceiptItem(Guid ProductId, Guid LotId, DateOnly? ExpiryDate, decimal Quantity);
+public sealed record ReceiptItem(Guid ProductId, Guid LotId, DateOnly? ExpiryDate, decimal Quantity)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateOnly? ManufacturedOn { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public decimal? ProposedUnitCost { get; init; }
+}
 public sealed record CreateReceipt(Guid ReceiptId, string SupplierRef, string InvoiceNumber, DateOnly InvoiceDate,
     ReceiptItem[] Items, Guid? PurchaseOrderId = null);
 public sealed record EditReceipt(int ExpectedVersion, ReceiptItem[] Items);
@@ -220,7 +226,20 @@ public sealed record ReceivingDocument(Guid ReceiptId, string SupplierRef, strin
 public sealed record ReceivingProduct(Guid ProductId, string Name, string Barcode, string Unit, bool RequiresExpiry)
 {
     public decimal QuantityFactor { get; init; } = 1;
+    public string Category { get; init; } = "";
+    public string Brand { get; init; } = "";
+    public int? ShelfLifeDays { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public decimal? InitialSalePrice { get; init; }
 }
+
+public sealed record ReceivingProductInput(string Name, string Unit, bool RequiresExpiry,
+    string? Category, string? Brand, int? ShelfLifeDays, ProductBarcode[] Barcodes);
+public sealed record CreateReceivingProduct(Guid ProductId, ReceivingProductInput Product);
+public sealed record CreatePricedReceivingProduct(Guid ProductId, decimal InitialSalePrice,
+    ReceivingProductInput Product);
+public sealed record SharedReceivingProduct(string Barcode, string Name, string Unit, bool RequiresExpiry,
+    string Category, string Brand, int? ShelfLifeDays);
 
 public sealed record OrderItem(Guid ProductId, decimal Quantity);
 public sealed record CreatePurchaseOrder(Guid OrderId, string SupplierRef, OrderItem[] Items);
@@ -315,10 +334,18 @@ public sealed record InventorySummary(Guid InventoryId, string Reason, string St
 public sealed record ProductBarcode(string Code, decimal QuantityFactor);
 public sealed record WriteProductCard([property: JsonRequired] int ExpectedVersion, string Name, string Unit,
     bool? RequiresExpiry, string? Sku, string? Category, string? Brand, string? SupplierRef, string? TaxProfile,
-    ProductBarcode[] Barcodes);
+    ProductBarcode[] Barcodes)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? ShelfLifeDays { get; init; }
+}
 public sealed record ProductCard(Guid ProductId, string Name, string Unit, bool RequiresExpiry, string Sku,
     string Category, string Brand, string SupplierRef, string TaxProfile, int Version,
-    IReadOnlyList<ProductBarcode> Barcodes, decimal? UnitPrice, int PriceVersion, bool Active);
+    IReadOnlyList<ProductBarcode> Barcodes, decimal? UnitPrice, int PriceVersion, bool Active)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? ShelfLifeDays { get; init; }
+}
 public sealed record ProductSearchResult(Guid ProductId, string Name, string Sku, string Barcode, string Unit,
     decimal? UnitPrice, int PriceVersion, bool Active);
 public sealed record WriteProductPrice(int ExpectedVersion, [property: JsonRequired] decimal? UnitPrice,

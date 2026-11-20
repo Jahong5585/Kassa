@@ -7,6 +7,7 @@
 local-test.settings.json
 local-test.settings.*.json
 artifacts/local-test/
+artifacts/desktop-updates/
 tests/ai-acceptance-result.json
 *.pfx
 *.pem

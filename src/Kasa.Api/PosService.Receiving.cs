@@ -16,7 +16,8 @@ internal sealed partial class PosService
         await using var tx = await db.BeginTransactionAsync(ct);
         var scope = await Access.RequireStore(db, tx, context, configuration, store, false, ct);
         await using var command = db.Sql(tx, """
-            SELECT p.id, p.name, p.unit, p.requires_expiry, b.quantity_factor
+            SELECT p.id, p.name, p.unit, p.requires_expiry, b.quantity_factor,
+                   p.category, p.brand, p.shelf_life_days
             FROM products p JOIN store_prices sp ON (sp.org_id, sp.product_id) = (p.org_id, p.id)
             JOIN product_barcodes b ON (b.org_id, b.product_id) = (p.org_id, p.id)
             WHERE (p.org_id, sp.store_id, b.code) = ($1, $2, $3) AND sp.active
@@ -25,7 +26,8 @@ internal sealed partial class PosService
         if (!await rows.ReadAsync(ct))
             throw new PosError(404, "product_not_found");
         return new ReceivingProduct(rows.GetGuid(0), rows.GetString(1), barcode, rows.GetString(2), rows.GetBoolean(3))
-            { QuantityFactor = rows.GetDecimal(4) };
+            { QuantityFactor = rows.GetDecimal(4), Category = rows.GetString(5), Brand = rows.GetString(6),
+                ShelfLifeDays = rows.IsDBNull(7) ? null : rows.GetInt32(7) };
     }
 
     public async Task<ReceivingDocument> CreateReceipt(HttpContext context, Guid store, CreateReceipt request,
@@ -60,6 +62,7 @@ internal sealed partial class PosService
             return existing;
         }
 
+        await ValidateReceivingMetadata(db, tx, scope, items, ct);
         await ValidateReceivingProducts(db, tx, scope, items.Select(item => (item.ProductId, item.Quantity, item.ExpiryDate)),
             posting: false, ct, allowArchived: request.PurchaseOrderId is not null);
         if (request.PurchaseOrderId is null)
@@ -98,6 +101,7 @@ internal sealed partial class PosService
         if (document.Status != "draft" || document.Version != request.ExpectedVersion)
             throw new PosError(409, "receipt_version_conflict");
 
+        await ValidateReceivingMetadata(db, tx, scope, items, ct);
         await ValidateReceivingProducts(db, tx, scope, items.Select(item => (item.ProductId, item.Quantity, item.ExpiryDate)),
             posting: false, ct, allowArchived: document.PurchaseOrderId is not null);
         await ValidateReceiptOrder(db, tx, scope, document.PurchaseOrderId, document.SupplierRef, items, ct);
@@ -254,6 +258,8 @@ internal sealed partial class PosService
         {
             if (item is null || item.ProductId == Guid.Empty || item.LotId == Guid.Empty || !IsQuantity(item.Quantity) ||
                 item.ExpiryDate is { } date && (date == DateOnly.MinValue || date == DateOnly.MaxValue) ||
+                item.ProposedUnitCost is { } cost && (!IsMoney(cost) || cost < 0 || cost > MaxUnitPrice) ||
+                item.ManufacturedOn is { } made && (made == DateOnly.MinValue || made == DateOnly.MaxValue) ||
                 !distinct.Add((item.ProductId, item.LotId)))
                 throw new PosError(400, "invalid_receipt_item");
         }

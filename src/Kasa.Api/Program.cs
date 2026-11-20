@@ -457,6 +457,8 @@ if (localTestMode.Enabled)
 }
 app.MapOpenApi();
 
+app.MapDesktopUpdates();
+
 var api = app.MapGroup("/v1").RequireAuthorization()
     .ProducesProblem(400).ProducesProblem(401).ProducesProblem(403).ProducesProblem(404)
     .ProducesProblem(409).ProducesProblem(429).ProducesProblem(503);
@@ -850,6 +852,26 @@ storeApi.MapPost("/refund-approvals", async (Guid storeId, ApproveRefund request
 storeApi.MapGet("/receiving/catalog/barcodes/{barcode}", async (Guid storeId, string barcode, PosService pos,
     HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await pos.GetReceivingProduct(context, storeId, barcode, ct))).WithName("ReadReceivingProduct");
+storeApi.MapGet("/receiving/catalog/products/{id:guid}", async (Guid storeId, Guid id, PosService pos,
+    HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await pos.GetReceivingProductById(context, storeId, id, ct))).WithName("ReadReceivingProductById");
+storeApi.MapGet("/receiving/catalog/shared-barcodes/{barcode}", async (Guid storeId, string barcode, PosService pos,
+    HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await pos.GetSharedReceivingProduct(context, storeId, barcode, ct))).WithName("ReadSharedReceivingProduct");
+storeApi.MapPost("/receiving/catalog/products", async (Guid storeId, CreateReceivingProduct request, PosService pos,
+    HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await pos.CreateReceivingProduct(context, storeId, request.ProductId, request.Product, null, ct)))
+    .WithName("CreateReceivingProduct");
+storeApi.MapPost("/receiving/catalog/priced-products", async (Guid storeId, CreatePricedReceivingProduct request,
+    PosService pos, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await pos.CreateReceivingProduct(context, storeId, request.ProductId, request.Product,
+        request.InitialSalePrice, ct))).WithName("CreatePricedReceivingProduct");
+storeApi.MapPost("/receipts/with-proposed-costs", async (Guid storeId, CreateReceipt request, PosService pos,
+    HttpContext context, CancellationToken ct) => TypedResults.Ok(await pos.CreateReceipt(context, storeId, request, ct)))
+    .WithName("CreateReceiptWithProposedCosts");
+storeApi.MapPut("/receipts/{id:guid}/with-proposed-costs", async (Guid storeId, Guid id, EditReceipt request,
+    PosService pos, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await pos.EditReceipt(context, storeId, id, request, ct))).WithName("EditReceiptWithProposedCosts");
 storeApi.MapPost("/purchase-orders", async (Guid storeId, CreatePurchaseOrder request, PosService pos,
     HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await pos.CreatePurchaseOrder(context, storeId, request, ct))).WithName("CreatePurchaseOrder");
