@@ -17,6 +17,7 @@ internal static class Access
 {
     private static readonly string[] OperationalRoles = ["admin", "cashier", "receiver"];
     private static readonly object OperatorSessionItem = new();
+    private static readonly object OwnerActivityItem = new();
     private sealed record Principal(Guid Organization, Guid Staff, Guid? Store, string[] Roles,
         bool Owner, OperatorSessionIdentity? Session);
 
@@ -294,6 +295,24 @@ internal static class Access
         if (!long.TryParse(value, out var expires) ||
             expires <= DateTimeOffset.UtcNow.ToUnixTimeSeconds())
             throw new PosError(403, "owner_reauthentication_required");
+        context.Items[OwnerActivityItem] = MobileAuthentication.Read(context.User);
+    }
+
+    internal static async Task PersistOwnerActivity(NpgsqlDataSource source, HttpContext context,
+        CancellationToken ct)
+    {
+        if (!context.Items.TryGetValue(OwnerActivityItem, out var value) ||
+            value is not ValueTuple<Guid, Guid, Guid, Guid> mobile)
+            return;
+        await using var db = await source.OpenConnectionAsync(ct);
+        await using var tx = await db.BeginTransactionAsync(ct);
+        await db.Run(tx, ct, """
+            UPDATE mobile_sessions
+            SET owner_verified_at = statement_timestamp(),
+                owner_role_expires_at = statement_timestamp() + interval '30 minutes'
+            WHERE id = $1 AND org_id = $2 AND staff_id = $3 AND device_id = $4 AND revoked_at IS NULL
+            """, mobile.Item1, mobile.Item2, mobile.Item3, mobile.Item4);
+        await tx.CommitAsync(ct);
     }
 
     public static byte[]? RegisterKeyDigest(string? key) => key is { Length: 64 } && key.All(Uri.IsHexDigit)

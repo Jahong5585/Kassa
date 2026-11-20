@@ -200,9 +200,27 @@ def main():
     owner_again_operator, _ = call("/v1/mobile-auth/operator-sessions", {"storeId": STORE},
                                    bearer=owner_again["accessToken"])
     owner_again_admin = owner_headers(owner_again["accessToken"], owner_again_operator["operatorSessionToken"])
+
+    # The owner timeout is sliding for successful owner/admin work. An old session that keeps
+    # performing privileged actions before the deadline must remain usable beyond 30 minutes.
+    sql("UPDATE mobile_sessions SET created_at=now()-interval '2 hours', "
+        "owner_verified_at=now()-interval '29 minutes', owner_role_expires_at=now()+interval '1 minute' "
+        f"WHERE id='{owner_again['sessionId']}'::uuid")
+    call(f"/v1/stores/{STORE}/employees?offset=0&limit=50", **owner_again_admin)
+    extended = sql("SELECT count(*) FROM mobile_sessions "
+                   f"WHERE id='{owner_again['sessionId']}'::uuid "
+                   "AND owner_verified_at > now()-interval '1 minute' "
+                   "AND owner_role_expires_at > now()+interval '29 minutes'")
+    assert extended == "1"
+
+    # Session recovery, polling and token refresh are background operations. They must not
+    # revive an owner role after 30 minutes without a privileged user action.
     sql("UPDATE mobile_sessions SET owner_verified_at=now()-interval '32 minutes', "
         "owner_role_expires_at=now()-interval '2 minutes' "
         f"WHERE id='{owner_again['sessionId']}'::uuid")
+    call("/v1/mobile-auth/current", bearer=owner_again["accessToken"])
+    assert sql("SELECT count(*) FROM mobile_sessions "
+               f"WHERE id='{owner_again['sessionId']}'::uuid AND owner_role_expires_at <= now()") == "1"
     expired, _ = call(f"/v1/stores/{STORE}/employees?offset=0&limit=50", expected=403, **owner_again_admin)
     assert expired["code"] == "owner_reauthentication_required"
     background_refresh, _ = call("/v1/mobile-auth/refresh",
@@ -212,6 +230,8 @@ def main():
     still_expired, _ = call(f"/v1/stores/{STORE}/employees?offset=0&limit=50",
                             expected=403, **still_expired_admin)
     assert still_expired["code"] == "owner_reauthentication_required"
+    assert sql("SELECT count(*) FROM mobile_sessions "
+               f"WHERE id='{owner_again['sessionId']}'::uuid AND owner_role_expires_at <= now()") == "1"
     reauthenticated, _ = call("/v1/mobile-auth/owner/reauthenticate",
                               {"storeId": STORE, "login": OWNER_LOGIN, "password": OWNER_PASSWORD},
                               bearer=background_refresh["accessToken"])

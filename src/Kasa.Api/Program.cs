@@ -441,6 +441,29 @@ app.Use(async (context, next) =>
     }
     await next(context);
 });
+app.Use(async (context, next) =>
+{
+    await next(context);
+    if (context.Response.StatusCode is >= 200 and < 300)
+    {
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await Access.PersistOwnerActivity(
+                context.RequestServices.GetRequiredService<NpgsqlDataSource>(), context, timeout.Token);
+        }
+        catch (NpgsqlException)
+        {
+            app.Logger.LogWarning("Failed to persist mobile owner activity for request {TraceId}",
+                context.TraceIdentifier);
+        }
+        catch (OperationCanceledException)
+        {
+            app.Logger.LogWarning("Failed to persist mobile owner activity for request {TraceId}",
+                context.TraceIdentifier);
+        }
+    }
+});
 app.MapGet("/health/live", () => TypedResults.Ok(new { status = "ok" })).AllowAnonymous();
 if (localTestMode.Enabled)
 {
