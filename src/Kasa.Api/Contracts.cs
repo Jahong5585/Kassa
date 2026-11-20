@@ -81,6 +81,35 @@ public sealed record ResetEmployeePassword(int ExpectedVersion,
     [property: StringLength(500, MinimumLength = 1)] string Reason);
 public sealed record ChangeEmployeeState(int ExpectedVersion,
     [property: StringLength(500, MinimumLength = 1)] string Reason);
+public sealed record ConfigureEmployeeMobileCredentials(int ExpectedVersion,
+    [property: StringLength(100, MinimumLength = 3)] string Login,
+    [property: StringLength(128, MinimumLength = 8)] string? NewPassword,
+    [property: StringLength(500, MinimumLength = 1)] string Reason);
+public sealed record ConfigureOwnMobileCredentials(
+    [property: StringLength(100, MinimumLength = 3)] string Login,
+    [property: StringLength(128, MinimumLength = 8)] string Password,
+    Guid DeviceId);
+public sealed record MobileLogin(
+    [property: StringLength(100, MinimumLength = 3)] string Login,
+    [property: StringLength(128, MinimumLength = 8)] string Password,
+    Guid DeviceId);
+public sealed record MobileRefresh(
+    [property: StringLength(300, MinimumLength = 40)] string RefreshToken);
+public sealed record MobileSwitchOperator(
+    [property: StringLength(100, MinimumLength = 3)] string Login,
+    [property: StringLength(128, MinimumLength = 8)] string Password);
+public sealed record MobileOwnerReauthentication(Guid StoreId,
+    [property: StringLength(100, MinimumLength = 3)] string Login,
+    [property: StringLength(128, MinimumLength = 8)] string Password);
+public sealed record CreateMobileOperatorSession(Guid StoreId);
+public sealed record MobileOperator(Guid StaffId, string DisplayName, bool IsOwner);
+public sealed record MobileSessionCreated(string TokenType, string AccessToken, DateTime AccessTokenExpiresAt,
+    string RefreshToken, DateTime RefreshTokenExpiresAt, Guid SessionId, Guid DeviceId,
+    MobileOperator Operator, DateTime? OwnerRoleExpiresAt);
+public sealed record CurrentMobileSession(Guid SessionId, Guid DeviceId, MobileOperator Operator,
+    DateTime AccessTokenExpiresAt, DateTime RefreshTokenExpiresAt, DateTime? OwnerRoleExpiresAt);
+public sealed record MobileOwnerReauthenticationResult(DateTime OwnerRoleExpiresAt);
+public sealed record MobileCredentialConfigured(Guid StaffId, string Login, bool MobileEnabled, int Version);
 public sealed record UpdateRegisterCashiers(int ExpectedVersion,
     [property: MinLength(1)] Guid[] CashierIds,
     [property: StringLength(500, MinimumLength = 1)] string Reason);

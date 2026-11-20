@@ -85,7 +85,7 @@ internal static class Access
     public static async Task<StaffRoleSelection> ReadRolesForStore(NpgsqlConnection db, NpgsqlTransaction tx,
         HttpContext context, Guid store, CancellationToken ct)
     {
-        var principal = await ReadPrincipal(db, tx, context, ct);
+        var principal = await ReadPrincipal(db, tx, context, ct, allowMobileBootstrap: true);
         if (principal.Store is { } sessionStore && sessionStore != store)
             throw new PosError(409, "operator_store_mismatch");
         var assignment = await ReadStoreAssignment(db, tx, principal, store, ct);
@@ -104,6 +104,8 @@ internal static class Access
         var activeRole = ResolveActiveRole(context, AvailableRoles(assignment.Roles, assignment.Owner));
         if (activeRole != "admin" && (adminOnly || activeRole != "receiver"))
             throw new PosError(403, "active_role_denied");
+        if (assignment.Owner && activeRole == "admin")
+            RequireOwnerReauthentication(context);
         // Store admin is operational. Platform hardware/MFA checks remain isolated in PlatformService.
         return new StoreScope(principal.Organization, store, principal.Staff, assignment.TimeZone, activeRole);
     }
@@ -191,10 +193,12 @@ internal static class Access
     }
 
     private static async Task<Principal> ReadPrincipal(NpgsqlConnection db, NpgsqlTransaction tx, HttpContext context,
-        CancellationToken ct)
+        CancellationToken ct, bool allowMobileBootstrap = false)
     {
         var configuration = context.RequestServices.GetRequiredService<IConfiguration>();
         var hasOperatorHeader = !string.IsNullOrEmpty(context.Request.Headers["X-Operator-Session"]);
+        if (allowMobileBootstrap && !hasOperatorHeader && MobileAuthentication.IsMobile(context.User))
+            return await ReadMobilePrincipal(db, tx, context, ct);
         if (hasOperatorHeader || configuration.GetValue<bool>("Auth:RequireOperatorSession"))
         {
             var session = await RequireOperatorSession(db, tx, context, ct);
@@ -202,6 +206,8 @@ internal static class Access
                 session.Owner, session);
         }
         var subject = context.User.FindFirst("sub")?.Value;
+        if (MobileAuthentication.IsMobile(context.User))
+            return await ReadMobilePrincipal(db, tx, context, ct);
         if (string.IsNullOrWhiteSpace(subject) || subject.Length > 256)
             throw new PosError(403, "staff_access_denied");
         await using var command = db.Sql(tx, """
@@ -213,6 +219,25 @@ internal static class Access
         if (!await rows.ReadAsync(ct)) throw new PosError(403, "staff_access_denied");
         return new Principal(rows.GetGuid(0), rows.GetGuid(1), null, rows.GetFieldValue<string[]>(2),
             rows.GetBoolean(3), null);
+    }
+
+    private static async Task<Principal> ReadMobilePrincipal(NpgsqlConnection db, NpgsqlTransaction tx,
+        HttpContext context, CancellationToken ct)
+    {
+        var mobile = MobileAuthentication.Read(context.User);
+        await using var command = db.Sql(tx, """
+            SELECT array_agg(DISTINCT r.role ORDER BY r.role), bool_or(r.role = 'owner')
+            FROM staff s
+            JOIN staff_stores m ON (m.org_id, m.staff_id) = (s.org_id, s.id) AND m.active
+            JOIN staff_store_roles r ON (r.org_id, r.store_id, r.staff_id) =
+                (m.org_id, m.store_id, m.staff_id)
+            WHERE (s.org_id, s.id) = ($1, $2) AND s.active
+            GROUP BY s.org_id, s.id
+            """, mobile.Organization, mobile.Staff);
+        await using var rows = await command.ExecuteReaderAsync(ct);
+        if (!await rows.ReadAsync(ct)) throw new PosError(403, "staff_access_denied");
+        return new Principal(mobile.Organization, mobile.Staff, null,
+            rows.GetFieldValue<string[]>(0), rows.GetBoolean(1), null);
     }
 
     private static async Task<(string TimeZone, string[] Roles, bool Owner)> ReadStoreAssignment(
@@ -260,6 +285,15 @@ internal static class Access
         if (issuer.Length is < 1 or > 500 || subject.Length is < 1 or > 256)
             throw new PosError(401, "oidc_session_expired");
         return (issuer, subject);
+    }
+
+    internal static void RequireOwnerReauthentication(HttpContext context)
+    {
+        if (!MobileAuthentication.IsMobile(context.User)) return;
+        var value = context.User.FindFirst(MobileAuthentication.OwnerExpiryClaim)?.Value;
+        if (!long.TryParse(value, out var expires) ||
+            expires <= DateTimeOffset.UtcNow.ToUnixTimeSeconds())
+            throw new PosError(403, "owner_reauthentication_required");
     }
 
     public static byte[]? RegisterKeyDigest(string? key) => key is { Length: 64 } && key.All(Uri.IsHexDigit)

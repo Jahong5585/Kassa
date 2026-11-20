@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
 using Kasa.Api;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.HttpOverrides;
@@ -57,6 +58,7 @@ builder.Services.AddHttpClient<IdentityProvisioningService>(client =>
 builder.Services.AddSingleton<InvoiceScanner>();
 builder.Services.AddSingleton<OperatorPasswordHasher>();
 builder.Services.AddScoped<OperatorService>();
+builder.Services.AddScoped<MobileAuthService>();
 builder.Services.AddScoped<PosService>();
 builder.Services.AddHttpClient<ProcurementExplainer>(client =>
 {
@@ -87,8 +89,12 @@ builder.Services.AddRateLimiter(options =>
     {
         if (rejected.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retry))
             rejected.HttpContext.Response.Headers.RetryAfter = Math.Max(1, (int)Math.Ceiling(retry.TotalSeconds)).ToString();
-        var code = rejected.HttpContext.Request.Path.Value?.EndsWith("/operator-sessions", StringComparison.Ordinal) == true
-            ? "operator_login_rate_limited" : "rate_limit_exceeded";
+        var rejectedPath = rejected.HttpContext.Request.Path.Value ?? "";
+        var code = rejectedPath.StartsWith("/v1/mobile-auth/", StringComparison.Ordinal)
+            ? "mobile_login_rate_limited"
+            : rejectedPath.EndsWith("/operator-sessions", StringComparison.Ordinal)
+                ? "operator_login_rate_limited"
+                : "rate_limit_exceeded";
         await Results.Problem(type: $"https://kassa.qr-space.uz/problems/{code.Replace('_', '-')}",
             title: code, statusCode: 429, extensions: new Dictionary<string, object?>
             {
@@ -121,6 +127,15 @@ builder.Services.AddRateLimiter(options =>
             QueueLimit = 0,
             AutoReplenishment = true
         }));
+    options.AddPolicy("mobile-auth", context => RateLimitPartition.GetFixedWindowLimiter(
+        context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 10,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0,
+            AutoReplenishment = true
+        }));
 });
 builder.Services.AddOpenApi(options => options.AddDocumentTransformer((document, _, _) =>
 {
@@ -128,7 +143,11 @@ builder.Services.AddOpenApi(options => options.AddDocumentTransformer((document,
     document.Components ??= new OpenApiComponents();
     document.Components.SecuritySchemes = new Dictionary<string, IOpenApiSecurityScheme>
     {
-        ["Bearer"] = new OpenApiSecurityScheme { Type = SecuritySchemeType.Http, Scheme = "bearer", BearerFormat = "JWT" },
+        ["Bearer"] = new OpenApiSecurityScheme
+        {
+            Type = SecuritySchemeType.Http, Scheme = "bearer", BearerFormat = "JWT or opaque mobile access token",
+            Description = "Keycloak OIDC JWT for Desktop/web, or an opaque kmob_ access token for Android."
+        },
         ["RegisterId"] = new OpenApiSecurityScheme
             { Type = SecuritySchemeType.ApiKey, In = ParameterLocation.Header, Name = "X-Register-Id" },
         ["RegisterKey"] = new OpenApiSecurityScheme
@@ -146,18 +165,34 @@ builder.Services.AddOpenApi(options => options.AddDocumentTransformer((document,
             continue;
         foreach (var operation in pathItem.Operations.Values)
         {
+            var mobileAnonymous = path is "/v1/mobile-auth/login" or "/v1/mobile-auth/refresh";
+            if (mobileAnonymous)
+            {
+                operation.Security = [];
+                operation.Description = path.EndsWith("/login", StringComparison.Ordinal)
+                    ? "Android login with the server-managed mobile login/password. HTTPS only; Keycloak Password Grant is not used."
+                    : "Rotate the opaque Android access and refresh tokens. This does not extend owner-role confirmation.";
+                continue;
+            }
             var security = new OpenApiSecurityRequirement
             {
                 [new OpenApiSecuritySchemeReference("Bearer", document)] = []
             };
-            var bootstrap = path == "/v1/me/stores" || path == "/v1/stores/{storeId}/operators" ||
-                            path == "/v1/stores/{storeId}/operator-sessions";
+            var mobile = path.StartsWith("/v1/mobile-auth/", StringComparison.Ordinal);
+            var bootstrap = path == "/v1/me/stores" || path == "/v1/me/roles" ||
+                            path == "/v1/stores/{storeId}/operators" ||
+                            path == "/v1/stores/{storeId}/operator-sessions" ||
+                            mobile;
             var platform = path.StartsWith("/v1/platform/", StringComparison.Ordinal);
-            operation.Description = bootstrap
-                ? "Bootstrap route: requires an OIDC bearer token and does not require X-Operator-Session."
+            operation.Description = mobile
+                ? path == "/v1/mobile-auth/credentials"
+                    ? "One-time mobile credential setup after confirmed OIDC owner authentication."
+                    : "Android mobile-session route. Requires an opaque kmob_ bearer token and no X-Operator-Session."
+                : bootstrap
+                    ? "Bootstrap route. Accepts a valid OIDC bearer; /me routes also accept an Android mobile bearer."
                 : platform
                     ? "Platform route: protected by its independent platform MFA, hardware and support-session policy."
-                    : "Business route: requires a valid OIDC bearer and X-Operator-Session.";
+                    : "Business route: requires a valid OIDC or Android bearer and X-Operator-Session.";
             if (!bootstrap && !platform)
                 security[new OpenApiSecuritySchemeReference("OperatorSession", document)] = [];
             var registerOperation = !bootstrap && !platform &&
@@ -259,7 +294,25 @@ builder.Services.AddOpenApi(options => options.AddDocumentTransformer((document,
     }
     return Task.CompletedTask;
 }));
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(options =>
+const string smartBearer = "Bearer";
+const string oidcBearer = "OidcBearer";
+builder.Services.AddAuthentication(options =>
+{
+    options.DefaultAuthenticateScheme = smartBearer;
+    options.DefaultChallengeScheme = smartBearer;
+})
+.AddPolicyScheme(smartBearer, smartBearer, options =>
+{
+    options.ForwardDefaultSelector = context =>
+    {
+        var authorization = context.Request.Headers.Authorization.ToString();
+        return authorization.StartsWith($"Bearer {MobileAuthentication.AccessPrefix}", StringComparison.Ordinal)
+            ? MobileAuthentication.Scheme
+            : oidcBearer;
+    };
+})
+.AddScheme<AuthenticationSchemeOptions, MobileAuthenticationHandler>(MobileAuthentication.Scheme, _ => { })
+.AddJwtBearer(oidcBearer, options =>
 {
     options.MapInboundClaims = false;
     options.SaveToken = false;
@@ -373,8 +426,11 @@ app.UseRateLimiter();
 app.UseAuthorization();
 app.Use(async (context, next) =>
 {
-    if (IsOperatorProtectedRoute(context.Request) &&
-        (configuration.GetValue<bool>("Auth:RequireOperatorSession") ||
+    var mobileRoleBootstrap = MobileAuthentication.IsMobile(context.User) &&
+                              context.Request.Path.Equals("/v1/me/roles");
+    if (!mobileRoleBootstrap && IsOperatorProtectedRoute(context.Request) &&
+        (MobileAuthentication.IsMobile(context.User) ||
+         configuration.GetValue<bool>("Auth:RequireOperatorSession") ||
          !string.IsNullOrEmpty(context.Request.Headers["X-Operator-Session"])))
     {
         await using var db = await context.RequestServices.GetRequiredService<NpgsqlDataSource>()
@@ -439,6 +495,48 @@ api.MapGet("/me/roles", async (Guid storeId, PosService pos, HttpContext context
     TypedResults.Ok(await pos.ReadMyRoles(context, storeId, ct))).WithName("ReadMyRoles");
 api.MapGet("/me/stores", async (int? offset, OperatorService operators, HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await operators.ListMyStores(context, offset ?? 0, ct))).WithName("ListMyStores");
+api.MapPost("/mobile-auth/credentials", async (ConfigureOwnMobileCredentials request, MobileAuthService mobile,
+    HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await mobile.ConfigureOwn(context, request, ct)))
+    .WithName("ConfigureOwnMobileCredentials")
+    .ProducesProblem(400).ProducesProblem(403).ProducesProblem(409).ProducesProblem(503);
+api.MapPost("/mobile-auth/login", async (MobileLogin request, MobileAuthService mobile,
+    HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await mobile.Login(context, request, ct)))
+    .AllowAnonymous().RequireRateLimiting("mobile-auth")
+    .WithName("MobileLogin")
+    .ProducesProblem(400).ProducesProblem(401).ProducesProblem(429).ProducesProblem(503);
+api.MapPost("/mobile-auth/refresh", async (MobileRefresh request, MobileAuthService mobile,
+    HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await mobile.Refresh(context, request, ct)))
+    .AllowAnonymous()
+    .WithName("MobileRefresh")
+    .ProducesProblem(400).ProducesProblem(401).ProducesProblem(429);
+api.MapGet("/mobile-auth/current", async (MobileAuthService mobile, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await mobile.Current(context, ct)))
+    .WithName("CurrentMobileSession").ProducesProblem(401);
+api.MapPost("/mobile-auth/switch", async (MobileSwitchOperator request, MobileAuthService mobile,
+    HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await mobile.Switch(context, request, ct)))
+    .RequireRateLimiting("mobile-auth")
+    .WithName("SwitchMobileOperator")
+    .ProducesProblem(400).ProducesProblem(401).ProducesProblem(429).ProducesProblem(503);
+api.MapDelete("/mobile-auth/current", async (MobileAuthService mobile, HttpContext context, CancellationToken ct) =>
+{
+    await mobile.Logout(context, ct);
+    return TypedResults.NoContent();
+}).WithName("LogoutMobileSession").ProducesProblem(401);
+api.MapPost("/mobile-auth/owner/reauthenticate", async (MobileOwnerReauthentication request,
+    MobileAuthService mobile, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await mobile.ReauthenticateOwner(context, request, ct)))
+    .RequireRateLimiting("mobile-auth")
+    .WithName("ReauthenticateMobileOwner")
+    .ProducesProblem(400).ProducesProblem(401).ProducesProblem(403).ProducesProblem(429).ProducesProblem(503);
+api.MapPost("/mobile-auth/operator-sessions", async (CreateMobileOperatorSession request,
+    MobileAuthService mobile, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await mobile.CreateOperatorSession(context, request, ct)))
+    .WithName("CreateMobileOperatorSession")
+    .ProducesProblem(400).ProducesProblem(401).ProducesProblem(403).ProducesProblem(409);
 api.MapGet("/stores/{storeId:guid}/operators", async (Guid storeId, OperatorService operators,
     HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await operators.ListOperators(context, storeId, ct))).WithName("ListStoreOperators");
@@ -493,6 +591,12 @@ employees.MapPost("/{employeeId:guid}/enable", async (Guid storeId, Guid employe
     OperatorService operators, HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await operators.Enable(context, storeId, employeeId, request, ct)))
     .WithName("EnableEmployee");
+employees.MapPut("/{employeeId:guid}/mobile-credentials", async (Guid storeId, Guid employeeId,
+    ConfigureEmployeeMobileCredentials request, MobileAuthService mobile, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await mobile.ConfigureEmployee(context, storeId, employeeId, request, ct)))
+    .WithName("ConfigureEmployeeMobileCredentials")
+    .ProducesProblem(400).ProducesProblem(401).ProducesProblem(403).ProducesProblem(404)
+    .ProducesProblem(409).ProducesProblem(503);
 api.MapPut("/stores/{storeId:guid}/registers/{registerId:guid}/cashiers", async (Guid storeId, Guid registerId,
     UpdateRegisterCashiers request, OperatorService operators, HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await operators.UpdateRegisterCashiers(context, storeId, registerId, request, ct)))
@@ -1052,6 +1156,7 @@ static bool IsOperatorProtectedRoute(HttpRequest request)
     if (path.StartsWith("/v1/platform/", StringComparison.OrdinalIgnoreCase) ||
         path.StartsWith("/v1/platform-support/", StringComparison.OrdinalIgnoreCase) ||
         path.StartsWith("/v1/support-sessions", StringComparison.OrdinalIgnoreCase) ||
+        path.StartsWith("/v1/mobile-auth/", StringComparison.OrdinalIgnoreCase) ||
         path.Equals("/v1/me/stores", StringComparison.OrdinalIgnoreCase))
         return false;
     var parts = path.Split('/', StringSplitOptions.RemoveEmptyEntries);

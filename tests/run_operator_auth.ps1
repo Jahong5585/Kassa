@@ -33,6 +33,8 @@ try {
     $env:RateLimiting__PermitLimit = '2000'
     $env:POS_TEST_URL = $env:ASPNETCORE_URLS
     $env:POS_TEST_OPERATOR_PASSWORD = 'Op9!' + [Guid]::NewGuid().ToString('N').Substring(0, 20)
+    $env:POS_TEST_MOBILE_OWNER_PASSWORD = 'Ow9!' + [Guid]::NewGuid().ToString('N').Substring(0, 20)
+    $env:POS_TEST_MOBILE_EMPLOYEE_PASSWORD = 'Em9!' + [Guid]::NewGuid().ToString('N').Substring(0, 20)
 
     & $dotnet build (Join-Path $root 'src\Kasa.Api\Kasa.Api.csproj') -c Release --no-restore -warnaserror
     if ($LASTEXITCODE -ne 0) { throw 'API build failed.' }
@@ -68,6 +70,8 @@ try {
 
     python (Join-Path $root 'tests\operator_auth.py')
     if ($LASTEXITCODE -ne 0) { throw 'Operator integration checks failed.' }
+    python (Join-Path $root 'tests\mobile_auth.py')
+    if ($LASTEXITCODE -ne 0) { throw 'Mobile authentication integration checks failed.' }
 
     Get-Content -LiteralPath (Join-Path $root 'tests\operator_auth_security.sql') -Raw |
         docker compose --file (Join-Path $root 'compose.yaml') --project-name $project exec -T `
@@ -75,7 +79,7 @@ try {
         Set-Content -LiteralPath $logs[3] -Encoding utf8
     if ($LASTEXITCODE -ne 0) { throw 'Operator security SQL checks failed.' }
 
-    $api.Kill($true)
+    $api.Kill()
     $api.WaitForExit()
     $api = $null
     $env:Auth__RequireOperatorSession = 'false'
@@ -96,8 +100,9 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Feature-flag compatibility checks failed.' }
 
     if (Select-String -LiteralPath $logs[1], $logs[2], $logs[4], $logs[5] -SimpleMatch -Quiet `
-            -Pattern $env:POS_TEST_OPERATOR_PASSWORD) {
-        throw 'Operator password leaked into application logs.'
+            -Pattern $env:POS_TEST_OPERATOR_PASSWORD, $env:POS_TEST_MOBILE_OWNER_PASSWORD, `
+                $env:POS_TEST_MOBILE_EMPLOYEE_PASSWORD) {
+        throw 'Operator or mobile password leaked into application logs.'
     }
     Write-Output 'PASS: isolated operator API, PostgreSQL and security suite'
 }
@@ -108,10 +113,13 @@ catch {
 }
 finally {
     if ($api -and -not $api.HasExited) {
-        $api.Kill($true)
+        $api.Kill()
         $api.WaitForExit()
     }
-    docker compose --file (Join-Path $root 'compose.yaml') --project-name $project down --volumes *> $null
+    $cleanupErrorPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    docker compose --file (Join-Path $root 'compose.yaml') --project-name $project down --volumes 2>&1 | Out-Null
+    $ErrorActionPreference = $cleanupErrorPreference
     foreach ($log in $logs) {
         if (Test-Path -LiteralPath $log) { Remove-Item -LiteralPath $log -Force }
     }

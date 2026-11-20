@@ -18,9 +18,33 @@ internal sealed class OperatorService(NpgsqlDataSource source, OperatorPasswordH
     {
         if (offset < 0)
             throw new PosError(400, "validation_failed");
-        var (_, subject) = Access.ReadHost(context);
         await using var db = await source.OpenConnectionAsync(ct);
-        await using var command = new NpgsqlCommand("""
+        NpgsqlCommand command;
+        if (MobileAuthentication.IsMobile(context.User))
+        {
+            var mobile = MobileAuthentication.Read(context.User);
+            command = new NpgsqlCommand("""
+                SELECT o.id, o.name, st.id, st.name, st.time_zone,
+                       EXISTS (SELECT 1 FROM staff_store_roles r
+                               WHERE (r.org_id, r.store_id, r.staff_id, r.role) =
+                                     (s.org_id, ss.store_id, s.id, 'owner')),
+                       s.active AND ss.active
+                FROM staff s
+                JOIN staff_stores ss ON (ss.org_id, ss.staff_id) = (s.org_id, s.id)
+                JOIN stores st ON (st.org_id, st.id) = (ss.org_id, ss.store_id)
+                JOIN organizations o ON o.id = st.org_id
+                WHERE (s.org_id, s.id) = ($1, $2) AND s.active AND ss.active
+                ORDER BY lower(o.name), o.id, lower(st.name), st.id
+                LIMIT 51 OFFSET $3
+                """, db);
+            command.Parameters.AddWithValue(mobile.Organization);
+            command.Parameters.AddWithValue(mobile.Staff);
+            command.Parameters.AddWithValue(offset);
+        }
+        else
+        {
+            var (_, subject) = Access.ReadHost(context);
+            command = new NpgsqlCommand("""
             SELECT o.id, o.name, st.id, st.name, st.time_zone,
                    EXISTS (SELECT 1 FROM staff_store_roles r
                            WHERE (r.org_id, r.store_id, r.staff_id, r.role) = (s.org_id, ss.store_id, s.id, 'owner')),
@@ -33,8 +57,11 @@ internal sealed class OperatorService(NpgsqlDataSource source, OperatorPasswordH
             ORDER BY lower(o.name), o.id, lower(st.name), st.id
             LIMIT 51 OFFSET $2
             """, db);
-        command.Parameters.AddWithValue(subject);
-        command.Parameters.AddWithValue(offset);
+            command.Parameters.AddWithValue(subject);
+            command.Parameters.AddWithValue(offset);
+        }
+        await using (command)
+        {
         await using var rows = await command.ExecuteReaderAsync(ct);
         var items = new List<MyStoreItem>();
         while (await rows.ReadAsync(ct))
@@ -44,6 +71,7 @@ internal sealed class OperatorService(NpgsqlDataSource source, OperatorPasswordH
         if (nextOffset.HasValue)
             items.RemoveAt(items.Count - 1);
         return new(items, nextOffset);
+        }
     }
 
     private static int UtcOffsetMinutes(string timeZone) => checked((int)TimeZoneInfo
@@ -351,6 +379,14 @@ internal sealed class OperatorService(NpgsqlDataSource source, OperatorPasswordH
             UPDATE operator_sessions SET revoked_at = now(), revoked_reason = 'password_changed'
             WHERE (org_id, staff_id) = ($1, $2) AND id <> $3 AND revoked_at IS NULL
             """, session.Organization, session.Staff, session.SessionId);
+        Guid? currentMobileSession = null;
+        if (MobileAuthentication.IsMobile(context.User))
+            currentMobileSession = MobileAuthentication.Read(context.User).Session;
+        await db.Run(tx, ct, """
+            UPDATE mobile_sessions SET revoked_at = now(), revoked_reason = 'password_changed'
+            WHERE (org_id, staff_id) = ($1, $2) AND revoked_at IS NULL
+              AND id <> NULLIF($3, '00000000-0000-0000-0000-000000000000'::uuid)
+            """, session.Organization, session.Staff, currentMobileSession ?? Guid.Empty);
         await Audit(db, tx, context, "operator.session_revoked", session.Organization, session.Store, session.Staff,
             session.Staff, context.Request.Headers["X-Active-Role"].ToString(), session.DeviceId, session.RegisterId,
             "succeeded", "password_changed", ct);
@@ -596,6 +632,7 @@ internal sealed class OperatorService(NpgsqlDataSource source, OperatorPasswordH
         if (string.IsNullOrEmpty(role)) throw new PosError(403, "active_role_required");
         if (role != "admin") throw new PosError(403, "active_role_denied");
         if (!session.Owner) throw new PosError(403, "owner_access_required");
+        Access.RequireOwnerReauthentication(context);
         return session;
     }
 
@@ -603,7 +640,23 @@ internal sealed class OperatorService(NpgsqlDataSource source, OperatorPasswordH
         Guid store, CancellationToken ct)
     {
         var (issuer, subject) = Access.ReadHost(context);
-        await using var command = db.Sql(tx, """
+        NpgsqlCommand command;
+        if (MobileAuthentication.IsMobile(context.User))
+        {
+            var mobile = MobileAuthentication.Read(context.User);
+            Access.RequireOwnerReauthentication(context);
+            command = db.Sql(tx, """
+                SELECT s.org_id, s.id, o.name, st.name, st.time_zone
+                FROM staff s JOIN staff_stores m ON (m.org_id, m.staff_id) = (s.org_id, s.id) AND m.active
+                JOIN staff_store_roles r ON (r.org_id, r.store_id, r.staff_id) = (m.org_id, m.store_id, m.staff_id)
+                JOIN stores st ON (st.org_id, st.id) = (m.org_id, m.store_id)
+                JOIN organizations o ON o.id = st.org_id
+                WHERE (s.org_id, s.id) = ($1, $2) AND s.active AND m.store_id = $3 AND r.role = 'owner'
+                """, mobile.Organization, mobile.Staff, store);
+        }
+        else
+        {
+            command = db.Sql(tx, """
             SELECT s.org_id, s.id, o.name, st.name, st.time_zone
             FROM staff s JOIN staff_stores m ON (m.org_id, m.staff_id) = (s.org_id, s.id) AND m.active
             JOIN staff_store_roles r ON (r.org_id, r.store_id, r.staff_id) = (m.org_id, m.store_id, m.staff_id)
@@ -611,10 +664,14 @@ internal sealed class OperatorService(NpgsqlDataSource source, OperatorPasswordH
             JOIN organizations o ON o.id = st.org_id
             WHERE s.subject = $1 AND s.identity_kind = 'oidc' AND s.active AND m.store_id = $2 AND r.role = 'owner'
             """, subject, store);
+        }
+        await using (command)
+        {
         await using var rows = await command.ExecuteReaderAsync(ct);
         if (!await rows.ReadAsync(ct)) throw new PosError(403, "store_access_denied");
         return new(rows.GetGuid(0), store, rows.GetGuid(1), rows.GetString(2), rows.GetString(3), rows.GetString(4),
             issuer, subject);
+        }
     }
 
     private sealed record OperatorRow(OperatorItem Item, string? PasswordHash, DateTime? LockedUntil);
@@ -734,10 +791,17 @@ internal sealed class OperatorService(NpgsqlDataSource source, OperatorPasswordH
     }
 
     private static async Task RevokeSessions(NpgsqlConnection db, NpgsqlTransaction tx, Guid org, Guid staff,
-        string reason, CancellationToken ct) => await db.Run(tx, ct, """
+        string reason, CancellationToken ct)
+    {
+        await db.Run(tx, ct, """
             UPDATE operator_sessions SET revoked_at = now(), revoked_reason = $3
             WHERE (org_id, staff_id) = ($1, $2) AND revoked_at IS NULL
             """, org, staff, reason);
+        await db.Run(tx, ct, """
+            UPDATE mobile_sessions SET revoked_at = now(), revoked_reason = $3
+            WHERE (org_id, staff_id) = ($1, $2) AND revoked_at IS NULL
+            """, org, staff, reason);
+    }
 
     private static async Task SyncLegacyRoles(NpgsqlConnection db, NpgsqlTransaction tx, Guid org, Guid staff,
         CancellationToken ct)
