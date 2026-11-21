@@ -30,26 +30,28 @@ internal sealed partial class PosService
     }
 
     public async Task<IReadOnlyList<ExpiringLot>> GetStoreExpiry(HttpContext context, Guid store, string? filter,
-        int? offset, CancellationToken ct)
+        string? category, int? offset, CancellationToken ct)
     {
         ValidateExpiryFilter(filter, offset);
+        category = ValidateExpiryCategory(category);
         await using var db = await source.OpenConnectionAsync(ct);
         await using var tx = await db.BeginTransactionAsync(ct);
         var scope = await Access.RequireStore(db, tx, context, configuration, store, true, ct);
         return (await ReadExpiry(db, tx, scope.Organization, store, scope.TimeZone,
-            filter ?? DefaultExpiryFilter, offset ?? 0, ExpiryPageSize, includeValue: false, ct))
+            filter ?? DefaultExpiryFilter, category, offset ?? 0, ExpiryPageSize, includeValue: false, ct))
             .Select(row => row.Lot).ToArray();
     }
 
-    public async Task<IReadOnlyList<ExpiringLot>> GetCashierExpiry(HttpContext context, string? filter, int? offset,
-        CancellationToken ct)
+    public async Task<IReadOnlyList<ExpiringLot>> GetCashierExpiry(HttpContext context, string? filter,
+        string? category, int? offset, CancellationToken ct)
     {
         ValidateExpiryFilter(filter, offset);
+        category = ValidateExpiryCategory(category);
         await using var db = await source.OpenConnectionAsync(ct);
         await using var tx = await db.BeginTransactionAsync(ct);
         var scope = await Access.RequireCashier(db, tx, context, false, ct);
         return (await ReadExpiry(db, tx, scope.Organization, scope.Store, scope.TimeZone,
-            filter ?? DefaultExpiryFilter, offset ?? 0, ExpiryPageSize, includeValue: false, ct))
+            filter ?? DefaultExpiryFilter, category, offset ?? 0, ExpiryPageSize, includeValue: false, ct))
             .Select(row => row.Lot).ToArray();
     }
 
@@ -57,7 +59,8 @@ internal sealed partial class PosService
         decimal? InventoryValue);
 
     private static async Task<List<ExpiryRow>> ReadExpiry(NpgsqlConnection db, NpgsqlTransaction tx,
-        Guid org, Guid store, string timeZone, string filter, int offset, int limit, bool includeValue, CancellationToken ct)
+        Guid org, Guid store, string timeZone, string filter, string? category, int offset, int limit,
+        bool includeValue, CancellationToken ct)
     {
         await using var command = db.Sql(tx, """
             WITH lots AS (
@@ -67,6 +70,7 @@ internal sealed partial class PosService
                        CASE WHEN $7 THEN l.inventory_value END AS inventory_value
                 FROM stock_lots l JOIN products p ON (p.org_id, p.id) = (l.org_id, l.product_id)
                 WHERE (l.org_id, l.store_id) = ($1, $2) AND l.quantity + l.quarantine_quantity > 0
+                  AND ($8 = '' OR lower(p.category) = lower($8))
                   AND (p.requires_expiry OR l.expiry_date IS NOT NULL)
             )
             SELECT product_id, id, name, barcode, unit, expiry_date, days_left, accounted, requires_expiry,
@@ -79,7 +83,7 @@ internal sealed partial class PosService
                 WHEN 'missing' THEN expiry_date IS NULL AND requires_expiry
                 ELSE true END
             ORDER BY expiry_date, product_id, id LIMIT $6 OFFSET $5
-            """, org, store, timeZone, filter, offset, limit, includeValue);
+            """, org, store, timeZone, filter, offset, limit, includeValue, category ?? "");
         await using var rows = await command.ExecuteReaderAsync(ct);
         List<ExpiryRow> lots = [];
         while (await rows.ReadAsync(ct))
@@ -290,5 +294,12 @@ internal sealed partial class PosService
         ValidateStockOffset(offset);
         if (filter is not (null or "all" or "today" or "within3" or "within7" or "expired" or "missing"))
             throw new PosError(400, "invalid_expiry_filter");
+    }
+
+    private static string? ValidateExpiryCategory(string? category)
+    {
+        if (category is null) return null;
+        if (!IsText(category, 120)) throw new PosError(400, "invalid_expiry_category");
+        return category.Trim();
     }
 }

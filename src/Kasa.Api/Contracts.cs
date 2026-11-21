@@ -496,6 +496,25 @@ public sealed record ProfitDay(DateOnly Date, ProfitAmounts Amounts);
 public sealed record ProfitReport(Guid StoreId, string TimeZone, DateOnly From, DateOnly To, DateTime GeneratedAt,
     string CostMethod, ProfitAmounts Total, IReadOnlyList<ProfitDay> Days);
 
+public sealed record CreateOperatingExpense(Guid OperationId, DateOnly IncurredOn, string Category,
+    [property: JsonRequired] decimal Amount, string PaymentMethod, string Description);
+public sealed record ReverseOperatingExpense(Guid OperationId, string Reason);
+public sealed record OperatingExpense(Guid OperationId, DateOnly IncurredOn, string Category, decimal Amount,
+    string PaymentMethod, string Description, Guid RecordedBy, DateTime CreatedAt, Guid? ReversalId,
+    string? ReversalReason, Guid? ReversedBy, DateTime? ReversedAt)
+{
+    public bool Reversed => ReversedAt.HasValue;
+}
+public sealed record OperatingExpensePage(Guid StoreId, string TimeZone, DateOnly From, DateOnly To,
+    string? Category, bool IncludeReversed, IReadOnlyList<OperatingExpense> Items, int? NextOffset);
+public sealed record FinancialSummaryReport(Guid StoreId, string TimeZone, DateOnly From, DateOnly To,
+    DateTime GeneratedAt, SalesPeriodAmounts Sales, ProfitAmounts Profit, decimal OperatingExpenses,
+    decimal SupplierPayments, decimal KnownSupplierOutstanding, long UnpricedSupplierInvoiceCount)
+{
+    public decimal? NetProfit => Profit.GrossProfit is { } gross && Profit.InventoryExpenses is { } losses
+        ? gross - losses - OperatingExpenses : null;
+}
+
 public sealed record StockMovementEntry(string Kind, Guid DocumentId, Guid? RegisterId, Guid ActorId,
     DateTime OccurredAt, DateOnly LocalDate, Guid ProductId, string ProductName, string Unit,
     Guid LotId, DateOnly? ExpiryDate, decimal StockDelta, decimal QuarantineDelta, string? Reason,
@@ -549,7 +568,11 @@ public sealed record StockExpiryEntry(Guid ProductId, Guid LotId, string Product
     DateOnly? ExpiryDate, int? DaysLeft, decimal StockQuantity, decimal QuarantineQuantity, decimal? InventoryValue);
 
 public sealed record StockExpiryReport(Guid StoreId, string TimeZone, string Filter,
-    IReadOnlyList<StockExpiryEntry> Items, int? NextOffset);
+    IReadOnlyList<StockExpiryEntry> Items, int? NextOffset)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Category { get; init; }
+}
 
 public sealed record StoreException(string Code, Guid ObjectId, Guid? ProductId, Guid? ReceiptId, Guid? RegisterId,
     DateTime? OccurredAt, decimal? CashDifference)

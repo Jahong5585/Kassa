@@ -124,7 +124,23 @@ fi
 "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/replenishment_schedule.sql
 "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/sales_period_fixtures.sql
 "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/stock_movement_report_fixtures.sql
+"${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/finance_expenses_fixtures.sql
 "${compose[@]}" exec -T -e POS_TEST_LOCAL_HASH db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/local_test_developer_fixture.sql
+if "$restore_check"; then
+    business_counts_before=$("${compose[@]}" exec -T db psql -XAt -U kasa_owner -d kasa -v ON_ERROR_STOP=1 \
+        -c "SELECT json_build_array((SELECT count(*) FROM organizations),(SELECT count(*) FROM stores),(SELECT count(*) FROM staff),(SELECT count(*) FROM products),(SELECT count(*) FROM sales));")
+    "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < db/rollback/042_operating_expenses.down.sql
+    [[ "$("${compose[@]}" exec -T db psql -XAt -U kasa_owner -d kasa -c "SELECT to_regclass('public.operating_expenses') IS NULL;")" == "t" ]] || \
+        { echo "Migration 042 rollback left operating_expenses behind" >&2; exit 1; }
+    "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < db/042_operating_expenses.sql
+    business_counts_after=$("${compose[@]}" exec -T db psql -XAt -U kasa_owner -d kasa -v ON_ERROR_STOP=1 \
+        -c "SELECT json_build_array((SELECT count(*) FROM organizations),(SELECT count(*) FROM stores),(SELECT count(*) FROM staff),(SELECT count(*) FROM products),(SELECT count(*) FROM sales));")
+    [[ "$business_counts_before" == "$business_counts_after" ]] || \
+        { echo "Migration 042 changed existing business data" >&2; exit 1; }
+    [[ "$("${compose[@]}" exec -T db psql -XAt -U kasa_owner -d kasa -c "SELECT has_table_privilege('kasa_api','operating_expenses','SELECT,INSERT') AND has_column_privilege('kasa_api','operating_expenses','reversal_id','UPDATE');")" == "t" ]] || \
+        { echo "Migration 042 runtime grants are incomplete" >&2; exit 1; }
+    echo "PASS: migration 042 upgrade and rollback preserve existing organizations, stores, staff, products and sales"
+fi
 "$dotnet_command" build src/Kasa.Api/Kasa.Api.csproj -c Release -warnaserror -p:RestoreLockedMode=true
 "$dotnet_command" test tests/Kasa.Api.Tests/Kasa.Api.Tests.csproj -c Release -warnaserror -p:RestoreLockedMode=true
 guard_log="$(mktemp)"
@@ -164,6 +180,10 @@ else
         cat "$logs" >&2
         exit 1
     fi
+    if ! "$python_command" tests/release_compatibility.py; then
+        cat "$logs" >&2
+        exit 1
+    fi
     "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/sales_period_audit.sql
 fi
 if ! "$python_command" tests/local_test_developer.py; then
@@ -175,6 +195,12 @@ if ! "$python_command" tests/operator_auth.py; then
     exit 1
 fi
 "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < tests/operator_auth_security.sql
+if ! "$promotion_check" && ! "$lot_retail_check" && ! "$label_check"; then
+    if ! "$python_command" tests/receiving_api.py; then
+        cat "$logs" >&2
+        exit 1
+    fi
+fi
 if grep -Fq -- "$POS_TEST_OPERATOR_PASSWORD" "$logs"; then
     echo "Operator password leaked into application logs" >&2
     exit 1
@@ -186,12 +212,18 @@ if "$restore_check"; then
     restore_dir="$(mktemp -d)"
     "${compose[@]}" exec -T db psql -X --csv -U kasa_owner -d kasa -v ON_ERROR_STOP=1 \
         < tests/backup_control.sql > "$restore_dir/before.csv"
+    source_expenses=$("${compose[@]}" exec -T db psql -XAt -U kasa_owner -d kasa -v ON_ERROR_STOP=1 \
+        -c "SELECT count(*) || ':' || coalesce(sum(amount),0) || ':' || count(*) FILTER (WHERE reversed_at IS NOT NULL) FROM operating_expenses;")
     "${compose[@]}" exec -T db pg_dump -U kasa_owner -d kasa --format=custom > "$restore_dir/kasa.dump"
     "${compose[@]}" exec -T db createdb -U kasa_owner --template=template0 kasa_restore
     "${compose[@]}" exec -T db pg_restore -U kasa_owner -d kasa_restore --exit-on-error \
         < "$restore_dir/kasa.dump"
     "${compose[@]}" exec -T db psql -X --csv -U kasa_owner -d kasa_restore -v ON_ERROR_STOP=1 \
         < tests/backup_control.sql > "$restore_dir/after.csv"
+    restored_expenses=$("${compose[@]}" exec -T db psql -XAt -U kasa_owner -d kasa_restore -v ON_ERROR_STOP=1 \
+        -c "SELECT count(*) || ':' || coalesce(sum(amount),0) || ':' || count(*) FILTER (WHERE reversed_at IS NOT NULL) FROM operating_expenses;")
+    [[ "$source_expenses" == "$restored_expenses" ]] || \
+        { echo "Restored operating expenses differ from source" >&2; exit 1; }
     "$python_command" - "$restore_dir/before.csv" "$restore_dir/after.csv" <<'PY'
 import csv
 import sys

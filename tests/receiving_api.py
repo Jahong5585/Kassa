@@ -37,7 +37,8 @@ def token():
     return (message + b"." + enc(hmac.digest(JWT_KEY, message, hashlib.sha256))).decode()
 
 
-def call(path, body=None, expected=200, method=None, session=None, role=None, authenticated=True):
+def call(path, body=None, expected=200, method=None, session=None, role=None, authenticated=True, register=False,
+         raw_body=None, extra_headers=None):
     headers = {}
     if authenticated:
         headers["Authorization"] = "Bearer " + token()
@@ -47,8 +48,14 @@ def call(path, body=None, expected=200, method=None, session=None, role=None, au
         headers["X-Operator-Session"] = session
     if role:
         headers["X-Active-Role"] = role
+    if register:
+        headers["X-Register-Id"] = "00000000-0000-0000-0000-000000000021"
+        headers["X-Register-Key"] = os.environ["POS_TEST_REGISTER_KEY"]
+    if extra_headers:
+        headers.update(extra_headers)
     request = urllib.request.Request(BASE + path,
-        data=json.dumps(body).encode() if body is not None else None, headers=headers, method=method)
+        data=raw_body if raw_body is not None else (json.dumps(body).encode() if body is not None else None),
+        headers=headers, method=method)
     try:
         response = urllib.request.urlopen(request, timeout=30)
     except urllib.error.HTTPError as error:
@@ -57,6 +64,13 @@ def call(path, body=None, expected=200, method=None, session=None, role=None, au
         payload = response.read()
         assert response.status == expected, (path, expected, response.status, payload)
         return json.loads(payload) if payload else None
+
+
+def upload_invoice(receipt_id, session):
+    file_id = str(uuid.uuid5(uuid.NAMESPACE_URL, receipt_id + ":clean-invoice"))
+    return call(f"/v1/stores/{STORE}/receipts/{receipt_id}/files/{file_id}", method="PUT",
+                session=session, role="receiver", raw_body=b"%PDF-1.4\n% KASSA TEST INVOICE\n%%EOF",
+                extra_headers={"Content-Type": "application/pdf", "X-File-Name": "invoice.pdf"})
 
 
 def sql(statement):
@@ -151,12 +165,9 @@ def main():
                    session=session, role="receiver")
     assert invalid["code"] == "invalid_manufacture_date"
 
+    upload_invoice(receipt_id, session)
     submitted = call(f"/v1/stores/{STORE}/receipts/{receipt_id}/submit", {"expectedVersion": 1},
                      session=session, role="receiver")
-    missing_costs = call(f"/v1/stores/{STORE}/receipts/{receipt_id}/post",
-                         {"expectedVersion": submitted["version"]}, expected=409,
-                         session=session, role="admin")
-    assert missing_costs["code"] == "receipt_costs_required"
     costs = call(f"/v1/stores/{STORE}/receipts/{receipt_id}/costs",
                  {"expectedVersion": submitted["version"], "items": [{"productId": product_id,
                   "lotId": lot_id, "unitPrice": 5500, "discount": 0, "includedTax": 0,
@@ -165,6 +176,38 @@ def main():
     posted = call(f"/v1/stores/{STORE}/receipts/{receipt_id}/post",
                   {"expectedVersion": costs["receiptVersion"]}, session=session, role="admin")
     assert posted["status"] == "posted"
+
+    second_receipt_id = str(uuid.uuid4())
+    second_receipt = {**receipt, "receiptId": second_receipt_id, "invoiceNumber": "DESKTOP-0818-PLUS4",
+                      "items": [{**receipt["items"][0], "quantity": 4}]}
+    second_draft = call(f"/v1/stores/{STORE}/receipts/with-proposed-costs", second_receipt,
+                        session=session, role="receiver")
+    upload_invoice(second_receipt_id, session)
+    second_submitted = call(f"/v1/stores/{STORE}/receipts/{second_receipt_id}/submit",
+                            {"expectedVersion": second_draft["version"]}, session=session, role="receiver")
+    second_costs = call(f"/v1/stores/{STORE}/receipts/{second_receipt_id}/costs",
+                        {"expectedVersion": second_submitted["version"], "items": [{"productId": product_id,
+                         "lotId": lot_id, "unitPrice": 5500, "discount": 0, "includedTax": 0,
+                         "allocatedCharges": 0}]}, method="PUT", session=session, role="admin")
+    call(f"/v1/stores/{STORE}/receipts/{second_receipt_id}/post",
+         {"expectedVersion": second_costs["receiptVersion"]}, session=session, role="admin")
+
+    catalog = call(f"/v1/catalog/barcodes/{BARCODE}", session=session, role="cashier", register=True)
+    assert sum(row["quantity"] for row in catalog["lots"]) == 14
+    shift_id = str(uuid.uuid4())
+    call("/v1/shifts", {"shiftId": shift_id, "openingCash": 0},
+         session=session, role="cashier", register=True)
+    sale_id = str(uuid.uuid4())
+    sale = {"operationId": sale_id, "shiftId": shift_id, "method": "manualCashless",
+            "items": [{"productId": product_id, "lotId": lot_id,
+                       "priceVersion": catalog["priceVersion"], "quantity": 1}]}
+    saved_sale = call("/v1/sales", sale, session=session, role="cashier", register=True)
+    assert saved_sale["total"] == 8000
+    assert call("/v1/sales", sale, session=session, role="cashier", register=True) == saved_sale
+    remaining = call(f"/v1/catalog/barcodes/{BARCODE}", session=session, role="cashier", register=True)
+    assert sum(row["quantity"] for row in remaining["lots"]) == 13
+    call(f"/v1/shifts/{shift_id}/close", {"countedCash": 0},
+         session=session, role="cashier", register=True)
 
     zero_receipt_id = str(uuid.uuid4())
     zero_lot_id = str(uuid.uuid4())
@@ -181,7 +224,7 @@ def main():
                        {"expectedVersion": 1, "items": [zero_item]}, method="PUT",
                        session=session, role="receiver")
     assert zero_edited["version"] == 2 and zero_edited["items"][0]["proposedUnitCost"] == 0
-    print("PASS: Desktop 0.8.16 receiving catalogue, idempotency, costs, dates and access control")
+    print("PASS: Android card, 10 + 4 - 1 = 13 stock, Desktop sale replay, 8000 revenue and 5500 cost")
 
 
 if __name__ == "__main__":

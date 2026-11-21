@@ -10,9 +10,10 @@ internal sealed partial class PosService
     private const int MaxStockExpiryExportRows = 1000;
 
     public async Task<StockExpiryReport> GetStockExpiryReport(HttpContext context, Guid store, string? filter,
-        int offset, CancellationToken ct, bool export = false)
+        string? category, int offset, CancellationToken ct, bool export = false)
     {
         ValidateExpiryFilter(filter, null);
+        category = ValidateExpiryCategory(category);
         if (offset < 0 || offset > int.MaxValue - ExpiryPageSize)
             throw new PosError(400, "invalid_stock_offset");
         var appliedFilter = filter ?? DefaultExpiryFilter;
@@ -20,21 +21,25 @@ internal sealed partial class PosService
         await using var tx = await db.BeginTransactionAsync(ct);
         var scope = await Access.RequireStore(db, tx, context, configuration, store, true, ct);
         var take = export ? MaxStockExpiryExportRows : ExpiryPageSize;
-        var rows = await ReadExpiry(db, tx, scope.Organization, store, scope.TimeZone, appliedFilter, offset,
+        var rows = await ReadExpiry(db, tx, scope.Organization, store, scope.TimeZone, appliedFilter, category, offset,
             take + 1, includeValue: true, ct);
         var hasMore = rows.Count > take;
         if (export)
         {
             if (hasMore)
                 throw new PosError(409, "stock_expiry_export_limit");
+            var auditFilter = category is null
+                ? $"{scope.Role}/{appliedFilter}"
+                : $"{scope.Role}/{appliedFilter}/{category}";
             await Audit(db, tx, context, scope.Organization, store, Guid.Empty, scope.Staff,
-                "reports.stock_expiry_csv_exported", store, ct, $"{scope.Role}/{appliedFilter}");
+                "reports.stock_expiry_csv_exported", store, ct, auditFilter);
             await tx.CommitAsync(ct);
         }
         var items = rows.Take(take).Select(row => new StockExpiryEntry(row.Lot.ProductId, row.Lot.LotId,
             row.Lot.Name, row.Lot.Unit, row.Lot.ExpiryDate, row.Lot.DaysRemaining, row.StockQuantity,
             row.QuarantineQuantity, row.InventoryValue)).ToArray();
-        return new StockExpiryReport(store, scope.TimeZone, appliedFilter, items, hasMore ? offset + take : null);
+        return new StockExpiryReport(store, scope.TimeZone, appliedFilter, items, hasMore ? offset + take : null)
+            { Category = category };
     }
 
     internal static byte[] FormatStockExpiryCsv(StockExpiryReport report)
