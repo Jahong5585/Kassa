@@ -150,7 +150,7 @@ def main():
     assert set(procurement["security"][0]) == {"Bearer", "OperatorSession"}
     assert {"200", "409"}.issubset(procurement["responses"])
     role_route = spec["paths"]["/v1/me/roles"]["get"]
-    assert set(role_route["security"][0]) == {"Bearer", "OperatorSession"}
+    assert set(role_route["security"][0]) == {"Bearer"}
     assert "X-Active-Role" not in [parameter["name"] for parameter in role_route.get("parameters", [])]
     assert "X-Active-Role" in [parameter["name"] for parameter in checkout["parameters"]]
 

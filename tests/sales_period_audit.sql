@@ -55,11 +55,16 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'Unexpected audit record for stock loss export';
     END IF;
-    IF (SELECT count(*) FROM audit_events WHERE action = 'reports.stock_expiry_csv_exported') <> 1 OR NOT EXISTS (
+    IF (SELECT count(*) FROM audit_events WHERE action = 'reports.stock_expiry_csv_exported') <> 2 OR NOT EXISTS (
         SELECT 1 FROM audit_events WHERE action = 'reports.stock_expiry_csv_exported'
           AND store_id = '00000000-0000-0000-0000-000000000011'
           AND staff_id = '00000000-0000-0000-0000-000000000036'
           AND object_code = 'admin/all' AND request_id <> ''
+    ) OR NOT EXISTS (
+        SELECT 1 FROM audit_events WHERE action = 'reports.stock_expiry_csv_exported'
+          AND store_id = '00000000-0000-0000-0000-000000000011'
+          AND staff_id = '00000000-0000-0000-0000-000000000036'
+          AND object_code = 'admin/all/напитки' AND request_id <> ''
     ) THEN
         RAISE EXCEPTION 'Unexpected audit record for stock expiry export';
     END IF;

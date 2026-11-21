@@ -688,6 +688,19 @@ profitReport.MapGet("/csv", async (Guid storeId, DateOnly from, DateOnly to,
     var filename = FormattableString.Invariant($"profit-{from:yyyy-MM-dd}-{to:yyyy-MM-dd}.csv");
     return TypedResults.File(PosService.FormatProfitReportCsv(report), "text/csv; charset=utf-8", filename);
 }).WithName("DownloadProfitReportCsv").Produces<string>(200, contentType: "text/csv");
+var financeReport = api.MapGroup("/reports/stores/{storeId:guid}/finance");
+financeReport.MapGet("", async (Guid storeId, DateOnly from, DateOnly to,
+    PosService pos, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await pos.GetFinancialSummary(context, storeId, from, to, ct)))
+    .WithName("ReadFinancialSummary");
+financeReport.MapGet("/csv", async (Guid storeId, DateOnly from, DateOnly to,
+    PosService pos, HttpContext context, CancellationToken ct) =>
+{
+    var report = await pos.GetFinancialSummary(context, storeId, from, to, ct, export: true);
+    context.Response.Headers.XContentTypeOptions = "nosniff";
+    return TypedResults.File(PosService.FormatFinancialSummaryCsv(report), "text/csv; charset=utf-8",
+        FormattableString.Invariant($"finance-{from:yyyy-MM-dd}-{to:yyyy-MM-dd}.csv"));
+}).WithName("DownloadFinancialSummaryCsv").Produces<string>(200, contentType: "text/csv");
 var stockMovements = api.MapGroup("/reports/stores/{storeId:guid}/stock-movements");
 stockMovements.MapGet("", async (Guid storeId, DateOnly from, DateOnly to, Guid? productId, Guid? lotId,
     string? kind, string? after, int? limit, PosService pos, HttpContext context, CancellationToken ct) =>
@@ -733,12 +746,14 @@ stockLosses.MapGet("/csv", async (Guid storeId, DateOnly from, DateOnly to, Guid
     return TypedResults.File(PosService.FormatStockLossCsv(report), "text/csv; charset=utf-8", filename);
 }).WithName("DownloadStockLossReportCsv").Produces<string>(200, contentType: "text/csv");
 var stockExpiry = api.MapGroup("/reports/stores/{storeId:guid}/stock-expiry");
-stockExpiry.MapGet("", async (Guid storeId, string? filter, int? offset, PosService pos, HttpContext context,
-    CancellationToken ct) => TypedResults.Ok(await pos.GetStockExpiryReport(context, storeId, filter, offset ?? 0, ct)))
+stockExpiry.MapGet("", async (Guid storeId, string? filter, string? category, int? offset, PosService pos,
+    HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await pos.GetStockExpiryReport(context, storeId, filter, category, offset ?? 0, ct)))
     .WithName("ReadStockExpiryReport");
-stockExpiry.MapGet("/csv", async (Guid storeId, string? filter, PosService pos, HttpContext context, CancellationToken ct) =>
+stockExpiry.MapGet("/csv", async (Guid storeId, string? filter, string? category, PosService pos,
+    HttpContext context, CancellationToken ct) =>
 {
-    var report = await pos.GetStockExpiryReport(context, storeId, filter, 0, ct, export: true);
+    var report = await pos.GetStockExpiryReport(context, storeId, filter, category, 0, ct, export: true);
     context.Response.Headers.XContentTypeOptions = "nosniff";
     return TypedResults.File(PosService.FormatStockExpiryCsv(report), "text/csv; charset=utf-8",
         $"stock-expiry-{report.Filter}.csv");
@@ -776,6 +791,9 @@ api.MapGet("/catalog/barcodes/{barcode}", async (string barcode, PosService pos,
 api.MapGet("/catalog/search", async (string q, int? offset, PosService pos, HttpContext context,
     CancellationToken ct) =>
     TypedResults.Ok(await pos.SearchCashierProducts(context, q, offset, ct))).WithName("SearchCashierProducts");
+api.MapGet("/catalog/snapshot", async (PosService pos, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await pos.GetCatalogSnapshot(context, ct))).WithName("ReadCatalogSnapshot")
+    .WithDescription("Returns the active priced catalogue for Desktop preloading; barcode lookup remains authoritative for checkout.");
 api.MapGet("/catalog/products/{id:guid}", async (Guid id, PosService pos, HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await pos.GetProductById(context, id, ct))).WithName("ReadCashierProduct");
 var checkoutShifts = api.MapGroup("/shifts/{shiftId:guid}");
@@ -819,12 +837,28 @@ api.MapPost("/refunds", async (CreateRefund request, PosService pos, HttpContext
 api.MapGet("/refunds/{id:guid}", async (Guid id, PosService pos, HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await pos.GetRefund(context, id, ct))).WithName("ReconcileRefund");
 
-api.MapGet("/expiry/cashier", async (string? filter, int? offset, PosService pos, HttpContext context, CancellationToken ct) =>
-    TypedResults.Ok(await pos.GetCashierExpiry(context, filter, offset, ct))).WithName("ListCashierExpiry");
+api.MapGet("/expiry/cashier", async (string? filter, string? category, int? offset, PosService pos,
+    HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await pos.GetCashierExpiry(context, filter, category, offset, ct))).WithName("ListCashierExpiry");
 api.MapPost("/expiry/cashier/shelf-tasks", async (CreateShelfTask request, PosService pos, HttpContext context,
     CancellationToken ct) => TypedResults.Ok(await pos.MarkShelfRemoval(context, request, ct))).WithName("MarkShelfRemoval");
 
 var storeApi = api.MapGroup("/stores/{storeId:guid}");
+var storeFinance = storeApi.MapGroup("/finance/expenses");
+storeFinance.MapGet("", async (Guid storeId, DateOnly from, DateOnly to, string? category,
+    bool? includeReversed, int? offset, PosService pos, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await pos.ListOperatingExpenses(context, storeId, from, to, category, includeReversed, offset, ct)))
+    .WithName("ListOperatingExpenses");
+storeFinance.MapGet("/{id:guid}", async (Guid storeId, Guid id, PosService pos, HttpContext context,
+    CancellationToken ct) => TypedResults.Ok(await pos.GetOperatingExpense(context, storeId, id, ct)))
+    .WithName("ReadOperatingExpense");
+storeFinance.MapPost("", async (Guid storeId, CreateOperatingExpense request, PosService pos, HttpContext context,
+    CancellationToken ct) => TypedResults.Ok(await pos.CreateOperatingExpense(context, storeId, request, ct)))
+    .WithName("CreateOperatingExpense");
+storeFinance.MapPost("/{id:guid}/reverse", async (Guid storeId, Guid id, ReverseOperatingExpense request,
+    PosService pos, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await pos.ReverseOperatingExpense(context, storeId, id, request, ct)))
+    .WithName("ReverseOperatingExpense");
 storeApi.MapGet("/audit", async (Guid storeId, DateOnly from, DateOnly to, string? action, string? after, int? limit,
     PosService pos, HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await pos.GetStoreAudit(context, storeId, from, to, action, after, limit ?? 50, ct)))
@@ -1146,9 +1180,9 @@ stockApi.MapPut("/lots/{productId:guid}/{lotId:guid}/retail", async (Guid storeI
 stockApi.MapPost("/lots/{productId:guid}/{lotId:guid}/weighed-price-labels", async (Guid storeId, Guid productId,
     Guid lotId, IssueWeighedPriceLabel request, PosService pos, HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await pos.IssuePriceLabel(context, storeId, productId, lotId, request, ct))).WithName("IssueWeighedPriceLabel");
-stockApi.MapGet("/expiry", async (Guid storeId, string? filter, int? offset, PosService pos,
+stockApi.MapGet("/expiry", async (Guid storeId, string? filter, string? category, int? offset, PosService pos,
     HttpContext context, CancellationToken ct) =>
-    TypedResults.Ok(await pos.GetStoreExpiry(context, storeId, filter, offset, ct))).WithName("ListStoreExpiry");
+    TypedResults.Ok(await pos.GetStoreExpiry(context, storeId, filter, category, offset, ct))).WithName("ListStoreExpiry");
 stockApi.MapGet("/shelf-tasks", async (Guid storeId, bool? openOnly, int? offset, PosService pos,
     HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await pos.ListShelfTasks(context, storeId, openOnly, offset, ct))).WithName("ListShelfTasks");

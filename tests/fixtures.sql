@@ -50,10 +50,10 @@ INSERT INTO cashier_registers (org_id, staff_id, store_id, register_id)
  WHERE (s.subject IN ('cashier-a', 'cashier-diagnostics', 'cashier-diagnostics-peer',
                        'admin-multi-role', 'admin-owner') AND r.name = 'А1')
     OR (s.subject = 'cashier-b' AND r.name = 'А2');
-INSERT INTO products (org_id, id, name, barcode, unit, requires_expiry) VALUES
- ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000041', 'Учебная кола', '001', 'piece', true),
- ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000042', 'Учебные яблоки', '002', 'kg', false),
- ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000043', 'Учебный весовой товар', '003', 'kg', false);
+INSERT INTO products (org_id, id, name, barcode, unit, requires_expiry, category) VALUES
+ ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000041', 'Учебная кола', '001', 'piece', true, 'Напитки'),
+ ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000042', 'Учебные яблоки', '002', 'kg', false, 'Фрукты'),
+ ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000043', 'Учебный весовой товар', '003', 'kg', false, 'Весовые товары');
 INSERT INTO store_prices (org_id, store_id, product_id, unit_price, version)
  SELECT p.org_id, s.id, p.id, CASE p.barcode WHEN '001' THEN 17500 WHEN '003' THEN 12.50 ELSE 18000 END, 1
  FROM products p JOIN stores s ON s.org_id = p.org_id;
@@ -69,9 +69,9 @@ INSERT INTO stock_lots (org_id, store_id, product_id, id, expiry_date, quantity)
  SELECT p.org_id, s.id, p.id, '00000000-0000-0000-0000-000000000053', NULL, 2
  FROM products p JOIN stores s ON s.org_id = p.org_id WHERE p.barcode = '001';
 -- Sales at local noon on eight complete days, with one documented stockout day.
-INSERT INTO products (org_id, id, name, barcode, unit, requires_expiry)
+INSERT INTO products (org_id, id, name, barcode, unit, requires_expiry, category)
 VALUES ('00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000144',
-    'Учебная кола для закупок','00999','piece',true);
+    'Учебная кола для закупок','00999','piece',true,'Закупки');
 INSERT INTO store_prices (org_id, store_id, product_id, unit_price, version)
 VALUES ('00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000011',
     '00000000-0000-0000-0000-000000000144',10000,1);
