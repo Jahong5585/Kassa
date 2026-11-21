@@ -133,7 +133,7 @@ internal sealed partial class PosService
     {
         if (!IsValidReportPeriod(from, to)) throw new PosError(400, "invalid_financial_report_period");
         await using var db = await source.OpenConnectionAsync(ct);
-        await using var tx = await db.BeginTransactionAsync(ct);
+        await using var tx = await db.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead, ct);
         var scope = await Access.RequireStore(db, tx, context, configuration, store, true, ct);
         var sales = await ReadSalesPeriod(db, tx, scope, from, to, null, null, ct);
         var profit = await ReadProfitReport(db, tx, scope, from, to, ct);
