@@ -10,7 +10,7 @@
 - `POST /v1/stores/{storeId}/finance/expenses/{id}/reverse` — сторнирование. `operationId` тела является ключом идемпотентности сторнирования.
 - `GET /v1/reports/stores/{storeId}/finance?from=&to=` — продажи, себестоимость, валовая прибыль, складские потери, операционные расходы, чистая прибыль, оплаты и задолженность поставщикам.
 - `GET /v1/reports/stores/{storeId}/finance/csv?from=&to=` — те же финансовые итоги в CSV.
-- `GET /v1/catalog/snapshot` — активный оценённый каталог текущей кассы для предварительной загрузки Desktop. Обычные `/v1/catalog/search` и `/v1/catalog/barcodes/{barcode}` сохранены.
+- `GET /v1/catalog/snapshot` — страница активных товаров с ценами для текущей кассы. Ответ содержит карточки, партии, штрихкоды и курсор `nextAfter`. Desktop запрашивает следующую страницу через `?after=UUID`. Максимум 50 товаров на страницу. Обычные `/v1/catalog/search` и `/v1/catalog/barcodes/{barcode}` сохранены.
 - `GET /v1/expiry/cashier`, `GET /v1/stores/{storeId}/stock/expiry`, `GET /v1/reports/stores/{storeId}/stock-expiry` и `/csv` принимают необязательный `category`. Без него JSON и CSV сохраняют прежнее поведение; схема CSV не меняется.
 
 Все бизнес-маршруты сохраняют действующую проверку Bearer, операторской сессии, активной роли и кассового устройства. `Auth:RequireOperatorSession` не меняется. OIDC + PKCE Desktop, мобильная авторизация, `X-Register-Key` и `X-Register-Device-Token` не изменены.

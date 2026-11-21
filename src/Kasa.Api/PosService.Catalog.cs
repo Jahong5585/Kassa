@@ -4,8 +4,6 @@ namespace Kasa.Api;
 
 internal sealed partial class PosService
 {
-    private const int MaxCatalogSnapshotProducts = 10_000;
-
     public async Task<CatalogProduct> GetProduct(HttpContext context, string barcode, CancellationToken ct)
     {
         var labelId = Guid.Empty;
@@ -108,47 +106,6 @@ internal sealed partial class PosService
         await using var tx = await db.BeginTransactionAsync(ct);
         var scope = await Access.RequireCashier(db, tx, context, false, ct);
         return await SearchProducts(db, tx, scope.Organization, scope.Store, query.Trim(), false, offset ?? 0, ct);
-    }
-
-    public async Task<CatalogSnapshot> GetCatalogSnapshot(HttpContext context, CancellationToken ct)
-    {
-        await using var db = await source.OpenConnectionAsync(ct);
-        await using var tx = await db.BeginTransactionAsync(ct);
-        var scope = await Access.RequireCashier(db, tx, context, false, ct);
-        await using var command = db.Sql(tx, """
-            WITH catalog AS (
-                SELECT p.id, p.name, p.sku, coalesce(p.barcode, '') AS barcode, p.unit, sp.unit_price,
-                       sp.version, sp.active, p.requires_expiry
-                FROM products p JOIN store_prices sp ON (sp.org_id, sp.product_id) = (p.org_id, p.id)
-                WHERE (p.org_id, sp.store_id) = ($1, $2) AND sp.active AND sp.unit_price IS NOT NULL
-                ORDER BY p.name, p.id LIMIT $3
-            )
-            SELECT statement_timestamp(), c.id, c.name, c.sku, c.barcode, c.unit, c.unit_price,
-                   c.version, c.active, c.requires_expiry, b.code, b.quantity_factor
-            FROM catalog c LEFT JOIN product_barcodes b ON (b.org_id, b.product_id) = ($1, c.id)
-            ORDER BY c.name, c.id, b.code
-            """, scope.Organization, scope.Store, MaxCatalogSnapshotProducts + 1);
-        await using var rows = await command.ExecuteReaderAsync(ct);
-        var generatedAt = DateTime.UtcNow;
-        var items = new List<CatalogSnapshotItem>();
-        List<ProductBarcode>? barcodes = null;
-        while (await rows.ReadAsync(ct))
-        {
-            generatedAt = rows.GetDateTime(0);
-            var productId = rows.GetGuid(1);
-            if (items.Count == 0 || items[^1].ProductId != productId)
-            {
-                if (items.Count == MaxCatalogSnapshotProducts)
-                    throw new PosError(409, "catalog_snapshot_too_large");
-                barcodes = [];
-                items.Add(new CatalogSnapshotItem(productId, rows.GetString(2), rows.GetString(3), rows.GetString(4),
-                    rows.GetString(5), rows.GetDecimal(6), rows.GetInt32(7), rows.GetBoolean(8), rows.GetBoolean(9),
-                    barcodes));
-            }
-            if (!rows.IsDBNull(10))
-                barcodes!.Add(new ProductBarcode(rows.GetString(10), rows.GetDecimal(11)));
-        }
-        return new CatalogSnapshot(scope.Store, generatedAt, items);
     }
 
     public async Task<IReadOnlyList<ProductSearchResult>> ListStoreProducts(HttpContext context, Guid store, string? query,

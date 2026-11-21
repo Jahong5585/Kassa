@@ -348,9 +348,6 @@ public sealed record ProductCard(Guid ProductId, string Name, string Unit, bool 
 }
 public sealed record ProductSearchResult(Guid ProductId, string Name, string Sku, string Barcode, string Unit,
     decimal? UnitPrice, int PriceVersion, bool Active);
-public sealed record CatalogSnapshotItem(Guid ProductId, string Name, string Sku, string Barcode, string Unit,
-    decimal UnitPrice, int PriceVersion, bool Active, bool RequiresExpiry, IReadOnlyList<ProductBarcode> Barcodes);
-public sealed record CatalogSnapshot(Guid StoreId, DateTime GeneratedAt, IReadOnlyList<CatalogSnapshotItem> Items);
 public sealed record WriteProductPrice(int ExpectedVersion, [property: JsonRequired] decimal? UnitPrice,
     [property: JsonRequired] bool Active, string Reason);
 public sealed record ProductPrice(int Version, decimal? UnitPrice, bool Active, string Reason, Guid? ChangedBy,

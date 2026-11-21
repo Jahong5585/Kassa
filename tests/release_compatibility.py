@@ -3,11 +3,22 @@
 import csv
 import datetime
 import io
+import os
+import subprocess
 import urllib.parse
 import uuid
 from decimal import Decimal
 
 from smoke import ZoneInfo, fixture_id, request
+
+
+def sql(statement):
+    completed = subprocess.run(
+        ["docker", "exec", os.environ["POS_TEST_DB_CONTAINER"], "psql", "-X", "-U", "kasa_owner",
+         "-d", "kasa", "-v", "ON_ERROR_STOP=1", "-Atc", statement],
+        capture_output=True, check=False)
+    assert completed.returncode == 0, completed.stderr.decode(errors="replace")
+    return completed.stdout.decode().strip()
 
 
 def money(value):
@@ -109,17 +120,50 @@ def check_catalog_snapshot():
     route = "/v1/catalog/snapshot"
     request(route, staff=None, expected=401)
     request(route, staff="receiver", expected=403)
+    sql("""
+        WITH rows AS (
+            SELECT ('10000000-0000-0000-0000-' || lpad(n::text, 12, '0'))::uuid AS id,
+                   'SNAP-' || lpad(n::text, 3, '0') AS barcode,
+                   'Snapshot page product ' || lpad(n::text, 3, '0') AS name
+            FROM generate_series(1, 55) n
+        ), products_added AS (
+            INSERT INTO products (org_id, id, name, barcode, unit, requires_expiry, category)
+            SELECT '00000000-0000-0000-0000-000000000001', id, name, barcode, 'piece', false, 'Snapshot'
+            FROM rows ON CONFLICT DO NOTHING RETURNING id
+        )
+        INSERT INTO store_prices (org_id, store_id, product_id, unit_price, version)
+        SELECT '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000011', id,
+               1000 + n, 1
+        FROM (SELECT id, row_number() OVER (ORDER BY id) n FROM rows) priced
+        ON CONFLICT DO NOTHING;
+    """)
     snapshot = request(route, staff="cashier-a")
     assert snapshot["storeId"] == fixture_id(11) and snapshot["generatedAt"]
-    by_id = {item["productId"]: item for item in snapshot["items"]}
+    assert "nextAfter" in snapshot and len(snapshot["items"]) <= 50
+    by_id = {item["product"]["productId"]: item for item in snapshot["items"]}
     item = by_id[fixture_id(41)]
-    current = request("/v1/catalog/search?q=001", staff="cashier-a")[0]
-    assert item["name"] == "Учебная кола" and item["barcode"] == "001"
-    assert item["unitPrice"] == current["unitPrice"] and item["priceVersion"] == current["priceVersion"]
-    assert item["active"] is True
+    current = request("/v1/catalog/barcodes/001", staff="cashier-a")
+    assert item["product"]["name"] == "Учебная кола" and item["product"]["barcode"] == "001"
+    for field in ("unitPrice", "priceVersion", "requiresExpiry", "lots"):
+        assert item["product"][field] == current[field]
     assert item["barcodes"] == [{"code": "001", "quantityFactor": 1}]
-    assert all(row["active"] and row["unitPrice"] > 0 for row in snapshot["items"])
-    print("PASS: Desktop catalogue snapshot is protected, store-scoped and preserves barcode lookup metadata")
+    assert all(row["product"]["unitPrice"] > 0 for row in snapshot["items"])
+    pages = [snapshot]
+    seen = [row["product"]["productId"] for row in snapshot["items"]]
+    while pages[-1]["nextAfter"] is not None:
+        assert pages[-1]["nextAfter"] == seen[-1]
+        following = request(route + "?after=" + pages[-1]["nextAfter"], staff="cashier-a")
+        following_ids = [row["product"]["productId"] for row in following["items"]]
+        assert len(following_ids) <= 50 and all(product_id > seen[-1] for product_id in following_ids)
+        assert not set(following_ids).intersection(seen)
+        pages.append(following)
+        seen.extend(following_ids)
+        assert len(pages) <= 10
+    assert len(pages) >= 2 and len(seen) >= 55 and seen == sorted(seen)
+    assert pages[-1]["nextAfter"] is None
+    invalid = request(route + "?after=" + fixture_id(0), staff="cashier-a", expected=400)
+    assert invalid["code"] == "invalid_catalog_cursor"
+    print("PASS: Desktop catalogue snapshot loads 50-item pages without gaps or duplicates and preserves lots")
 
 
 def check_expiry_category():

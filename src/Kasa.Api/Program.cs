@@ -791,9 +791,9 @@ api.MapGet("/catalog/barcodes/{barcode}", async (string barcode, PosService pos,
 api.MapGet("/catalog/search", async (string q, int? offset, PosService pos, HttpContext context,
     CancellationToken ct) =>
     TypedResults.Ok(await pos.SearchCashierProducts(context, q, offset, ct))).WithName("SearchCashierProducts");
-api.MapGet("/catalog/snapshot", async (PosService pos, HttpContext context, CancellationToken ct) =>
-    TypedResults.Ok(await pos.GetCatalogSnapshot(context, ct))).WithName("ReadCatalogSnapshot")
-    .WithDescription("Returns the active priced catalogue for Desktop preloading; barcode lookup remains authoritative for checkout.");
+api.MapGet("/catalog/snapshot", async (Guid? after, PosService pos, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await pos.GetCashierCatalogSnapshot(context, after, ct))).WithName("ReadCatalogSnapshot")
+    .WithDescription("Returns one cursor page of the active priced catalogue for Desktop preloading; barcode lookup remains authoritative for checkout.");
 api.MapGet("/catalog/products/{id:guid}", async (Guid id, PosService pos, HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await pos.GetProductById(context, id, ct))).WithName("ReadCashierProduct");
 var checkoutShifts = api.MapGroup("/shifts/{shiftId:guid}");
