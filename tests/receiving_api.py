@@ -167,6 +167,10 @@ def main():
     draft = call(f"/v1/stores/{STORE}/receipts/with-proposed-costs", receipt,
                  session=session, role="receiver")
     assert draft["items"][0]["proposedUnitCost"] == 5500
+    missing_costs = call(f"/v1/stores/{STORE}/receipts/{receipt_id}/costs",
+                         session=session, role="admin")
+    assert missing_costs == {"receiptId": receipt_id, "receiptVersion": draft["version"],
+                             "status": "missing", "total": 0, "lines": []}
     reopened = call(f"/v1/stores/{STORE}/receipts/{receipt_id}", session=session, role="receiver")
     assert reopened["items"][0]["manufacturedOn"] == made.isoformat()
     assert reopened["items"][0]["proposedUnitCost"] == 5500

@@ -11,7 +11,9 @@ internal sealed partial class PosService
         await using var tx = await db.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead, ct);
         var scope = await Access.RequireStore(db, tx, context, configuration, store, true, ct);
         var document = await ReadReceipt(db, tx, scope, id, ct) ?? throw new PosError(404, "receipt_not_found");
-        var costs = await ReadCosts(db, tx, scope, id, ct) ?? throw new PosError(404, "receipt_costs_not_found");
+        var costs = await ReadCosts(db, tx, scope, id, ct);
+        if (costs is null)
+            return new ReceiptCosts(id, document.Version, "missing", 0, []);
         var status = document.Status == "posted" ? "posted" :
             costs.ReceiptVersion == document.Version ? "reviewed" : "stale";
         return costs with { Status = status };
