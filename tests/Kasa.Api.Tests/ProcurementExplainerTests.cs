@@ -9,6 +9,31 @@ namespace Kasa.Api.Tests;
 
 public sealed class ProcurementExplainerTests
 {
+    [Fact]
+    public async Task OpenRouterTimeoutReturnsStableCode()
+    {
+        using var client = new HttpClient(new TimeoutHandler())
+        {
+            BaseAddress = new Uri("https://openrouter.ai/api/v1/")
+        };
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Ai:Provider"] = "OpenRouter",
+            ["Ai:ProcurementEnabled"] = "true",
+            ["OPENROUTER_API_KEY"] = "test-openrouter-key"
+        }).Build();
+        var service = new ProcurementExplainer(client, configuration, NullLogger<ProcurementExplainer>.Instance);
+        var recommendation = new ReplenishmentRecommendation("test", DateTime.UtcNow, default, "UTC",
+            Guid.NewGuid(), "private-product", "piece", "private-supplier", "private-sku",
+            default, default, default, 1, 1, 0, 1, 0, 0, null, new("manual", true, null, 0, 0, []),
+            [], null, null, 1, 1, null);
+
+        var error = await Assert.ThrowsAsync<PosError>(() =>
+            service.Explain(recommendation, "Russian", default));
+
+        Assert.Equal("procurement_ai_timeout", error.Message);
+    }
+
     [Theory]
     [InlineData(200, """{"choices":[{"finish_reason":"stop","message":{"content":"Запасы заканчиваются."}}]}""", null)]
     [InlineData(200, """{"choices":[]}""", "procurement_ai_unavailable")]
@@ -66,5 +91,11 @@ public sealed class ProcurementExplainerTests
                 Content = new StringContent(body, Encoding.UTF8, "application/json")
             };
         }
+    }
+
+    private sealed class TimeoutHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+            CancellationToken cancellationToken) => throw new TaskCanceledException("test timeout");
     }
 }
