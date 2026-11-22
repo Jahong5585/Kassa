@@ -40,7 +40,13 @@ public sealed record RegisterNewDevice(Guid RegisterId, string Name, Guid Cashie
 public sealed record RotateDeviceKey(int ExpectedVersion, string RegisterKey);
 public sealed record RevokeDevice(int ExpectedVersion);
 public sealed record StoreStaffAccess(Guid StaffId, string Subject, string Role, IReadOnlyList<string> Roles,
-    bool Active, IReadOnlyList<Guid> RegisterIds);
+    bool Active, IReadOnlyList<Guid> RegisterIds)
+{
+    public string? DisplayName { get; init; }
+    public string? FirstName { get; init; }
+    public string? LastName { get; init; }
+    public bool IsOwner { get; init; }
+}
 public sealed record ConnectStoreStaff(string Subject, string Role, Guid? RegisterId = null);
 public sealed record MyRoleSelection(Guid OrganizationId, Guid StaffId, Guid StoreId, string TimeZone,
     IReadOnlyList<string> Roles, bool Owner);
@@ -114,7 +120,11 @@ public sealed record UpdateRegisterCashiers(int ExpectedVersion,
     [property: MinLength(1)] Guid[] CashierIds,
     [property: StringLength(500, MinimumLength = 1)] string Reason);
 public sealed record StoreAuditEvent(long Id, DateTime OccurredAt, string Action, Guid StaffId, Guid ObjectId,
-    Guid? RegisterId, string RequestId);
+    Guid? RegisterId, string RequestId)
+{
+    public string? StaffName { get; init; }
+    public bool StaffIsOwner { get; init; }
+}
 public sealed record StoreAuditPage(Guid StoreId, string TimeZone, DateOnly From, DateOnly To, string? Action,
     IReadOnlyList<StoreAuditEvent> Items, string? NextCursor);
 
@@ -168,6 +178,8 @@ public sealed record ShiftSummary(Guid ShiftId, DateTime OpenedAt, DateTime? Clo
 }
 public sealed record CatalogLot(Guid LotId, DateOnly? ExpiryDate, decimal Quantity)
 {
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTime? ReceivedAt { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public decimal? MarkdownUnitPrice { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -278,6 +290,24 @@ public sealed record StockLot(Guid ProductId, Guid LotId, string Name, string Ba
     bool RequiresExpiry)
 {
     public decimal AccountedQuantity => StockQuantity + QuarantineQuantity;
+    public decimal? InventoryValue { get; init; }
+    public decimal? UnitCost => AccountedQuantity > 0 && InventoryValue is {} cost
+        ? decimal.Round(cost / AccountedQuantity, 2, MidpointRounding.AwayFromZero) : null;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTime? ReceivedAt { get; init; }
+    public bool Active => AccountedQuantity > 0;
+}
+
+public sealed record PurchasePriceHistoryItem(Guid LotId, string SourceKind, Guid SourceId, decimal Quantity,
+    decimal UnitCost, decimal TotalCost, DateTime ChangedAt, Guid? ChangedBy, string? ChangedByName, string Reason)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public decimal? PreviousUnitCost { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public decimal? ChangeAmount => PreviousUnitCost is { } previous ? UnitCost - previous : null;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public decimal? ChangePercent => PreviousUnitCost is > 0m and { } previous
+        ? decimal.Round((UnitCost - previous) * 100m / previous, 2, MidpointRounding.AwayFromZero) : null;
 }
 public sealed record ExpiringLot(Guid ProductId, Guid LotId, string Name, string Barcode, string Unit,
     DateOnly? ExpiryDate, int? DaysRemaining, decimal AccountedQuantity, bool RequiresExpiry);
@@ -310,6 +340,8 @@ public sealed record InventoryLine(Guid ProductId, Guid LotId, string Name, stri
     long? CountedRevision, decimal? ExpectedStock, decimal? ExpectedQuarantine, decimal? CountedStock,
     decimal? CountedQuarantine)
 {
+    public DateOnly? ExpiryDate { get; init; }
+    public decimal? UnitCost { get; init; }
     public decimal? StockDifference => CountedStock - ExpectedStock;
     public decimal? QuarantineDifference => CountedQuarantine - ExpectedQuarantine;
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -351,7 +383,17 @@ public sealed record ProductSearchResult(Guid ProductId, string Name, string Sku
 public sealed record WriteProductPrice(int ExpectedVersion, [property: JsonRequired] decimal? UnitPrice,
     [property: JsonRequired] bool Active, string Reason);
 public sealed record ProductPrice(int Version, decimal? UnitPrice, bool Active, string Reason, Guid? ChangedBy,
-    DateTime RecordedAt);
+    DateTime RecordedAt)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public decimal? PreviousUnitPrice { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public decimal? ChangeAmount => UnitPrice is { } current && PreviousUnitPrice is { } previous
+        ? current - previous : null;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public decimal? ChangePercent => UnitPrice is { } current && PreviousUnitPrice is > 0m and { } previous
+        ? decimal.Round((current - previous) * 100m / previous, 2, MidpointRounding.AwayFromZero) : null;
+}
 public sealed record ImportCatalog([property: JsonRequired] bool Preview, string Csv);
 public sealed record CatalogImportResult(bool Preview, IReadOnlyList<ProductCard> Products);
 public sealed record ProductProposalBody(string Name, string Unit, bool RequiresExpiry, string? Sku,

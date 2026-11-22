@@ -52,7 +52,7 @@ internal sealed partial class PosService
                         WHEN l.expiry_date < (now() AT TIME ZONE $4)::date THEN 'lot_barcode_expired'
                         WHEN l.id IS NULL OR l.quarantined OR l.quantity <= 0
                              OR (p.requires_expiry AND l.expiry_date IS NULL) THEN 'lot_barcode_unavailable' END,
-                   t.printed_total
+                   t.printed_total, l.received_at
             FROM target t JOIN products p ON (p.org_id, p.id) = ($1, t.product_id)
             JOIN store_prices sp ON (sp.org_id, sp.product_id) = (p.org_id, p.id)
             LEFT JOIN store_quantity_promotions promo ON (promo.org_id, promo.store_id, promo.product_id) =
@@ -64,7 +64,7 @@ internal sealed partial class PosService
             LEFT JOIN active_lot_markdowns markdown ON (markdown.org_id, markdown.store_id, markdown.product_id, markdown.lot_id) =
                                                        (l.org_id, l.store_id, l.product_id, l.id)
             WHERE sp.store_id = $2 AND sp.active
-            ORDER BY l.expiry_date, l.id LIMIT 100
+            ORDER BY (l.expiry_date IS NULL), l.expiry_date, l.received_at NULLS LAST, l.id LIMIT 100
             """, scope.Organization, scope.Store, barcode, scope.TimeZone, product, labelId, labelId != Guid.Empty, weighed);
         await using var rows = await command.ExecuteReaderAsync(ct);
         if (!await rows.ReadAsync(ct))
@@ -89,6 +89,7 @@ internal sealed partial class PosService
             if (!rows.IsDBNull(6))
                 lots.Add(new CatalogLot(rows.GetGuid(6), ReadDate(rows, 7), rows.GetDecimal(8))
                 {
+                    ReceivedAt = rows.IsDBNull(17) ? null : rows.GetDateTime(17),
                     MarkdownUnitPrice = rows.DecimalOrNull(13),
                     LotPriceVersion = rows.IsDBNull(14) ? null : rows.GetInt32(14)
                 });

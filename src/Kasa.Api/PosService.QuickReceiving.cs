@@ -99,6 +99,10 @@ internal sealed partial class PosService
         await LockInventoryMembership(db, tx, scope.Organization, ct, shared: true);
         foreach (var code in request.Items.SelectMany(i => i.Product.Barcodes).Select(b => b.Code).Distinct().Order(StringComparer.Ordinal))
             await LockOperation(db, tx, $"receiving_barcode:{scope.Organization}:{code}", ct);
+        foreach (var name in request.Items
+            .Select(i => System.Text.RegularExpressions.Regex.Replace(i.Product.Name.Trim().ToLowerInvariant(), @"\s+", " "))
+            .Distinct().Order(StringComparer.Ordinal))
+            await LockOperation(db, tx, $"receiving_name:{scope.Organization}:{store}:{name}", ct);
         await LockLotCreationProducts(db, tx, scope, request.Items.Select(i => i.ProductId), ct);
         foreach (var id in request.Items.Select(i => i.ProductId).Order())
             await LockProduct(db, tx, scope.Organization, id, true, ct);
@@ -108,6 +112,17 @@ internal sealed partial class PosService
             var old = await ReadProductCard(db, tx, scope, i.ProductId, ct);
             if (old is null ? i.ExpectedVersion != 0 : old.Version != i.ExpectedVersion || old.PriceVersion != i.ExpectedPriceVersion)
                 throw new PosError(409, "quick_receiving_product_changed");
+            if (old is null || !string.Equals(old.Name.Trim(), i.Product.Name.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                await using var duplicateName = db.Sql(tx, """
+                    SELECT 1 FROM products p JOIN store_prices sp ON (sp.org_id,sp.product_id) = (p.org_id,p.id)
+                    WHERE (sp.org_id,sp.store_id) = ($1,$2) AND sp.active AND p.id <> $4
+                      AND lower(regexp_replace(btrim(p.name), '\s+', ' ', 'g')) =
+                          lower(regexp_replace(btrim($3), '\s+', ' ', 'g')) LIMIT 1
+                    """, scope.Organization, store, i.Product.Name, i.ProductId);
+                if (await duplicateName.ExecuteScalarAsync(ct) is not null)
+                    throw new PosError(409, "receiving_existing_product_select");
+            }
             if (old is not null && !old.Active) throw new PosError(409, "receipt_product_not_available");
             var value = ValidateProductCard(i.ProductId, new WriteProductCard(i.ExpectedVersion, i.Product.Name, i.Product.Unit,
                 i.Product.RequiresExpiry, old?.Sku, i.Product.Category, i.Product.Brand, old?.SupplierRef, old?.TaxProfile,
@@ -133,10 +148,11 @@ internal sealed partial class PosService
         {
             decimal? total = i.UnitCost is {} cost ? decimal.Round(cost * i.Quantity, 2, MidpointRounding.AwayFromZero) : null;
             var inserted = await db.Run(tx, ct, """
-                INSERT INTO stock_lots (org_id,store_id,product_id,id,expiry_date,quantity,inventory_value)
-                VALUES ($1,$2,$3,$4,NULLIF($5,'')::date,$6,$7) ON CONFLICT DO NOTHING
+                INSERT INTO stock_lots (org_id,store_id,product_id,id,expiry_date,quantity,inventory_value,received_at)
+                VALUES ($1,$2,$3,$4,NULLIF($5,'')::date,$6,$7,$8) ON CONFLICT DO NOTHING
                 """, scope.Organization, store, i.ProductId, i.LotId,
-                i.ExpiryDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? "", i.Quantity, total);
+                i.ExpiryDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? "", i.Quantity, total,
+                result.PostedAt);
             if (inserted != 1) throw new PosError(409, "receipt_lot_conflict");
             await db.Run(tx, ct, """
                 INSERT INTO quick_receiving_lines
@@ -144,6 +160,14 @@ internal sealed partial class PosService
                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,'')::date)
                 """, scope.Organization, store, request.OperationId, i.ProductId, i.LotId, i.Quantity, i.UnitCost, total,
                 i.ManufacturedOn?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? "");
+            if (i.UnitCost is { } unitCost && total is { } totalCost)
+                await db.Run(tx, ct, """
+                    INSERT INTO stock_lot_purchase_price_history
+                        (org_id,store_id,product_id,lot_id,source_kind,source_id,quantity,unit_cost,total_cost,
+                         changed_at,changed_by,reason)
+                    VALUES ($1,$2,$3,$4,'quickReceiving',$5,$6,$7,$8,$9,$10,'quick_receiving')
+                    """, scope.Organization, store, i.ProductId, i.LotId, request.OperationId, i.Quantity,
+                    unitCost, totalCost, result.PostedAt, scope.Staff);
         }
         await Audit(db, tx, context, scope.Organization, store, Guid.Empty, scope.Staff,
             "receiving.quick_posted", request.OperationId, ct);

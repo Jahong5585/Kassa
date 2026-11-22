@@ -296,7 +296,9 @@ internal sealed partial class PosService
                        WHEN n.counted_revision = l.revision THEN kasa_weighted_cost_delta(l.inventory_value,
                            l.quantity + l.quarantine_quantity,
                            n.counted_stock + n.counted_quarantine - l.quantity - l.quarantine_quantity)
-                   END AS inventory_cost_delta
+                   END AS inventory_cost_delta, l.quantity, l.quarantine_quantity, l.expiry_date,
+                   CASE WHEN l.quantity + l.quarantine_quantity > 0
+                       THEN round(l.inventory_value / (l.quantity + l.quarantine_quantity), 2) END AS unit_cost
             FROM inventories i
             JOIN inventory_lines n ON (i.org_id, i.store_id, i.id) = (n.org_id, n.store_id, n.inventory_id)
             JOIN stock_lots l ON (n.org_id, n.store_id, n.product_id, n.lot_id) = (l.org_id, l.store_id, l.product_id, l.id)
@@ -323,10 +325,12 @@ internal sealed partial class PosService
             var currentRevision = rows.GetInt64(9);
             var revision = status == "posted" ? countRevision ?? currentRevision : currentRevision;
             lines.Add(new InventoryLine(rows.GetGuid(5), rows.GetGuid(6), rows.GetString(7), rows.GetString(8),
-                revision, blind ? null : countRevision, blind ? null : rows.DecimalOrNull(11),
-                blind ? null : rows.DecimalOrNull(12), blind ? null : rows.DecimalOrNull(13),
+                revision, blind ? null : countRevision, blind ? null : rows.DecimalOrNull(11) ?? rows.GetDecimal(20),
+                blind ? null : rows.DecimalOrNull(12) ?? rows.GetDecimal(21), blind ? null : rows.DecimalOrNull(13),
                 blind ? null : rows.DecimalOrNull(14))
             {
+                ExpiryDate = ReadDate(rows, 22),
+                UnitCost = blind ? null : rows.DecimalOrNull(23),
                 InventoryCostDelta = rows.DecimalOrNull(19),
                 CountStatus = selection is null ? null : countRevision switch
                 {

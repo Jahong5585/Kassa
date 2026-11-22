@@ -121,7 +121,8 @@ internal sealed partial class PosService
                 SELECT r.register_id FROM cashier_registers r
                 WHERE (r.org_id, r.store_id, r.staff_id) = (a.org_id, a.store_id, a.staff_id)
                 ORDER BY r.register_id
-            )
+            ), s.display_name, s.first_name, s.last_name, EXISTS(SELECT 1 FROM staff_store_roles r
+                WHERE (r.org_id,r.store_id,r.staff_id,r.role) = (a.org_id,a.store_id,a.staff_id,'owner'))
             FROM staff_stores a JOIN staff s ON (s.org_id, s.id) = (a.org_id, a.staff_id)
             WHERE (a.org_id, a.store_id) = ($1, $2) AND ($3 OR a.staff_id = $4)
             ORDER BY s.subject, s.id LIMIT 50 OFFSET $5
@@ -130,7 +131,9 @@ internal sealed partial class PosService
         List<StoreStaffAccess> result = [];
         while (await rows.ReadAsync(ct))
             result.Add(new StoreStaffAccess(rows.GetGuid(0), rows.GetString(1), rows.GetString(2),
-                rows.GetFieldValue<string[]>(3), rows.GetBoolean(4), rows.GetFieldValue<Guid[]>(5)));
+                rows.GetFieldValue<string[]>(3), rows.GetBoolean(4), rows.GetFieldValue<Guid[]>(5))
+            { DisplayName = rows.IsDBNull(6) ? null : rows.GetString(6), FirstName = rows.IsDBNull(7) ? null : rows.GetString(7),
+                LastName = rows.IsDBNull(8) ? null : rows.GetString(8), IsOwner = rows.GetBoolean(9) });
         return result;
     }
 }

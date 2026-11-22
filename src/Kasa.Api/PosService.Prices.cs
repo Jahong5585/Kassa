@@ -56,7 +56,7 @@ internal sealed partial class PosService
         var saved = await InsertPriceHistory(db, tx, scope, product, reason, ct);
         await Audit(db, tx, context, scope.Organization, scope.Store, Guid.Empty, scope.Staff,
             "product.price_changed", product, ct);
-        return saved;
+        return saved with { PreviousUnitPrice = current.UnitPrice };
     }
 
     private static async Task<ProductPrice> InsertPriceHistory(NpgsqlConnection db, NpgsqlTransaction tx, StoreScope scope,
@@ -76,9 +76,13 @@ internal sealed partial class PosService
         StoreScope scope, Guid product, int limit, int offset, CancellationToken ct)
     {
         await using var command = db.Sql(tx, """
-            SELECT version, unit_price, active, reason, changed_by, recorded_at
-            FROM store_price_history WHERE (org_id, store_id, product_id) = ($1, $2, $3)
-            ORDER BY version DESC LIMIT $4 OFFSET $5
+            WITH history AS (
+                SELECT version, unit_price, active, reason, changed_by, recorded_at,
+                       lag(unit_price) OVER (ORDER BY version) AS previous_unit_price
+                FROM store_price_history WHERE (org_id, store_id, product_id) = ($1, $2, $3)
+            )
+            SELECT version, unit_price, active, reason, changed_by, recorded_at, previous_unit_price
+            FROM history ORDER BY version DESC LIMIT $4 OFFSET $5
             """, scope.Organization, scope.Store, product, limit, offset);
         await using var rows = await command.ExecuteReaderAsync(ct);
         List<ProductPrice> result = [];
@@ -89,5 +93,6 @@ internal sealed partial class PosService
 
     private static ProductPrice ReadPriceRow(NpgsqlDataReader rows) =>
         new(rows.GetInt32(0), rows.DecimalOrNull(1), rows.GetBoolean(2), rows.GetString(3),
-            rows.IsDBNull(4) ? null : rows.GetGuid(4), rows.GetDateTime(5));
+            rows.IsDBNull(4) ? null : rows.GetGuid(4), rows.GetDateTime(5))
+        { PreviousUnitPrice = rows.FieldCount > 6 ? rows.DecimalOrNull(6) : null };
 }

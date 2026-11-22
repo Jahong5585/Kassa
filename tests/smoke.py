@@ -2717,7 +2717,8 @@ def check_store_audit():
     assert report["timeZone"] == "Asia/Tashkent" and report["storeId"] == store
     entries = report["items"]
     assert len(entries) == 3 and len({row["occurredAt"] for row in entries}) == 1
-    assert all(set(row) == {"id", "occurredAt", "action", "staffId", "objectId", "registerId", "requestId"} for row in entries)
+    assert all(set(row) == {"id", "occurredAt", "action", "staffId", "objectId", "registerId", "requestId",
+                            "staffName", "staffIsOwner"} for row in entries)
     assert all(row["registerId"] is None and row["action"] == "fixture.audit_tie" for row in entries)
     assert [row["id"] for row in entries] == sorted([row["id"] for row in entries], reverse=True)
     cursor = None

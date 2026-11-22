@@ -1148,6 +1148,10 @@ catalogApi.MapPut("/products/{id:guid}/price", async (Guid storeId, Guid id, Wri
 catalogApi.MapGet("/products/{id:guid}/price-history", async (Guid storeId, Guid id, int? offset, PosService pos,
     HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await pos.ListProductPrices(context, storeId, id, offset, ct))).WithName("ListProductPrices");
+catalogApi.MapGet("/products/{id:guid}/purchase-price-history", async (Guid storeId, Guid id, int? offset,
+    PosService pos, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await pos.ListPurchasePriceHistory(context, storeId, id, offset, ct)))
+    .WithName("ListPurchasePriceHistory");
 catalogApi.MapPost("/import", async (Guid storeId, ImportCatalog request, PosService pos, HttpContext context,
     CancellationToken ct) => TypedResults.Ok(await pos.ImportStoreCatalog(context, storeId, request, ct)))
     .WithName("ImportStoreCatalog");

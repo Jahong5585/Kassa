@@ -112,10 +112,12 @@ internal sealed partial class PosService
         {
             var expiry = item.ExpiryDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? "";
             await db.Run(tx, ct, """
-                INSERT INTO stock_lots (org_id, store_id, product_id, id, expiry_date, quantity, quarantine_quantity, inventory_value)
-                VALUES ($1, $2, $3, $4, NULLIF($5, '')::date, $6, $7, $8)
+                INSERT INTO stock_lots
+                    (org_id, store_id, product_id, id, expiry_date, quantity, quarantine_quantity,
+                     inventory_value, received_at)
+                VALUES ($1, $2, $3, $4, NULLIF($5, '')::date, $6, $7, $8, $9)
                 """, scope.Organization, store, item.ProductId, item.LotId, expiry, item.StockQuantity, item.QuarantineQuantity,
-                item.TotalCost);
+                item.TotalCost, postedAt!.Value);
             await RecordStockOperationLine(db, tx, scope, id,
                 new StockOperationLine(item.ProductId, item.LotId, 0, item.StockQuantity, 0, item.QuarantineQuantity)
                 { InventoryCostDelta = item.TotalCost }, ct);
@@ -123,6 +125,18 @@ internal sealed partial class PosService
                 INSERT INTO opening_stock_lines (org_id, store_id, operation_id, product_id, lot_id, expiry_date, total_cost)
                 VALUES ($1, $2, $3, $4, $5, NULLIF($6, '')::date, $7)
                 """, scope.Organization, store, id, item.ProductId, item.LotId, expiry, item.TotalCost);
+            if (item.TotalCost is { } totalCost)
+            {
+                var quantity = item.StockQuantity + item.QuarantineQuantity;
+                await db.Run(tx, ct, """
+                    INSERT INTO stock_lot_purchase_price_history
+                        (org_id,store_id,product_id,lot_id,source_kind,source_id,quantity,unit_cost,total_cost,
+                         changed_at,changed_by,reason)
+                    VALUES ($1,$2,$3,$4,'opening',$5,$6,$7,$8,$9,$10,$11)
+                    """, scope.Organization, store, item.ProductId, item.LotId, id, quantity,
+                    decimal.Round(totalCost / quantity, 2, MidpointRounding.AwayFromZero), totalCost,
+                    postedAt.Value, scope.Staff, reason);
+            }
         }
         await Audit(db, tx, context, scope.Organization, store, Guid.Empty, scope.Staff, "stock.opening_posted", id, ct);
         await tx.CommitAsync(ct);

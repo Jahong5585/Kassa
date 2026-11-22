@@ -140,6 +140,9 @@ if "$restore_check"; then
     [[ "$("${compose[@]}" exec -T db psql -XAt -U kasa_owner -d kasa -c "SELECT has_table_privilege('kasa_api','operating_expenses','SELECT,INSERT') AND has_column_privilege('kasa_api','operating_expenses','reversal_id','UPDATE');")" == "t" ]] || \
         { echo "Migration 042 runtime grants are incomplete" >&2; exit 1; }
     echo "PASS: migration 042 upgrade and rollback preserve existing organizations, stores, staff, products and sales"
+    "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < db/rollback/045_stock_lot_receipt_history.down.sql
+    [[ "$("${compose[@]}" exec -T db psql -XAt -U kasa_owner -d kasa -c "SELECT NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='stock_lots' AND column_name='received_at') AND to_regclass('public.stock_lot_purchase_price_history') IS NULL;")" == "t" ]] || \
+        { echo "Migration 045 rollback left receipt history objects behind" >&2; exit 1; }
     "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < db/rollback/044_quick_receiving.down.sql
     [[ "$("${compose[@]}" exec -T db psql -XAt -U kasa_owner -d kasa -c "SELECT to_regclass('public.quick_receivings') IS NULL AND to_regclass('public.quick_receiving_lines') IS NULL;")" == "t" ]] || \
         { echo "Migration 044 rollback left quick receiving tables behind" >&2; exit 1; }
@@ -147,6 +150,10 @@ if "$restore_check"; then
     [[ "$("${compose[@]}" exec -T db psql -XAt -U kasa_owner -d kasa -c "SELECT has_table_privilege('kasa_api','quick_receivings','SELECT,INSERT') AND has_table_privilege('kasa_api','quick_receiving_lines','SELECT,INSERT');")" == "t" ]] || \
         { echo "Migration 044 runtime grants are incomplete" >&2; exit 1; }
     echo "PASS: migration 044 applies, rolls back cleanly before use, and restores runtime grants"
+    "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < db/045_stock_lot_receipt_history.sql
+    [[ "$("${compose[@]}" exec -T db psql -XAt -U kasa_owner -d kasa -c "SELECT has_table_privilege('kasa_api','stock_lot_purchase_price_history','SELECT,INSERT') AND EXISTS (SELECT 1 FROM stock_lots WHERE received_at IS NULL);")" == "t" ]] || \
+        { echo "Migration 045 grants are incomplete or unknown legacy receipt dates were overwritten" >&2; exit 1; }
+    echo "PASS: migration 045 restores known receipt dates, preserves unknown dates as NULL, and rolls back cleanly"
 fi
 "$dotnet_command" build src/Kasa.Api/Kasa.Api.csproj -c Release -warnaserror -p:RestoreLockedMode=true
 "$dotnet_command" test tests/Kasa.Api.Tests/Kasa.Api.Tests.csproj -c Release -warnaserror -p:RestoreLockedMode=true
@@ -207,7 +214,7 @@ if ! "$promotion_check" && ! "$lot_retail_check" && ! "$label_check"; then
         cat "$logs" >&2
         exit 1
     fi
-    if ! "$python_command" tests/quick_receiving_api.py; then
+    if ! "$python_command" tests/stock_inventory_audit_api.py; then
         cat "$logs" >&2
         exit 1
     fi

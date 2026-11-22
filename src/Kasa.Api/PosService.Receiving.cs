@@ -221,6 +221,7 @@ internal sealed partial class PosService
         if (to is "submitted" or "posted")
             await RequireVerifiedInvoiceFiles(db, tx, scope, id, ct);
 
+        var transitionAt = DateTime.UtcNow;
         if (to == "posted")
         {
             await LockLotCreationProducts(db, tx, scope, document.Items.Select(item => item.ProductId), ct);
@@ -231,16 +232,17 @@ internal sealed partial class PosService
                 await ApplyOrderReceipt(db, tx, scope, orderId, document.Items, ct);
             var costByLot = costs?.Lines.ToDictionary(line => (line.ProductId, line.LotId), line => line.Total);
             foreach (var item in document.Items)
-                await ReceiveLot(db, tx, scope, id, item, costByLot?[(item.ProductId, item.LotId)], ct);
+                await ReceiveLot(db, tx, scope, id, item, costByLot?[(item.ProductId, item.LotId)], transitionAt,
+                    document.SupplierRef + " / " + document.InvoiceNumber, ct);
             await RecordPostedCosts(db, tx, scope, costs, ct);
         }
 
         await db.Run(tx, ct, """
             UPDATE receiving_documents SET status = $4, version = version + 1, review_note = NULLIF($5, ''),
                 posted_by = CASE WHEN $4 = 'posted' THEN $6 ELSE NULL END,
-                posted_at = CASE WHEN $4 = 'posted' THEN statement_timestamp() ELSE NULL END
+                posted_at = CASE WHEN $4 = 'posted' THEN $7 ELSE NULL END
             WHERE (org_id, store_id, id) = ($1, $2, $3)
-            """, scope.Organization, store, id, to, reviewNote, scope.Staff);
+            """, scope.Organization, store, id, to, reviewNote, scope.Staff, transitionAt);
         var action = to == "draft" ? "receipt.returned_for_review" : "receipt." + to;
         await Audit(db, tx, context, scope.Organization, store, Guid.Empty, scope.Staff, action, id, ct);
         var result = await ReadReceipt(db, tx, scope, id, ct)
@@ -308,12 +310,13 @@ internal sealed partial class PosService
     }
 
     private static async Task ReceiveLot(NpgsqlConnection db, NpgsqlTransaction tx, StoreScope scope, Guid id,
-        ReceiptItem item, decimal? cost, CancellationToken ct)
+        ReceiptItem item, decimal? cost, DateTime receivedAt, string reason, CancellationToken ct)
     {
         var expiry = item.ExpiryDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? "";
         var inserted = await db.Run(tx, ct, """
-            INSERT INTO stock_lots (org_id, store_id, product_id, id, expiry_date, quantity, inventory_value)
-            VALUES ($1, $2, $3, $4, NULLIF($5, '')::date, $6, $8)
+            INSERT INTO stock_lots
+                (org_id, store_id, product_id, id, expiry_date, quantity, inventory_value, received_at)
+            VALUES ($1, $2, $3, $4, NULLIF($5, '')::date, $6, $8, $9)
             ON CONFLICT (org_id, store_id, product_id, id) DO UPDATE
             SET quantity = stock_lots.quantity + EXCLUDED.quantity,
                 inventory_value = kasa_stock_value_after(stock_lots.inventory_value,
@@ -321,13 +324,23 @@ internal sealed partial class PosService
                     stock_lots.quantity + stock_lots.quarantine_quantity + EXCLUDED.quantity, EXCLUDED.inventory_value)
             WHERE stock_lots.expiry_date IS NOT DISTINCT FROM EXCLUDED.expiry_date
               AND NOT stock_lots.quarantined AND stock_lots.quantity + EXCLUDED.quantity <= $7
-            """, scope.Organization, scope.Store, item.ProductId, item.LotId, expiry, item.Quantity, MaxQuantity, cost);
+            """, scope.Organization, scope.Store, item.ProductId, item.LotId, expiry, item.Quantity, MaxQuantity, cost,
+            receivedAt);
         if (inserted != 1)
             throw new PosError(409, "receipt_lot_conflict");
         await db.Run(tx, ct, """
             INSERT INTO receiving_movements (org_id, store_id, receipt_id, product_id, lot_id, quantity)
             VALUES ($1, $2, $3, $4, $5, $6)
             """, scope.Organization, scope.Store, id, item.ProductId, item.LotId, item.Quantity);
+        if (cost is { } totalCost)
+            await db.Run(tx, ct, """
+                INSERT INTO stock_lot_purchase_price_history
+                    (org_id,store_id,product_id,lot_id,source_kind,source_id,quantity,unit_cost,total_cost,
+                     changed_at,changed_by,reason)
+                VALUES ($1,$2,$3,$4,'receipt',$5,$6,$7,$8,$9,$10,$11)
+                """, scope.Organization, scope.Store, item.ProductId, item.LotId, id, item.Quantity,
+                decimal.Round(totalCost / item.Quantity, 2, MidpointRounding.AwayFromZero), totalCost,
+                receivedAt, scope.Staff, reason);
     }
 
     private static async Task<ReceivingDocument?> ReadReceipt(NpgsqlConnection db, NpgsqlTransaction tx,

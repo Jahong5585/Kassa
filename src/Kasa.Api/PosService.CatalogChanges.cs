@@ -90,28 +90,29 @@ internal sealed partial class PosService
                         codes[rows.GetGuid(0)].Add(new ProductBarcode(rows.GetString(1), rows.GetDecimal(2)));
 
                 await using (var command = db.Sql(tx, """
-                    SELECT p.id, l.id, l.expiry_date, l.quantity, markdown.unit_price, markdown.version
+                    SELECT p.id, l.id, l.expiry_date, l.quantity, l.received_at, markdown.unit_price, markdown.version
                     FROM products p
                     JOIN LATERAL (
-                        SELECT sl.id, sl.expiry_date, sl.quantity FROM stock_lots sl
+                        SELECT sl.id, sl.expiry_date, sl.quantity, sl.received_at FROM stock_lots sl
                         WHERE (sl.org_id, sl.store_id, sl.product_id) = (p.org_id, $2, p.id)
                           AND NOT sl.quarantined AND sl.quantity > 0
                           AND (NOT p.requires_expiry OR sl.expiry_date IS NOT NULL)
                           AND (sl.expiry_date IS NULL OR sl.expiry_date >= (now() AT TIME ZONE $4)::date)
-                        ORDER BY sl.expiry_date, sl.id LIMIT 100
+                        ORDER BY (sl.expiry_date IS NULL), sl.expiry_date, sl.received_at NULLS LAST, sl.id LIMIT 100
                     ) l ON true
                     LEFT JOIN active_lot_markdowns markdown ON
                         (markdown.org_id, markdown.store_id, markdown.product_id, markdown.lot_id) =
                         (p.org_id, $2, p.id, l.id)
                     WHERE p.org_id = $1 AND p.id = ANY($3)
-                    ORDER BY p.id, l.expiry_date, l.id
+                    ORDER BY p.id, (l.expiry_date IS NULL), l.expiry_date, l.received_at NULLS LAST, l.id
                     """, scope.Organization, scope.Store, activeIds, scope.TimeZone))
                 await using (var rows = await command.ExecuteReaderAsync(ct))
                     while (await rows.ReadAsync(ct))
                         lots[rows.GetGuid(0)].Add(new CatalogLot(rows.GetGuid(1), ReadDate(rows, 2), rows.GetDecimal(3))
                         {
-                            MarkdownUnitPrice = rows.DecimalOrNull(4),
-                            LotPriceVersion = rows.IsDBNull(5) ? null : rows.GetInt32(5)
+                            ReceivedAt = rows.IsDBNull(4) ? null : rows.GetDateTime(4),
+                            MarkdownUnitPrice = rows.DecimalOrNull(5),
+                            LotPriceVersion = rows.IsDBNull(6) ? null : rows.GetInt32(6)
                         });
             }
         }

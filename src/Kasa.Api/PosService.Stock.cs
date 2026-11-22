@@ -13,19 +13,20 @@ internal sealed partial class PosService
         var scope = await Access.RequireStore(db, tx, context, configuration, store, true, ct);
         await using var command = db.Sql(tx, """
             SELECT l.product_id, l.id, p.name, coalesce(p.barcode, '') AS barcode, p.unit, l.expiry_date, l.quantity, l.quarantine_quantity,
-                   CASE WHEN sp.active AND NOT l.quarantined AND (NOT p.requires_expiry OR l.expiry_date IS NOT NULL)
+                   CASE WHEN sp.active AND sp.unit_price IS NOT NULL AND NOT l.quarantined AND (NOT p.requires_expiry OR l.expiry_date IS NOT NULL)
                              AND (l.expiry_date IS NULL OR l.expiry_date >= (statement_timestamp() AT TIME ZONE $3)::date)
-                        THEN l.quantity ELSE 0 END, l.revision, p.requires_expiry
+                        THEN l.quantity ELSE 0 END, l.revision, p.requires_expiry, l.received_at, l.inventory_value
             FROM stock_lots l
             JOIN products p ON (p.org_id, p.id) = (l.org_id, l.product_id)
             JOIN store_prices sp ON (sp.org_id, sp.store_id, sp.product_id) = (l.org_id, l.store_id, l.product_id)
             WHERE (l.org_id, l.store_id) = ($1, $2) AND ($4 OR l.product_id = $5)
-            ORDER BY p.name, l.product_id, l.expiry_date, l.id LIMIT 50 OFFSET $6
+            ORDER BY p.name, l.product_id, (l.expiry_date IS NULL), l.expiry_date,
+                     l.received_at NULLS LAST, l.id LIMIT 50 OFFSET $6
             """, scope.Organization, store, scope.TimeZone, product is null, product ?? Guid.Empty, offset ?? 0);
         await using var rows = await command.ExecuteReaderAsync(ct);
         List<StockLot> lots = [];
         while (await rows.ReadAsync(ct))
-            lots.Add(ReadStockLot(rows));
+            lots.Add(ReadStockLot(rows) with { InventoryValue = rows.DecimalOrNull(12) });
         return lots;
     }
 
@@ -206,7 +207,7 @@ internal sealed partial class PosService
     {
         await using var command = db.Sql(tx, """
             SELECT l.product_id, l.id, p.name, coalesce(p.barcode, '') AS barcode, p.unit, l.expiry_date, l.quantity, l.quarantine_quantity,
-                   0::numeric, l.revision, p.requires_expiry
+                   0::numeric, l.revision, p.requires_expiry, l.received_at
             FROM stock_lots l JOIN products p ON (p.org_id, p.id) = (l.org_id, l.product_id)
             WHERE (l.org_id, l.store_id, l.product_id, l.id) = ($1, $2, $3, $4)
             FOR UPDATE OF l
@@ -217,7 +218,8 @@ internal sealed partial class PosService
 
     private static StockLot ReadStockLot(NpgsqlDataReader rows) =>
         new(rows.GetGuid(0), rows.GetGuid(1), rows.GetString(2), rows.GetString(3), rows.GetString(4), ReadDate(rows, 5),
-            rows.GetDecimal(6), rows.GetDecimal(7), rows.GetDecimal(8), rows.GetInt64(9), rows.GetBoolean(10));
+            rows.GetDecimal(6), rows.GetDecimal(7), rows.GetDecimal(8), rows.GetInt64(9), rows.GetBoolean(10))
+        { ReceivedAt = rows.IsDBNull(11) ? null : rows.GetDateTime(11) };
 
     private static DateOnly? ReadDate(NpgsqlDataReader rows, int index) =>
         rows.IsDBNull(index) ? null : rows.GetFieldValue<DateOnly>(index);
