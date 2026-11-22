@@ -4,7 +4,10 @@ namespace Kasa.Api;
 
 public sealed record CatalogSnapshotItem(CatalogProduct Product, IReadOnlyList<ProductBarcode> Barcodes);
 public sealed record CatalogSnapshotPage(Guid StoreId, DateTimeOffset GeneratedAt,
-    IReadOnlyList<CatalogSnapshotItem> Items, Guid? NextAfter);
+    IReadOnlyList<CatalogSnapshotItem> Items, Guid? NextAfter)
+{
+    public long ChangeCursor { get; init; }
+}
 
 internal sealed partial class PosService
 {
@@ -17,6 +20,12 @@ internal sealed partial class PosService
         await using var db = await source.OpenConnectionAsync(ct);
         await using var tx = await db.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead, ct);
         var scope = await Access.RequireCashier(db, tx, context, false, ct);
+        long changeCursor;
+        await using (var cursorCommand = db.Sql(tx, """
+            SELECT coalesce(max(cursor_id), 0) FROM catalog_change_feed
+            WHERE (org_id, store_id) = ($1, $2)
+            """, scope.Organization, scope.Store))
+            changeCursor = Convert.ToInt64(await cursorCommand.ExecuteScalarAsync(ct));
         const int pageSize = 50;
         var cards = new List<CatalogProduct>();
         var lots = new Dictionary<Guid, List<CatalogLot>>();
@@ -85,6 +94,7 @@ internal sealed partial class PosService
         }
         return new CatalogSnapshotPage(scope.Store, DateTimeOffset.UtcNow,
             cards.Select(card => new CatalogSnapshotItem(card, codes[card.ProductId])).ToArray(),
-            more ? cards[^1].ProductId : null);
+            more ? cards[^1].ProductId : null)
+        { ChangeCursor = changeCursor };
     }
 }

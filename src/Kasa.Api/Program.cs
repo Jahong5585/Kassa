@@ -794,6 +794,10 @@ api.MapGet("/catalog/search", async (string q, int? offset, PosService pos, Http
 api.MapGet("/catalog/snapshot", async (Guid? after, PosService pos, HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await pos.GetCashierCatalogSnapshot(context, after, ct))).WithName("ReadCatalogSnapshot")
     .WithDescription("Returns one cursor page of the active priced catalogue for Desktop preloading; barcode lookup remains authoritative for checkout.");
+api.MapGet("/catalog/changes", async (long? cursor, int? limit, PosService pos, HttpContext context,
+    CancellationToken ct) =>
+    TypedResults.Ok(await pos.GetCashierCatalogChanges(context, cursor, limit, ct))).WithName("ReadCatalogChanges")
+    .WithDescription("Returns ordered catalogue changes after the durable cursor. HTTP 410 catalog_cursor_invalid requires a new snapshot.");
 api.MapGet("/catalog/products/{id:guid}", async (Guid id, PosService pos, HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await pos.GetProductById(context, id, ct))).WithName("ReadCashierProduct");
 var checkoutShifts = api.MapGroup("/shifts/{shiftId:guid}");
@@ -1007,6 +1011,14 @@ stockoutDays.MapPut("/{day}", async (Guid storeId, Guid productId, DateOnly day,
 procurement.MapGet("/suppliers/{code}/prices", async (Guid storeId, string code, DateOnly? asOf, int? offset,
     PosService pos, HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await pos.ListSupplierPrices(context, storeId, code, asOf, offset, ct))).WithName("ListSupplierPrices");
+procurement.MapGet("/suppliers/{code}/products/{productId:guid}/price-template", async (Guid storeId, string code,
+    Guid productId, PosService pos, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await pos.GetSupplierProductPriceTemplate(context, storeId, code, productId, ct)))
+    .WithName("ReadSupplierProductPriceTemplate");
+procurement.MapGet("/suppliers/{code}/price-options", async (Guid storeId, string code, Guid? productId, int? offset,
+    PosService pos, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await pos.ListSupplierProductPriceOptions(context, storeId, code, productId, offset, ct)))
+    .WithName("ListSupplierProductPriceOptions");
 procurement.MapGet("/suppliers/{code}/prices/{sku}", async (Guid storeId, string code, string sku, int? offset,
     PosService pos, HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await pos.GetSupplierPriceHistory(context, storeId, code, sku, offset, ct))).WithName("SupplierPriceHistory");

@@ -139,6 +139,7 @@ def check_catalog_snapshot():
     """)
     snapshot = request(route, staff="cashier-a")
     assert snapshot["storeId"] == fixture_id(11) and snapshot["generatedAt"]
+    assert isinstance(snapshot["changeCursor"], int) and snapshot["changeCursor"] > 0
     assert "nextAfter" in snapshot and len(snapshot["items"]) <= 50
     by_id = {item["product"]["productId"]: item for item in snapshot["items"]}
     item = by_id[fixture_id(41)]
@@ -163,7 +164,33 @@ def check_catalog_snapshot():
     assert pages[-1]["nextAfter"] is None
     invalid = request(route + "?after=" + fixture_id(0), staff="cashier-a", expected=400)
     assert invalid["code"] == "invalid_catalog_cursor"
-    print("PASS: Desktop catalogue snapshot loads 50-item pages without gaps or duplicates and preserves lots")
+
+    cursor = snapshot["changeCursor"]
+    sql(f"""
+        UPDATE store_prices SET unit_price = unit_price + 1
+        WHERE (org_id, store_id, product_id) =
+              ('{fixture_id(1)}', '{fixture_id(11)}', '{fixture_id(41)}');
+    """)
+    changed = request(route.replace("snapshot", "changes") + f"?cursor={cursor}", staff="cashier-a")
+    assert changed["cursor"] > cursor and changed["items"]
+    assert changed["items"][0]["product"]["productId"] == fixture_id(41)
+    cursor = changed["cursor"]
+    sql(f"""
+        UPDATE store_prices SET active = false
+        WHERE (org_id, store_id, product_id) =
+              ('{fixture_id(1)}', '{fixture_id(11)}', '{fixture_id(41)}');
+    """)
+    removed = request(route.replace("snapshot", "changes") + f"?cursor={cursor}", staff="cashier-a")
+    assert removed["removedProductIds"] == [fixture_id(41)] and removed["items"] == []
+    sql(f"""
+        UPDATE store_prices SET active = true, unit_price = unit_price - 1
+        WHERE (org_id, store_id, product_id) =
+              ('{fixture_id(1)}', '{fixture_id(11)}', '{fixture_id(41)}');
+    """)
+    expired = request(route.replace("snapshot", "changes") + "?cursor=9223372036854775807",
+                      staff="cashier-a", expected=410)
+    assert expired["code"] == "catalog_cursor_invalid"
+    print("PASS: Desktop catalogue snapshot and durable change cursor preserve pages, updates and removals")
 
 
 def check_expiry_category():

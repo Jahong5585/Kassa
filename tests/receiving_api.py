@@ -143,6 +143,19 @@ def main():
                             session=session, role="receiver")
     assert reopened_product["shelfLifeDays"] == 180 and reopened_product["brand"] == "Pepsi"
 
+    supplier_price = {"expectedVersion": 0, "productId": product_id, "packageUnit": "box",
+                      "unitsPerPackage": 12, "packagePrice": 66000,
+                      "validFrom": date.today().isoformat(), "validThrough": None}
+    call(f"/v1/stores/{STORE}/procurement/suppliers/DEMO/prices/PEPSI-BOX", supplier_price,
+         method="PUT", session=session, role="admin")
+    template = call(f"/v1/stores/{STORE}/procurement/suppliers/DEMO/products/{product_id}/price-template",
+                    session=session, role="receiver")
+    assert template["productId"] == product_id and template["shelfLifeDays"] == 180
+    assert template["options"][0]["packageUnit"] == "box"
+    options = call(f"/v1/stores/{STORE}/procurement/suppliers/DEMO/price-options?productId={product_id}&offset=0",
+                   session=session, role="receiver")
+    assert options == template["options"] and options[0]["packagePrice"] == 66000
+
     receipt_id = str(uuid.uuid4())
     lot_id = str(uuid.uuid4())
     made = date.today() - timedelta(days=10)
