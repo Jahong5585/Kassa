@@ -9,14 +9,18 @@ namespace Kasa.Api;
 internal sealed class ProcurementExplainer(HttpClient client, IConfiguration configuration,
     ILogger<ProcurementExplainer> logger)
 {
-    private const string Model = "openai/gpt-oss-20b";
+    private const string DefaultModel = "openai/gpt-oss-20b";
 
     public async Task<ReplenishmentExplanation> Explain(ReplenishmentRecommendation recommendation, string language,
         CancellationToken ct)
     {
-        var key = configuration["GROQ_API_KEY"]?.Trim();
+        var provider = (configuration["Ai:Provider"] ?? "groq").Trim().ToLowerInvariant();
+        var key = configuration[provider == "openrouter" ? "OPENROUTER_API_KEY" : "GROQ_API_KEY"]?.Trim();
         if (!configuration.GetValue<bool>("Ai:ProcurementEnabled") || string.IsNullOrEmpty(key))
             throw new PosError(503, "procurement_ai_disabled");
+        var model = configuration["Ai:Model"]?.Trim();
+        if (string.IsNullOrEmpty(model))
+            model = DefaultModel;
 
         var projection = recommendation.Projection;
         // Only send fixed categories and flags. The actual quantities, dates, and identifiers stay on the POS server.
@@ -42,32 +46,42 @@ internal sealed class ProcurementExplainer(HttpClient client, IConfiguration con
             packageRounding = projection is not null && recommendation.SuggestedQuantity > projection.UnroundedQuantity
         });
 
+        var payload = new Dictionary<string, object?>
+        {
+            ["model"] = model,
+            ["messages"] = new[]
+            {
+                new
+                {
+                    role = "system",
+                    content = $"""
+                        Explain the POS replenishment result in {language} in two short plain-text sentences.
+                        Use only the supplied facts. The POS already calculated the decision.
+                        Explain the main factor and mention uncertainty or shortage when present.
+                        If the decision is unavailable, explain the missing data. If demand was estimated manually,
+                        treat it as an estimate. Never give numbers, dates, prices, new quantities, or an order command.
+                        """
+                },
+                new { role = "user", content = facts }
+            },
+            ["reasoning_effort"] = "low",
+            ["max_completion_tokens"] = 320
+        };
+        if (provider == "groq")
+            payload["include_reasoning"] = false;
+
         using var request = new HttpRequestMessage(HttpMethod.Post, "chat/completions")
         {
-            Content = new StringContent(JsonSerializer.Serialize(new
-            {
-                model = Model,
-                messages = new[]
-                {
-                    new
-                    {
-                        role = "system",
-                        content = $"""
-                            Explain the POS replenishment result in {language} in two short plain-text sentences.
-                            Use only the supplied facts. The POS already calculated the decision.
-                            Explain the main factor and mention uncertainty or shortage when present.
-                            If the decision is unavailable, explain the missing data. If demand was estimated manually,
-                            treat it as an estimate. Never give numbers, dates, prices, new quantities, or an order command.
-                            """
-                    },
-                    new { role = "user", content = facts }
-                },
-                reasoning_effort = "low",
-                include_reasoning = false,
-                max_completion_tokens = 320
-            }), Encoding.UTF8, "application/json")
+            Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
         };
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
+        if (provider == "openrouter")
+        {
+            request.Headers.TryAddWithoutValidation("HTTP-Referer",
+                configuration["Ai:OpenRouterReferer"]?.Trim() ?? "https://kassa.qr-space.uz");
+            request.Headers.TryAddWithoutValidation("X-Title",
+                configuration["Ai:OpenRouterTitle"]?.Trim() ?? "Kassa Minimarket");
+        }
 
         try
         {

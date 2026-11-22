@@ -52,7 +52,11 @@ export Refunds__CashierLimit=20000
 export Sales__MaxManualDiscountPercent=10
 export Purchasing__ReplenishmentRefreshSeconds=1
 export Ai__ProcurementEnabled=true
-export GROQ_API_KEY=test-groq-key
+export Ai__Provider=openrouter
+export Ai__Model=openai/gpt-oss-20b
+export Ai__OpenRouterReferer=https://kassa.qr-space.uz
+export Ai__OpenRouterTitle="Kassa Minimarket"
+export OPENROUTER_API_KEY=test-openrouter-key
 export RateLimiting__PermitLimit=2000
 export ASPNETCORE_ENVIRONMENT=Development
 export ASPNETCORE_URLS="http://127.0.0.1:$api_port"
@@ -98,8 +102,8 @@ for ((i=0; i<100; i++)); do
 done
 groq_port="$(cat "$groq_port_file")"
 [[ "$groq_port" =~ ^[0-9]+$ ]] || { echo "Groq fixture failed to start" >&2; exit 1; }
-export Ai__Endpoint="http://127.0.0.1:$groq_port/openai/v1/"
-export GROQ_TEST_URL="http://127.0.0.1:$groq_port"
+export Ai__Endpoint="http://127.0.0.1:$groq_port/api/v1/"
+export AI_TEST_URL="http://127.0.0.1:$groq_port"
 "$python_command" tests/keycloak_admin_stub.py "$keycloak_port_file" &
 keycloak_pid=$!
 for ((i=0; i<100; i++)); do
@@ -168,6 +172,15 @@ if env ASPNETCORE_ENVIRONMENT=Development ASPNETCORE_URLS="http://0.0.0.0:$((api
     echo "Local test mode unexpectedly started on a non-loopback address" >&2; exit 1
 fi
 grep -q "only on an explicit 127.0.0.1" "$guard_log" || { cat "$guard_log" >&2; exit 1; }
+if env -u Auth__DevelopmentKey ASPNETCORE_ENVIRONMENT=Production \
+    Auth__AllowLocalTestDeveloper=false Auth__Authority=https://identity.example.invalid/realms/kasa \
+    Auth__AllowTemporaryPlatformDeveloperMfaOnly=false Ai__Provider=openrouter \
+    IdentityProvisioning__Enabled=false \
+    Ai__Endpoint=https://example.invalid/api/v1/ \
+    "$dotnet_command" src/Kasa.Api/bin/Release/net10.0/Kasa.Api.dll >"$guard_log" 2>&1; then
+    echo "OpenRouter configuration unexpectedly accepted an unapproved production host" >&2; exit 1
+fi
+grep -q "HTTPS on openrouter.ai" "$guard_log" || { cat "$guard_log" >&2; exit 1; }
 rm -f "$guard_log"
 env 'Ai__ProcurementAccess__00000000-0000-0000-0000-000000000001__00000000-0000-0000-0000-000000000011__00000000-0000-0000-0000-000000000036=true' \
     'Ai__ProcurementAccess__00000000-0000-0000-0000-000000000001__00000000-0000-0000-0000-000000000011__00000000-0000-0000-0000-000000003046=true' \

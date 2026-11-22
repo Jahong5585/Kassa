@@ -29,7 +29,7 @@ BASE = os.environ["POS_TEST_URL"]
 KEY = os.environ["POS_TEST_REGISTER_KEY"]
 JWT_KEY = os.environ["Auth__DevelopmentKey"].encode()
 AUDIENCE = os.environ["Auth__Audience"]
-GROQ_TEST_URL = os.environ["GROQ_TEST_URL"]
+AI_TEST_URL = os.environ["AI_TEST_URL"]
 
 
 def fixture_id(n):
@@ -78,12 +78,12 @@ def request(path, body=None, staff="cashier-a", register=21, key=KEY, expected=2
 
 
 def groq_calls():
-    with urllib.request.urlopen(GROQ_TEST_URL + "/calls", timeout=2) as response:
+    with urllib.request.urlopen(AI_TEST_URL + "/calls", timeout=2) as response:
         return json.load(response)["calls"]
 
 
 def set_groq_mode(mode):
-    call = urllib.request.Request(GROQ_TEST_URL + "/mode/" + mode, data=b"", method="POST")
+    call = urllib.request.Request(AI_TEST_URL + "/mode/" + mode, data=b"", method="POST")
     with urllib.request.urlopen(call, timeout=2) as response:
         assert response.status == 200
 

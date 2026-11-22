@@ -36,11 +36,31 @@ var identityProvisioning = IdentityProvisioningOptions.Read(configuration, devel
 
 var connectionString = configuration.GetConnectionString("Pos")
     ?? throw new InvalidOperationException("Configure ConnectionStrings:Pos.");
-var procurementAiEndpoint = configuration["Ai:Endpoint"] ?? "https://api.groq.com/openai/v1/";
+var procurementAiProvider = (configuration["Ai:Provider"] ?? "groq").Trim().ToLowerInvariant();
+if (procurementAiProvider is not ("groq" or "openrouter"))
+    throw new InvalidOperationException("Configure Ai:Provider as groq or openrouter.");
+var procurementAiEndpoint = configuration["Ai:Endpoint"] ?? (procurementAiProvider == "openrouter"
+    ? "https://openrouter.ai/api/v1/"
+    : "https://api.groq.com/openai/v1/");
+var procurementAiHost = procurementAiProvider == "openrouter" ? "openrouter.ai" : "api.groq.com";
 if (!Uri.TryCreate(procurementAiEndpoint, UriKind.Absolute, out var procurementAiUri) ||
     procurementAiUri.Scheme is not ("http" or "https") ||
-    (!development && (procurementAiUri.Scheme != "https" || procurementAiUri.Host != "api.groq.com")))
-    throw new InvalidOperationException("Configure Ai:Endpoint as Groq HTTPS. Local HTTP is development-only.");
+    !string.IsNullOrEmpty(procurementAiUri.UserInfo) ||
+    (!development && (procurementAiUri.Scheme != "https" ||
+                      !string.Equals(procurementAiUri.Host, procurementAiHost, StringComparison.OrdinalIgnoreCase))))
+    throw new InvalidOperationException(
+        $"Configure Ai:Endpoint as HTTPS on {procurementAiHost}. Local HTTP is development-only.");
+if (procurementAiProvider == "openrouter")
+{
+    var openRouterReferer = configuration["Ai:OpenRouterReferer"] ?? "https://kassa.qr-space.uz";
+    var openRouterTitle = configuration["Ai:OpenRouterTitle"] ?? "Kassa Minimarket";
+    if (!Uri.TryCreate(openRouterReferer, UriKind.Absolute, out var refererUri) ||
+        refererUri.Scheme != "https" || !string.IsNullOrEmpty(refererUri.UserInfo))
+        throw new InvalidOperationException("Configure Ai:OpenRouterReferer as an HTTPS URL without credentials.");
+    if (string.IsNullOrWhiteSpace(openRouterTitle) || openRouterTitle.Length > 100 ||
+        openRouterTitle.IndexOfAny(['\r', '\n']) >= 0)
+        throw new InvalidOperationException("Configure Ai:OpenRouterTitle as a single line of at most 100 characters.");
+}
 builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString));
 builder.Services.AddSingleton(localTestMode);
 builder.Services.AddSingleton(temporaryPlatformDeveloper);

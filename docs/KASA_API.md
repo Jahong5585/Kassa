@@ -285,7 +285,7 @@ UUID в путях передаются без фигурных скобок. К
 | `GET /v1/stores/{storeId}/procurement/suppliers/{code}/credit-transfers/{id}` | `ReadSupplierCreditTransfer` | — | 200 JSON |
 | `POST /v1/stores/{storeId}/procurement/suppliers/{code}/credit-transfers/{id}/reverse` | `ReverseSupplierCreditTransfer` | `ReverseSupplierCreditTransfer` | 200 JSON |
 
-`ExplainPurchaseRecommendation` принимает JWT администратора назначенной точки и пустое тело. Дополнительно требуется разрешение `Ai:ProcurementAccess:<organizationId>:<storeId>:<staffId>`. При отсутствии разрешения API возвращает `403 procurement_ai_access_denied`. Параметр `language` принимает `ru` (по умолчанию) или `uz` (латиница). Маршрут считает рекомендацию по сохранённым настройкам выбранного магазина. Отображайте `explanation` как обычный текст. Дата и объём заказа относятся к версии расчёта с указанными `calculatedAt` и `policyVersion`.
+`ExplainPurchaseRecommendation` принимает JWT администратора назначенной точки и пустое тело. Дополнительно требуется разрешение `Ai:ProcurementAccess:<organizationId>:<storeId>:<staffId>`. При отсутствии разрешения API возвращает `403 procurement_ai_access_denied`. Параметр `language` принимает `ru` (по умолчанию) или `uz` (латиница). Маршрут считает рекомендацию по сохранённым настройкам выбранного магазина. Отображайте `explanation` как обычный текст. Дата и объём заказа относятся к версии расчёта с указанными `calculatedAt` и `policyVersion`. ИИ-провайдер настраивается только на сервере (`Ai:Provider`, `Ai:Endpoint`, `Ai:Model`); ключ провайдера клиенту не передаётся.
 
 ```json
 {

@@ -1,4 +1,4 @@
-"""Strict local Groq double for procurement AI integration tests."""
+"""Strict local OpenAI-compatible provider double for procurement AI tests."""
 import json
 import socketserver
 import sys
@@ -21,7 +21,7 @@ class State:
     lock = threading.Lock()
 
 
-class GroqStub(BaseHTTPRequestHandler):
+class AiProviderStub(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path != "/calls":
             self.send_error(404)
@@ -40,11 +40,17 @@ class GroqStub(BaseHTTPRequestHandler):
                 State.mode = mode
             self.reply(200, json.dumps({"mode": mode}).encode())
             return
-        if self.path != "/openai/v1/chat/completions":
+        if self.path != "/api/v1/chat/completions":
             self.send_error(404)
             return
-        if self.headers.get("Authorization") != "Bearer test-groq-key":
+        if self.headers.get("Authorization") != "Bearer test-openrouter-key":
             self.send_error(401)
+            return
+        if self.headers.get("HTTP-Referer") != "https://kassa.qr-space.uz":
+            self.send_error(400)
+            return
+        if self.headers.get("X-Title") != "Kassa Minimarket":
+            self.send_error(400)
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -52,7 +58,7 @@ class GroqStub(BaseHTTPRequestHandler):
                 raise ValueError("invalid body size")
             request = json.loads(self.rfile.read(length))
             assert request["model"] == "openai/gpt-oss-20b"
-            assert request["include_reasoning"] is False
+            assert "include_reasoning" not in request
             assert request["reasoning_effort"] == "low"
             assert len(request["messages"]) == 2
             facts = json.loads(request["messages"][1]["content"])
@@ -97,6 +103,6 @@ class GroqStub(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    with socketserver.ThreadingTCPServer(("127.0.0.1", 0), GroqStub) as server:
+    with socketserver.ThreadingTCPServer(("127.0.0.1", 0), AiProviderStub) as server:
         Path(sys.argv[1]).write_text(str(server.server_address[1]), encoding="ascii")
         server.serve_forever()
