@@ -57,9 +57,10 @@ class AiProviderStub(BaseHTTPRequestHandler):
             if length <= 0 or length > 16 * 1024:
                 raise ValueError("invalid body size")
             request = json.loads(self.rfile.read(length))
-            assert request["model"] == "openai/gpt-oss-20b"
+            assert request["model"] == "openrouter/free"
             assert "include_reasoning" not in request
-            assert request["reasoning_effort"] == "low"
+            assert "reasoning_effort" not in request
+            assert request["max_tokens"] == 320
             assert len(request["messages"]) == 2
             facts = json.loads(request["messages"][1]["content"])
             assert set(facts) == ALLOWED_FACTS

@@ -41,3 +41,22 @@ Get-NetTCPConnection -State Listen -LocalPort 3500,5432
 ```
 
 Защищённую проверку выполняйте OIDC-токеном: без `Authorization` маршрут `/openapi/v1.json` возвращает `401`, с токеном аудитории `kasa-api` — `200`. Не вставляйте токены или значения `.env` в журнал и командную историю.
+
+## OpenRouter для пояснений к закупкам
+
+В защищённый файл конфигурации production добавьте выданный ключ как
+`OPENROUTER_API_KEY` и задайте `Ai__Provider=OpenRouter` и
+`Ai__ProcurementEnabled=true`. API использует только бесплатную модель
+`openrouter/free`; платная модель или автоматический платный fallback не
+настраиваются. Для разрешённого администратора передайте через защищённый
+Compose override переменную
+`Ai__ProcurementAccess__<organizationId>__<storeId>__<staffId>=true`.
+Скрипт `Configure-OpenRouterSecret.ps1` может атомарно обновить защищённый
+env-файл и создать отдельный override, если ему переданы три идентификатора
+области и `-TargetAccessOverrideFile`. Этот override нужно указывать во всех
+последующих командах `docker compose` вместе с основным production-файлом.
+
+Пересоберите и обновите только сервис API штатным способом. Проверьте
+`/health/live`, затем пояснение на русском и узбекском. При недоступности
+модели обычный серверный расчёт закупки остаётся доступным. Для отключения
+пояснений задайте `Ai__ProcurementEnabled=false`.

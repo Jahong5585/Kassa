@@ -4,7 +4,15 @@ param(
     [string] $SourceEnvFile,
 
     [Parameter(Mandatory = $true)]
-    [string] $TargetEnvFile
+    [string] $TargetEnvFile,
+
+    [Guid] $OrganizationId = [Guid]::Empty,
+
+    [Guid] $StoreId = [Guid]::Empty,
+
+    [Guid] $StaffId = [Guid]::Empty,
+
+    [string] $TargetAccessOverrideFile
 )
 
 $ErrorActionPreference = 'Stop'
@@ -57,12 +65,20 @@ foreach ($line in Get-Content -LiteralPath $target) {
 }
 
 Set-EnvValue $lines 'OPENROUTER_API_KEY' $key
-Set-EnvValue $lines 'KASA_AI_PROCUREMENT_ENABLED' 'true'
-Set-EnvValue $lines 'KASA_AI_PROVIDER' 'openrouter'
-Set-EnvValue $lines 'KASA_AI_ENDPOINT' 'https://openrouter.ai/api/v1/'
-Set-EnvValue $lines 'KASA_AI_MODEL' 'openai/gpt-oss-20b'
+Set-EnvValue $lines 'Ai__ProcurementEnabled' 'true'
+Set-EnvValue $lines 'Ai__Provider' 'OpenRouter'
 Set-EnvValue $lines 'KASA_AI_OPENROUTER_REFERER' 'https://kassa.qr-space.uz'
 Set-EnvValue $lines 'KASA_AI_OPENROUTER_TITLE' 'Kassa Minimarket'
+
+$scopeIds = @($OrganizationId, $StoreId, $StaffId)
+$hasAnyScope = @($scopeIds | Where-Object { $_ -ne [Guid]::Empty }).Count -gt 0
+$hasCompleteScope = @($scopeIds | Where-Object { $_ -eq [Guid]::Empty }).Count -eq 0
+if ($hasAnyScope -and -not $hasCompleteScope) {
+    throw 'OrganizationId, StoreId and StaffId must be supplied together.'
+}
+if ($hasCompleteScope -and [string]::IsNullOrWhiteSpace($TargetAccessOverrideFile)) {
+    throw 'TargetAccessOverrideFile is required when an access scope is supplied.'
+}
 
 $backup = "$target.backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
 Copy-Item -LiteralPath $target -Destination $backup
@@ -77,5 +93,33 @@ finally {
     }
 }
 
+if ($hasCompleteScope) {
+    $overridePath = [System.IO.Path]::GetFullPath($TargetAccessOverrideFile)
+    $accessName = "Ai__ProcurementAccess__$($OrganizationId.ToString('D'))__$($StoreId.ToString('D'))__$($StaffId.ToString('D'))"
+    $overrideLines = @(
+        'services:'
+        '  api:'
+        '    environment:'
+        "      $accessName`: 'true'"
+    )
+    $overrideDirectory = Split-Path -Parent $overridePath
+    if (-not (Test-Path -LiteralPath $overrideDirectory)) {
+        New-Item -ItemType Directory -Path $overrideDirectory | Out-Null
+    }
+    $overrideTemporary = "$overridePath.tmp-$([guid]::NewGuid().ToString('N'))"
+    try {
+        [System.IO.File]::WriteAllLines($overrideTemporary, $overrideLines, [System.Text.UTF8Encoding]::new($false))
+        Move-Item -LiteralPath $overrideTemporary -Destination $overridePath -Force
+    }
+    finally {
+        if (Test-Path -LiteralPath $overrideTemporary) {
+            Remove-Item -LiteralPath $overrideTemporary -Force
+        }
+    }
+}
+
 Write-Host 'OpenRouter settings updated. Secret value was not displayed.'
 Write-Host "Backup: $backup"
+if ($hasCompleteScope) {
+    Write-Host 'Scoped access override updated. No secret value was displayed.'
+}

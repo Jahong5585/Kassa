@@ -36,12 +36,14 @@ var identityProvisioning = IdentityProvisioningOptions.Read(configuration, devel
 
 var connectionString = configuration.GetConnectionString("Pos")
     ?? throw new InvalidOperationException("Configure ConnectionStrings:Pos.");
-var procurementAiProvider = (configuration["Ai:Provider"] ?? "groq").Trim().ToLowerInvariant();
+var procurementAiProvider = (configuration["Ai:Provider"] ?? "Groq").Trim().ToLowerInvariant();
 if (procurementAiProvider is not ("groq" or "openrouter"))
     throw new InvalidOperationException("Configure Ai:Provider as groq or openrouter.");
-var procurementAiEndpoint = configuration["Ai:Endpoint"] ?? (procurementAiProvider == "openrouter"
+var procurementAiEndpoint = procurementAiProvider == "openrouter" && !development
     ? "https://openrouter.ai/api/v1/"
-    : "https://api.groq.com/openai/v1/");
+    : configuration["Ai:Endpoint"] ?? (procurementAiProvider == "openrouter"
+        ? "https://openrouter.ai/api/v1/"
+        : "https://api.groq.com/openai/v1/");
 var procurementAiHost = procurementAiProvider == "openrouter" ? "openrouter.ai" : "api.groq.com";
 if (!Uri.TryCreate(procurementAiEndpoint, UriKind.Absolute, out var procurementAiUri) ||
     procurementAiUri.Scheme is not ("http" or "https") ||

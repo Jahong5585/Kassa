@@ -125,10 +125,9 @@ services:
       InvoiceScanner__Host: clamd
       InvoiceScanner__Port: "3310"
       RateLimiting__PermitLimit: "180"
-      Ai__ProcurementEnabled: ${KASA_AI_PROCUREMENT_ENABLED:-false}
-      Ai__Provider: ${KASA_AI_PROVIDER:-groq}
-      Ai__Endpoint: ${KASA_AI_ENDPOINT:-https://api.groq.com/openai/v1/}
-      Ai__Model: ${KASA_AI_MODEL:-openai/gpt-oss-20b}
+      Ai__ProcurementEnabled: ${Ai__ProcurementEnabled:-false}
+      Ai__Provider: ${Ai__Provider:-Groq}
+      Ai__Endpoint: ${Ai__Endpoint:-https://api.groq.com/openai/v1/}
       Ai__OpenRouterReferer: ${KASA_AI_OPENROUTER_REFERER:-https://kassa.qr-space.uz}
       Ai__OpenRouterTitle: ${KASA_AI_OPENROUTER_TITLE:-Kassa Minimarket}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}

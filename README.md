@@ -251,7 +251,7 @@ docker compose exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < db/029
 
 ### ИИ-пояснение для администратора
 
-Для OpenRouter сохраните `OPENROUTER_API_KEY` только в серверном хранилище секретов и задайте `Ai__ProcurementEnabled=true`, `Ai__Provider=openrouter`, `Ai__Endpoint=https://openrouter.ai/api/v1/`. Модель задаётся через `Ai__Model` (по умолчанию `openai/gpt-oss-20b`) и вызывается только по явному запросу администратора. Серверу нужен исходящий HTTPS-доступ к `openrouter.ai`. Для прежней конфигурации Groq остаются поддержаны `Ai__Provider=groq`, endpoint `https://api.groq.com/openai/v1/` и секрет `GROQ_API_KEY`. Миграции базы для этой функции не требуются.
+Для OpenRouter сохраните `OPENROUTER_API_KEY` только в серверном хранилище секретов и задайте `Ai__ProcurementEnabled=true`, `Ai__Provider=OpenRouter`. Сервер всегда использует бесплатный маршрутизатор `openrouter/free`; выбор или автоматический переход на платную модель не предусмотрен. Серверу нужен исходящий HTTPS-доступ к `openrouter.ai`. Для прежней конфигурации Groq остаются поддержаны `Ai__Provider=Groq`, endpoint `https://api.groq.com/openai/v1/` и секрет `GROQ_API_KEY`. Миграции базы для этой функции не требуются.
 
 Для каждого сотрудника разрешение задаётся отдельно для конкретного магазина. Сотрудник должен быть действующим администратором этой точки и пройти обычную проверку MFA. Добавьте разрешение в серверный `appsettings.Production.json`, подставив идентификаторы организации, магазина и сотрудника.
 

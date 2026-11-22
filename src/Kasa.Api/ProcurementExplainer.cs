@@ -9,18 +9,19 @@ namespace Kasa.Api;
 internal sealed class ProcurementExplainer(HttpClient client, IConfiguration configuration,
     ILogger<ProcurementExplainer> logger)
 {
-    private const string DefaultModel = "openai/gpt-oss-20b";
+    private const string GroqModel = "openai/gpt-oss-20b";
+    private const string OpenRouterModel = "openrouter/free";
+
+    internal static bool UsesOpenRouter(IConfiguration configuration) =>
+        string.Equals(configuration["Ai:Provider"], "OpenRouter", StringComparison.OrdinalIgnoreCase);
 
     public async Task<ReplenishmentExplanation> Explain(ReplenishmentRecommendation recommendation, string language,
         CancellationToken ct)
     {
-        var provider = (configuration["Ai:Provider"] ?? "groq").Trim().ToLowerInvariant();
-        var key = configuration[provider == "openrouter" ? "OPENROUTER_API_KEY" : "GROQ_API_KEY"]?.Trim();
+        var openRouter = UsesOpenRouter(configuration);
+        var key = configuration[openRouter ? "OPENROUTER_API_KEY" : "GROQ_API_KEY"]?.Trim();
         if (!configuration.GetValue<bool>("Ai:ProcurementEnabled") || string.IsNullOrEmpty(key))
             throw new PosError(503, "procurement_ai_disabled");
-        var model = configuration["Ai:Model"]?.Trim();
-        if (string.IsNullOrEmpty(model))
-            model = DefaultModel;
 
         var projection = recommendation.Projection;
         // Only send fixed categories and flags. The actual quantities, dates, and identifiers stay on the POS server.
@@ -46,36 +47,35 @@ internal sealed class ProcurementExplainer(HttpClient client, IConfiguration con
             packageRounding = projection is not null && recommendation.SuggestedQuantity > projection.UnroundedQuantity
         });
 
-        var payload = new Dictionary<string, object?>
+        var messages = new[]
         {
-            ["model"] = model,
-            ["messages"] = new[]
+            new
             {
-                new
-                {
-                    role = "system",
-                    content = $"""
-                        Explain the POS replenishment result in {language} in two short plain-text sentences.
-                        Use only the supplied facts. The POS already calculated the decision.
-                        Explain the main factor and mention uncertainty or shortage when present.
-                        If the decision is unavailable, explain the missing data. If demand was estimated manually,
-                        treat it as an estimate. Never give numbers, dates, prices, new quantities, or an order command.
-                        """
-                },
-                new { role = "user", content = facts }
+                role = "system",
+                content = $"""
+                    Explain the POS replenishment result in {language} in two short plain-text sentences.
+                    Use only the supplied facts. The POS already calculated the decision.
+                    Explain the main factor and mention uncertainty or shortage when present.
+                    If the decision is unavailable, explain the missing data. If demand was estimated manually,
+                    treat it as an estimate. Never give numbers, dates, prices, new quantities, or an order command.
+                    """
             },
-            ["reasoning_effort"] = "low",
-            ["max_completion_tokens"] = 320
+            new { role = "user", content = facts }
         };
-        if (provider == "groq")
-            payload["include_reasoning"] = false;
+        object payload = openRouter
+            ? new { model = OpenRouterModel, messages, max_tokens = 320 }
+            : new
+            {
+                model = GroqModel, messages, reasoning_effort = "low", include_reasoning = false,
+                max_completion_tokens = 320
+            };
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "chat/completions")
         {
             Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
         };
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
-        if (provider == "openrouter")
+        if (openRouter)
         {
             request.Headers.TryAddWithoutValidation("HTTP-Referer",
                 configuration["Ai:OpenRouterReferer"]?.Trim() ?? "https://kassa.qr-space.uz");
@@ -95,9 +95,12 @@ internal sealed class ProcurementExplainer(HttpClient client, IConfiguration con
             }
 
             using var completion = await response.Content.ReadFromJsonAsync<JsonDocument>(cancellationToken: ct);
-            if (completion is null)
+            if (completion is null || completion.RootElement.ValueKind != JsonValueKind.Object ||
+                !completion.RootElement.TryGetProperty("choices", out var choices) ||
+                choices.ValueKind != JsonValueKind.Array || choices.GetArrayLength() == 0 ||
+                choices[0].ValueKind != JsonValueKind.Object)
                 throw new PosError(503, "procurement_ai_unavailable");
-            var choice = completion.RootElement.GetProperty("choices").EnumerateArray().FirstOrDefault();
+            var choice = choices[0];
             var finishReason = choice.TryGetProperty("finish_reason", out var finish) ? finish.GetString() : null;
             var text = choice.TryGetProperty("message", out var message) &&
                        message.TryGetProperty("content", out var content)
@@ -118,7 +121,7 @@ internal sealed class ProcurementExplainer(HttpClient client, IConfiguration con
         {
             throw new PosError(503, "procurement_ai_timeout");
         }
-        catch (Exception error) when (error is HttpRequestException or JsonException or NotSupportedException)
+        catch (Exception error) when (error is HttpRequestException or JsonException or NotSupportedException or InvalidOperationException)
         {
             logger.LogWarning("Procurement AI request failed ({ErrorType})", error.GetType().Name);
             throw new PosError(503, "procurement_ai_unavailable");
