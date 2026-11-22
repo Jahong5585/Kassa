@@ -85,7 +85,7 @@ builder.Services.AddScoped<PosService>();
 builder.Services.AddHttpClient<ProcurementExplainer>(client =>
 {
     client.BaseAddress = procurementAiUri;
-    client.Timeout = TimeSpan.FromSeconds(10);
+    client.Timeout = TimeSpan.FromSeconds(procurementAiProvider == "openrouter" ? 30 : 10);
     client.MaxResponseContentBufferSize = 32 * 1024;
 })
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false })

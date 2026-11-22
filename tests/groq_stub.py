@@ -60,7 +60,8 @@ class AiProviderStub(BaseHTTPRequestHandler):
             assert request["model"] == "openrouter/free"
             assert "include_reasoning" not in request
             assert "reasoning_effort" not in request
-            assert request["max_tokens"] == 320
+            assert request["max_tokens"] == 2048
+            assert request["reasoning"] == {"effort": "low", "exclude": True}
             assert len(request["messages"]) == 2
             facts = json.loads(request["messages"][1]["content"])
             assert set(facts) == ALLOWED_FACTS

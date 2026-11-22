@@ -63,7 +63,13 @@ internal sealed class ProcurementExplainer(HttpClient client, IConfiguration con
             new { role = "user", content = facts }
         };
         object payload = openRouter
-            ? new { model = OpenRouterModel, messages, max_tokens = 320 }
+            ? new
+            {
+                model = OpenRouterModel,
+                messages,
+                max_tokens = 2048,
+                reasoning = new { effort = "low", exclude = true }
+            }
             : new
             {
                 model = GroqModel, messages, reasoning_effort = "low", include_reasoning = false,

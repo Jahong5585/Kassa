@@ -41,7 +41,10 @@ public sealed class ProcurementExplainerTests
         Assert.DoesNotContain("private-", handler.Body);
         using var payload = JsonDocument.Parse(handler.Body);
         Assert.Equal("openrouter/free", payload.RootElement.GetProperty("model").GetString());
-        Assert.Equal(320, payload.RootElement.GetProperty("max_tokens").GetInt32());
+        Assert.Equal(2048, payload.RootElement.GetProperty("max_tokens").GetInt32());
+        var reasoning = payload.RootElement.GetProperty("reasoning");
+        Assert.Equal("low", reasoning.GetProperty("effort").GetString());
+        Assert.True(reasoning.GetProperty("exclude").GetBoolean());
         Assert.False(payload.RootElement.TryGetProperty("reasoning_effort", out _));
         Assert.False(payload.RootElement.TryGetProperty("max_completion_tokens", out _));
     }
