@@ -56,6 +56,7 @@ services:
       - ./db/043_catalog_change_feed.sql:/docker-entrypoint-initdb.d/043_catalog_change_feed.sql:ro
       - ./db/044_quick_receiving.sql:/docker-entrypoint-initdb.d/044_quick_receiving.sql:ro
       - ./db/045_stock_lot_receipt_history.sql:/docker-entrypoint-initdb.d/045_stock_lot_receipt_history.sql:ro
+      - ./db/046_product_scale_codes.sql:/docker-entrypoint-initdb.d/046_product_scale_codes.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U kasa_owner -d kasa"]
       interval: 2s

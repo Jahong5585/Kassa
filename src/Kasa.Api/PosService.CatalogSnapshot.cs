@@ -38,10 +38,12 @@ internal sealed partial class PosService
                      WHERE (risk.org_id, risk.store_id, risk.product_id) = (p.org_id, sp.store_id, p.id)
                        AND (risk.quarantine_quantity > 0 OR (risk.quantity > 0 AND
                          (risk.quarantined OR risk.expiry_date < (now() AT TIME ZONE $4)::date
-                           OR (p.requires_expiry AND risk.expiry_date IS NULL)))))
+                           OR (p.requires_expiry AND risk.expiry_date IS NULL))))), sc.code
             FROM products p JOIN store_prices sp ON (sp.org_id, sp.product_id) = (p.org_id, p.id)
             LEFT JOIN store_quantity_promotions promo ON (promo.org_id, promo.store_id, promo.product_id) =
                                                          (sp.org_id, sp.store_id, sp.product_id)
+            LEFT JOIN product_scale_codes sc ON (sc.org_id, sc.store_id, sc.product_id) =
+                                                (sp.org_id, sp.store_id, sp.product_id)
             WHERE (p.org_id, sp.store_id) = ($1, $2) AND sp.active AND sp.unit_price > 0 AND p.id > $3
             ORDER BY p.id LIMIT 51
             """, scope.Organization, scope.Store, after ?? Guid.Empty, scope.TimeZone))
@@ -54,7 +56,11 @@ internal sealed partial class PosService
                 codes[id] = [];
                 cards.Add(new CatalogProduct(id, rows.GetString(1), rows.GetString(2), rows.GetString(3),
                     rows.GetDecimal(4), rows.GetInt32(5), rows.GetBoolean(6), lots[id])
-                { PromotionVersion = rows.IsDBNull(7) ? null : rows.GetInt32(7), RequiresLotVerification = rows.GetBoolean(8) });
+                {
+                    PromotionVersion = rows.IsDBNull(7) ? null : rows.GetInt32(7),
+                    RequiresLotVerification = rows.GetBoolean(8),
+                    ScaleCode = rows.IsDBNull(9) ? null : rows.GetString(9)
+                });
             }
             more = cards.Count > pageSize;
             if (more) cards.RemoveAt(pageSize);

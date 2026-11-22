@@ -853,6 +853,47 @@ def check_catalog(shift):
     version2 = request(card_path + "/price", first_price, staff=admin, method="PUT")
     assert version2["version"] == 2 and request(card_path + "/price", first_price, staff=admin, method="PUT") == version2
 
+    scale_product = fixture_id(905)
+    scale_path = products + "/" + scale_product
+    scale_card = {"expectedVersion": 0, "name": "Яблоки для весов", "unit": "kg",
+                  "scaleCode": "123", "barcodes": []}
+    scale_created = request(scale_path, scale_card, staff=admin, method="PUT")
+    assert scale_created["scaleCode"] == "123" and scale_created["unit"] == "kg"
+    request(products + "/" + fixture_id(906), {**scale_card, "unit": "piece"}, staff=admin,
+            method="PUT", expected=400)
+    request(products + "/" + fixture_id(906), {**scale_card, "scaleCode": "12"}, staff=admin,
+            method="PUT", expected=400)
+    conflict = request(products + "/" + fixture_id(906), {**scale_card, "scaleCode": "001"},
+                       staff=admin, method="PUT", expected=409)
+    assert conflict["code"] == "product_scale_code_in_use"
+    duplicate_scale = request(products + "/" + fixture_id(906), {**scale_card, "scaleCode": "123"},
+                              staff=admin, method="PUT", expected=409)
+    assert duplicate_scale["code"] == "product_scale_code_in_use"
+    request(scale_path + "/price", {"expectedVersion": 1, "unitPrice": 8000, "active": True,
+            "reason": "Цена весового товара"}, staff=admin, method="PUT")
+    by_scale = request("/v1/catalog/barcodes/123")
+    assert by_scale["productId"] == scale_product and by_scale["scaleCode"] == "123"
+    assert by_scale["unit"] == "kg" and by_scale["quantityFactor"] == 1
+    scale_search = request("/v1/catalog/search?q=123")
+    assert scale_search[0]["productId"] == scale_product and scale_search[0]["scaleCode"] == "123"
+    scale_snapshot = request("/v1/catalog/snapshot")
+    snapshot_row = next(row for row in scale_snapshot["items"] if row["product"]["productId"] == scale_product)
+    assert snapshot_row["product"]["scaleCode"] == "123"
+    preserved_scale = request(scale_path, {"expectedVersion": 1, "name": "Яблоки для весов новые",
+                              "unit": "kg", "barcodes": []}, staff=admin, method="PUT")
+    assert preserved_scale["scaleCode"] == "123" and preserved_scale["version"] == 2
+    scale_changes = request("/v1/catalog/changes?cursor=" + str(scale_snapshot["changeCursor"]))
+    assert any(row["product"]["productId"] == scale_product and row["product"]["scaleCode"] == "123"
+               for row in scale_changes["items"])
+    cleared_scale = request(scale_path, {"expectedVersion": 2, "name": "Яблоки для весов новые",
+                            "unit": "kg", "scaleCode": "", "barcodes": []}, staff=admin, method="PUT")
+    assert "scaleCode" not in cleared_scale
+    request("/v1/catalog/barcodes/123", expected=404)
+    reassigned_scale = request(scale_path, {"expectedVersion": 3, "name": "Яблоки для весов новые",
+                               "unit": "kg", "scaleCode": "123", "barcodes": []},
+                               staff=admin, method="PUT")
+    assert reassigned_scale["scaleCode"] == "123" and reassigned_scale["version"] == 4
+
     lot = fixture_id(903)
     invoice_id = str(uuid.uuid4())
     receipt = {"receiptId": invoice_id, "supplierRef": "Учебный поставщик", "invoiceNumber": "CATALOG-01",

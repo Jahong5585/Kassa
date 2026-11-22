@@ -157,6 +157,13 @@ UUID в путях передаются без фигурных скобок. К
 
 ### Касса и смены
 
+Для весового товара карточка может содержать `scaleCode`: ровно три цифры,
+включая начальные нули. Код разрешён только при `unit = "kg"` и уникален в
+пределах магазина. Он участвует в `GET /v1/catalog/search`, принимается
+`GET /v1/catalog/barcodes/{barcode}` и передаётся в `/v1/catalog/snapshot` и
+`/v1/catalog/changes`. Старый клиент может не передавать поле при изменении
+карточки — существующий код сохранится. Пустая строка явно снимает код.
+
 | Метод и маршрут | Операция OpenAPI | Вход | Успех |
 | --- | --- | --- | --- |
 | `POST /v1/shifts` | `OpenShift` | `OpenShift` | 200 JSON |
@@ -413,7 +420,7 @@ UUID в путях передаются без фигурных скобок. К
 | `SupplierPaymentAllocationLine` | `receiptId` — `Guid`, `amount` — `decimal` |
 | `SupplierReturnItem` | `productId` — `Guid`, `lotId` — `Guid`, `quantity` — `decimal`, `bucket` — `string` |
 | `TransferSupplierCredit` | `operationId` — `Guid`, `sourceReceiptId` — `Guid`, `targetReceiptId` — `Guid`, `amount` — `decimal`, `reason` — `string` |
-| `WriteProductCard` | `expectedVersion` * — `int`, `name` — `string`, `unit` — `string`, `requiresExpiry` — `bool?`, `sku` — `string?`, `category` — `string?`, `brand` — `string?`, `supplierRef` — `string?`, `taxProfile` — `string?`, `barcodes` — `ProductBarcode[]` |
+| `WriteProductCard` | `expectedVersion` * — `int`, `name` — `string`, `unit` — `string`, `requiresExpiry` — `bool?`, `sku` — `string?`, `category` — `string?`, `brand` — `string?`, `supplierRef` — `string?`, `taxProfile` — `string?`, `scaleCode` — `string?` (ровно 3 цифры, только `kg`; `""` снимает код), `barcodes` — `ProductBarcode[]` |
 | `WriteProductPrice` | `expectedVersion` — `int`, `unitPrice` * — `decimal?`, `active` * — `bool`, `reason` — `string` |
 | `WriteReceiptCosts` | `expectedVersion` — `int`, `items` — `ReceiptCostItem[]` |
 | `WriteReplenishmentPolicy` | `expectedVersion` * — `int`, `settings` — `ReplenishmentRequest` |

@@ -31,6 +31,8 @@ internal sealed partial class PosService
             WITH target AS (
                 SELECT product_id, code, quantity_factor, NULL::uuid AS lot_id, NULL::numeric AS printed_total, false AS sold FROM product_barcodes
                 WHERE (org_id, code) = ($1, $3) AND $3 <> '' AND NOT $7
+                UNION SELECT product_id, code, 1::numeric, NULL::uuid, NULL::numeric, false FROM product_scale_codes
+                WHERE (org_id, store_id, code) = ($1, $2, $3) AND $3 <> '' AND NOT $7
                 UNION ALL SELECT $5::uuid, '', 1::numeric, NULL::uuid, NULL::numeric, false WHERE $3 = ''
                 UNION ALL SELECT product_id, $3, 1::numeric, lot_id, NULL::numeric, false FROM lot_retail_settings
                 WHERE $7 AND NOT $8 AND (org_id, store_id, label_id) = ($1, $2, $6)
@@ -52,7 +54,7 @@ internal sealed partial class PosService
                         WHEN l.expiry_date < (now() AT TIME ZONE $4)::date THEN 'lot_barcode_expired'
                         WHEN l.id IS NULL OR l.quarantined OR l.quantity <= 0
                              OR (p.requires_expiry AND l.expiry_date IS NULL) THEN 'lot_barcode_unavailable' END,
-                   t.printed_total, l.received_at
+                   t.printed_total, l.received_at, sc.code
             FROM target t JOIN products p ON (p.org_id, p.id) = ($1, t.product_id)
             JOIN store_prices sp ON (sp.org_id, sp.product_id) = (p.org_id, p.id)
             LEFT JOIN store_quantity_promotions promo ON (promo.org_id, promo.store_id, promo.product_id) =
@@ -63,6 +65,8 @@ internal sealed partial class PosService
                      AND (l.expiry_date IS NULL OR l.expiry_date >= (now() AT TIME ZONE $4)::date)))
             LEFT JOIN active_lot_markdowns markdown ON (markdown.org_id, markdown.store_id, markdown.product_id, markdown.lot_id) =
                                                        (l.org_id, l.store_id, l.product_id, l.id)
+            LEFT JOIN product_scale_codes sc ON (sc.org_id, sc.store_id, sc.product_id) =
+                                                (sp.org_id, sp.store_id, sp.product_id)
             WHERE sp.store_id = $2 AND sp.active
             ORDER BY (l.expiry_date IS NULL), l.expiry_date, l.received_at NULLS LAST, l.id LIMIT 100
             """, scope.Organization, scope.Store, barcode, scope.TimeZone, product, labelId, labelId != Guid.Empty, weighed);
@@ -77,6 +81,7 @@ internal sealed partial class PosService
         var result = new CatalogProduct(rows.GetGuid(0), rows.GetString(1), rows.GetString(10), rows.GetString(2),
             rows.GetDecimal(3), rows.GetInt32(4), rows.GetBoolean(5), lots)
         {
+            ScaleCode = rows.IsDBNull(18) ? null : rows.GetString(18),
             RequiresLotVerification = rows.GetBoolean(9),
             QuantityFactor = rows.GetDecimal(11),
             PromotionVersion = rows.IsDBNull(12) ? null : rows.GetInt32(12),
@@ -126,10 +131,14 @@ internal sealed partial class PosService
         NpgsqlTransaction tx, Guid org, Guid store, string query, bool includeArchived, int offset, CancellationToken ct)
     {
         await using var command = db.Sql(tx, """
-            SELECT p.id, p.name, p.sku, coalesce(p.barcode, ''), p.unit, sp.unit_price, sp.version, sp.active
+            SELECT p.id, p.name, p.sku, coalesce(p.barcode, ''), p.unit, sp.unit_price, sp.version, sp.active,
+                   sc.code
             FROM products p JOIN store_prices sp ON (sp.org_id, sp.product_id) = (p.org_id, p.id)
+            LEFT JOIN product_scale_codes sc ON (sc.org_id, sc.store_id, sc.product_id) =
+                                                (sp.org_id, sp.store_id, sp.product_id)
             WHERE (p.org_id, sp.store_id) = ($1, $2) AND ($4 OR sp.active)
               AND ($3 = '' OR strpos(lower(p.name), lower($3)) > 0 OR lower(p.sku) = lower($3)
+                   OR sc.code = $3
                    OR EXISTS (SELECT 1 FROM product_barcodes b
                               WHERE (b.org_id, b.product_id, b.code) = (p.org_id, p.id, $3)))
             ORDER BY p.name, p.id LIMIT 25 OFFSET $5
@@ -138,7 +147,8 @@ internal sealed partial class PosService
         List<ProductSearchResult> results = [];
         while (await rows.ReadAsync(ct))
             results.Add(new ProductSearchResult(rows.GetGuid(0), rows.GetString(1), rows.GetString(2), rows.GetString(3),
-                rows.GetString(4), rows.DecimalOrNull(5), rows.GetInt32(6), rows.GetBoolean(7)));
+                rows.GetString(4), rows.DecimalOrNull(5), rows.GetInt32(6), rows.GetBoolean(7))
+                { ScaleCode = rows.IsDBNull(8) ? null : rows.GetString(8) });
         return results;
     }
 
@@ -160,6 +170,8 @@ internal sealed partial class PosService
         await LockProduct(db, tx, scope.Organization, product, true, ct);
         var current = await ReadProductCard(db, tx, scope, product, ct);
         var card = ValidateProductCard(product, request, request.RequiresExpiry ?? current?.RequiresExpiry ?? false);
+        if (current is not null && request.ScaleCode is null)
+            card = card with { ScaleCode = current.ScaleCode };
         var result = await WriteCard(db, tx, context, scope, card, request.ExpectedVersion, ct);
         await tx.CommitAsync(ct);
         return result;
@@ -175,6 +187,9 @@ internal sealed partial class PosService
             request.Barcodes is not { Length: <= 30 } ||
             request.ShelfLifeDays is < 1 or > 3650 || request.ShelfLifeDays is not null && !requiresExpiry)
             throw new PosError(400, "invalid_product_card");
+        if (request.ScaleCode is not null && request.ScaleCode != "" &&
+            (request.Unit != "kg" || request.ScaleCode.Length != 3 || !request.ScaleCode.All(char.IsAsciiDigit)))
+            throw new PosError(400, "invalid_product_scale_code");
         var codes = new HashSet<string>(StringComparer.Ordinal);
         foreach (var barcode in request.Barcodes)
         {
@@ -188,7 +203,8 @@ internal sealed partial class PosService
         return new ProductCard(product, request.Name.Trim(), request.Unit, requiresExpiry,
             OptionalText(request.Sku, 64), OptionalText(request.Category, 120), OptionalText(request.Brand, 120),
             OptionalText(request.SupplierRef, 160), OptionalText(request.TaxProfile, 80), request.ExpectedVersion + 1,
-            ordered, null, 1, true) { ShelfLifeDays = request.ShelfLifeDays };
+            ordered, null, 1, true)
+            { ShelfLifeDays = request.ShelfLifeDays, ScaleCode = request.ScaleCode == "" ? null : request.ScaleCode };
     }
 
     private static async Task<ProductCard> WriteCard(NpgsqlConnection db, NpgsqlTransaction tx, HttpContext context,
@@ -200,6 +216,13 @@ internal sealed partial class PosService
         // Older clients omit this optional field. Preserve it on an unrelated card edit.
         if (current is not null && card.ShelfLifeDays is null && card.RequiresExpiry)
             card = card with { ShelfLifeDays = current.ShelfLifeDays };
+        var lockCodes = card.Barcodes.Select(row => row.Code)
+            .Concat(current?.Barcodes.Select(row => row.Code) ?? [])
+            .Concat(card.ScaleCode is null ? [] : [card.ScaleCode])
+            .Concat(current?.ScaleCode is null ? [] : [current.ScaleCode])
+            .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal);
+        foreach (var code in lockCodes)
+            await LockProductCode(db, tx, scope.Organization, code, ct);
         if (current is not null && SameProductCard(card, current))
             return current;
         if (current is null && expectedVersion != 0)
@@ -260,6 +283,15 @@ internal sealed partial class PosService
 
         if (current is null || !current.Barcodes.SequenceEqual(card.Barcodes))
         {
+            if (card.Barcodes.Count > 0)
+            {
+                await using var scaleConflict = db.Sql(tx, """
+                    SELECT 1 FROM product_scale_codes
+                    WHERE org_id = $1 AND code = ANY($2) AND product_id <> $3 LIMIT 1
+                    """, scope.Organization, card.Barcodes.Select(row => row.Code).ToArray(), id);
+                if (await scaleConflict.ExecuteScalarAsync(ct) is not null)
+                    throw new PosError(409, "product_barcode_in_use");
+            }
             await db.Run(tx, ct, "DELETE FROM product_barcodes WHERE (org_id, product_id) = ($1, $2)",
                 scope.Organization, id);
             foreach (var barcode in card.Barcodes)
@@ -270,6 +302,41 @@ internal sealed partial class PosService
                     """, scope.Organization, barcode.Code, id, barcode.QuantityFactor);
                 if (added != 1)
                     throw new PosError(409, "product_barcode_in_use");
+            }
+        }
+
+        if (current?.ScaleCode != card.ScaleCode)
+        {
+            if (card.ScaleCode is null)
+            {
+                await db.Run(tx, ct, """
+                    DELETE FROM product_scale_codes WHERE (org_id, store_id, product_id) = ($1, $2, $3)
+                    """, scope.Organization, scope.Store, id);
+            }
+            else
+            {
+                await using var barcodeConflict = db.Sql(tx, """
+                    SELECT 1 FROM product_barcodes
+                    WHERE org_id = $1 AND code = $2 AND product_id <> $3 LIMIT 1
+                    """, scope.Organization, card.ScaleCode, id);
+                if (await barcodeConflict.ExecuteScalarAsync(ct) is not null)
+                    throw new PosError(409, "product_scale_code_in_use");
+                try
+                {
+                    await db.Run(tx, ct, """
+                        INSERT INTO product_scale_codes
+                            (org_id, store_id, product_id, code, updated_by)
+                        VALUES ($1, $2, $3, $4, $5)
+                        ON CONFLICT (org_id, store_id, product_id) DO UPDATE
+                        SET code = EXCLUDED.code, updated_by = EXCLUDED.updated_by,
+                            updated_at = statement_timestamp()
+                        """, scope.Organization, scope.Store, id, card.ScaleCode, scope.Staff);
+                }
+                catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation &&
+                    ex.ConstraintName == "product_scale_codes_unique_code")
+                {
+                    throw new PosError(409, "product_scale_code_in_use");
+                }
             }
         }
 
@@ -289,9 +356,12 @@ internal sealed partial class PosService
     {
         await using var command = db.Sql(tx, """
             SELECT p.name, p.unit, p.requires_expiry, p.sku, p.category, p.brand, p.supplier_ref, p.tax_profile,
-                   p.revision, sp.unit_price, sp.version, sp.active, b.code, b.quantity_factor, p.shelf_life_days
+                   p.revision, sp.unit_price, sp.version, sp.active, b.code, b.quantity_factor, p.shelf_life_days,
+                   sc.code
             FROM products p JOIN store_prices sp ON (sp.org_id, sp.product_id) = (p.org_id, p.id)
             LEFT JOIN product_barcodes b ON (b.org_id, b.product_id) = (p.org_id, p.id)
+            LEFT JOIN product_scale_codes sc ON (sc.org_id, sc.store_id, sc.product_id) =
+                                                (sp.org_id, sp.store_id, sp.product_id)
             WHERE (p.org_id, sp.store_id, p.id) = ($1, $2, $3)
             ORDER BY (b.code = p.barcode) DESC NULLS LAST, b.code COLLATE "C"
             """, scope.Organization, scope.Store, product);
@@ -302,7 +372,10 @@ internal sealed partial class PosService
         var card = new ProductCard(product, rows.GetString(0), rows.GetString(1), rows.GetBoolean(2), rows.GetString(3),
             rows.GetString(4), rows.GetString(5), rows.GetString(6), rows.GetString(7), rows.GetInt32(8), codes,
             rows.DecimalOrNull(9), rows.GetInt32(10), rows.GetBoolean(11))
-            { ShelfLifeDays = rows.IsDBNull(14) ? null : rows.GetInt32(14) };
+            {
+                ShelfLifeDays = rows.IsDBNull(14) ? null : rows.GetInt32(14),
+                ScaleCode = rows.IsDBNull(15) ? null : rows.GetString(15)
+            };
         do
         {
             if (!rows.IsDBNull(12))
@@ -319,6 +392,14 @@ internal sealed partial class PosService
         var sql = write ? "SELECT pg_advisory_xact_lock(hashtextextended($1, 1))"
             : "SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 1))";
         await using var command = db.Sql(tx, sql, $"product:{org}:{product}");
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
+    private static async Task LockProductCode(NpgsqlConnection db, NpgsqlTransaction tx, Guid org, string code,
+        CancellationToken ct)
+    {
+        await using var command = db.Sql(tx,
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 1))", $"product-code:{org}:{code}");
         await command.ExecuteNonQueryAsync(ct);
     }
 }

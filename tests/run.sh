@@ -157,6 +157,13 @@ if "$restore_check"; then
     [[ "$("${compose[@]}" exec -T db psql -XAt -U kasa_owner -d kasa -c "SELECT has_table_privilege('kasa_api','stock_lot_purchase_price_history','SELECT,INSERT') AND EXISTS (SELECT 1 FROM stock_lots WHERE received_at IS NULL);")" == "t" ]] || \
         { echo "Migration 045 grants are incomplete or unknown legacy receipt dates were overwritten" >&2; exit 1; }
     echo "PASS: migration 045 restores known receipt dates, preserves unknown dates as NULL, and rolls back cleanly"
+    "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < db/rollback/046_product_scale_codes.down.sql
+    [[ "$("${compose[@]}" exec -T db psql -XAt -U kasa_owner -d kasa -c "SELECT to_regclass('public.product_scale_codes') IS NULL;")" == "t" ]] || \
+        { echo "Migration 046 rollback left product scale codes behind" >&2; exit 1; }
+    "${compose[@]}" exec -T db psql -U kasa_owner -d kasa -v ON_ERROR_STOP=1 < db/046_product_scale_codes.sql
+    [[ "$("${compose[@]}" exec -T db psql -XAt -U kasa_owner -d kasa -c "SELECT has_table_privilege('kasa_api','product_scale_codes','SELECT,INSERT,DELETE') AND has_column_privilege('kasa_api','product_scale_codes','code','UPDATE');")" == "t" ]] || \
+        { echo "Migration 046 runtime grants are incomplete" >&2; exit 1; }
+    echo "PASS: migration 046 applies and rolls back without changing existing products"
 fi
 "$dotnet_command" build src/Kasa.Api/Kasa.Api.csproj -c Release -warnaserror -p:RestoreLockedMode=true
 "$dotnet_command" test tests/Kasa.Api.Tests/Kasa.Api.Tests.csproj -c Release -warnaserror -p:RestoreLockedMode=true

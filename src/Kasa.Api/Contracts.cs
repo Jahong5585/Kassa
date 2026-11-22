@@ -188,6 +188,8 @@ public sealed record CatalogLot(Guid LotId, DateOnly? ExpiryDate, decimal Quanti
 public sealed record CatalogProduct(Guid ProductId, string Name, string Barcode, string Unit, decimal UnitPrice,
     int PriceVersion, bool RequiresExpiry, IReadOnlyList<CatalogLot> Lots)
 {
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ScaleCode { get; init; }
     public bool RequiresLotVerification { get; init; }
     public decimal QuantityFactor { get; init; } = 1;
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -369,6 +371,8 @@ public sealed record WriteProductCard([property: JsonRequired] int ExpectedVersi
     ProductBarcode[] Barcodes)
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ScaleCode { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? ShelfLifeDays { get; init; }
 }
 public sealed record ProductCard(Guid ProductId, string Name, string Unit, bool RequiresExpiry, string Sku,
@@ -376,10 +380,16 @@ public sealed record ProductCard(Guid ProductId, string Name, string Unit, bool 
     IReadOnlyList<ProductBarcode> Barcodes, decimal? UnitPrice, int PriceVersion, bool Active)
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ScaleCode { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? ShelfLifeDays { get; init; }
 }
 public sealed record ProductSearchResult(Guid ProductId, string Name, string Sku, string Barcode, string Unit,
-    decimal? UnitPrice, int PriceVersion, bool Active);
+    decimal? UnitPrice, int PriceVersion, bool Active)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ScaleCode { get; init; }
+}
 public sealed record WriteProductPrice(int ExpectedVersion, [property: JsonRequired] decimal? UnitPrice,
     [property: JsonRequired] bool Active, string Reason);
 public sealed record ProductPrice(int Version, decimal? UnitPrice, bool Active, string Reason, Guid? ChangedBy,
