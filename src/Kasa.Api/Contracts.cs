@@ -658,3 +658,13 @@ public sealed record OpeningStockReport(Guid OperationId, string SourceReference
     public decimal KnownCost => Items.Sum(item => item.TotalCost ?? 0);
     public int UnpricedLineCount => Items.Count(item => item.TotalCost is null);
 }
+
+// One atomic, idempotent stock addition; no supplier invoice workflow.
+public sealed record QuickReceivingTemplate(ProductCard Product, decimal? UnitCost,
+    DateOnly? ManufacturedOn, DateOnly? ExpiryDate);
+public sealed record QuickReceivingItem(Guid ProductId, Guid LotId, int ExpectedVersion, int ExpectedPriceVersion,
+    ReceivingProductInput Product, decimal Quantity, decimal? UnitCost, decimal? SalePrice,
+    DateOnly? ManufacturedOn, DateOnly? ExpiryDate);
+public sealed record QuickReceivingRequest(Guid OperationId, QuickReceivingItem[] Items);
+public sealed record QuickReceivingResult(Guid OperationId, Guid StoreId, DateTime PostedAt,
+    IReadOnlyList<QuickReceivingItem> Items);

@@ -59,6 +59,7 @@ services:
       - ../db/041_receiving_catalog.sql:/docker-entrypoint-initdb.d/041_receiving_catalog.sql:ro
       - ../db/042_operating_expenses.sql:/docker-entrypoint-initdb.d/042_operating_expenses.sql:ro
       - ../db/043_catalog_change_feed.sql:/docker-entrypoint-initdb.d/043_catalog_change_feed.sql:ro
+      - ../db/044_quick_receiving.sql:/docker-entrypoint-initdb.d/044_quick_receiving.sql:ro
       - ./init-keycloak-db.sh:/docker-entrypoint-initdb.d/100_init_keycloak.sh:ro
       - ./init-kasa-bootstrap.sh:/docker-entrypoint-initdb.d/900_init_kasa_bootstrap.sh:ro
     healthcheck:

@@ -5,6 +5,19 @@ namespace Kasa.Api;
 
 internal sealed partial class PosService
 {
+    public async Task<IReadOnlyList<ProductSearchResult>> ListReceivingProducts(HttpContext context, Guid store,
+        string? query, int? offset, CancellationToken ct)
+    {
+        if (query is not null && !IsText(query, 100))
+            throw new PosError(400, "invalid_catalog_search");
+        ValidateStockOffset(offset);
+        await using var db = await source.OpenConnectionAsync(ct);
+        await using var tx = await db.BeginTransactionAsync(ct);
+        var scope = await Access.RequireStore(db, tx, context, configuration, store, false, ct);
+        return await SearchProducts(db, tx, scope.Organization, store, query?.Trim() ?? "", false,
+            offset ?? 0, ct);
+    }
+
     public async Task<ReceivingProduct> GetReceivingProductById(HttpContext context, Guid store, Guid id,
         CancellationToken ct)
     {
@@ -45,7 +58,7 @@ internal sealed partial class PosService
     public async Task<ReceivingProduct> CreateReceivingProduct(HttpContext context, Guid store, Guid requestId,
         ReceivingProductInput input, decimal? price, CancellationToken ct)
     {
-        if (input is null || input.Barcodes is not { Length: >= 1 } || requestId == Guid.Empty)
+        if (input is null || input.Barcodes is not { Length: <= 30 } || requestId == Guid.Empty)
             throw new PosError(400, "invalid_product_card");
         var card = ValidateProductCard(requestId, new WriteProductCard(0, input.Name, input.Unit,
             input.RequiresExpiry, null, input.Category, input.Brand, null, null, input.Barcodes)
@@ -108,9 +121,9 @@ internal sealed partial class PosService
         if (price is not null)
             await WritePrice(db, tx, context, scope, productId, new WriteProductPrice(1, price, true,
                 "receiving_initial_price"), ct);
-        var scanned = card.Barcodes.First(b => b.Code == input.Barcodes[0].Code);
+        var scanned = input.Barcodes.Length == 0 ? null : card.Barcodes.First(b => b.Code == input.Barcodes[0].Code);
         var result = ReceivingCard(card) with
-            { Barcode = scanned.Code, QuantityFactor = scanned.QuantityFactor, InitialSalePrice = price };
+            { Barcode = scanned?.Code ?? "", QuantityFactor = scanned?.QuantityFactor ?? 1, InitialSalePrice = price };
         await db.Run(tx, ct, """
             INSERT INTO receiving_product_creations (org_id, store_id, request_id, body, result, created_by)
             VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6)

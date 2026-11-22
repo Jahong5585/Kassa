@@ -913,6 +913,16 @@ storeApi.MapPost("/refund-approvals", async (Guid storeId, ApproveRefund request
 storeApi.MapGet("/receiving/catalog/barcodes/{barcode}", async (Guid storeId, string barcode, PosService pos,
     HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await pos.GetReceivingProduct(context, storeId, barcode, ct))).WithName("ReadReceivingProduct");
+storeApi.MapGet("/receiving/quick-products/{id:guid}", async (Guid storeId, Guid id, PosService pos,
+    HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await pos.GetQuickReceivingTemplate(context, storeId, id, ct))).WithName("QuickReceivingTemplate");
+storeApi.MapPost("/receiving/quick-products", async (Guid storeId, QuickReceivingRequest request, PosService pos,
+    HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await pos.PostQuickReceiving(context, storeId, request, ct))).WithName("PostQuickReceiving");
+storeApi.MapGet("/receiving/catalog/products", async (Guid storeId, string? q, int? offset,
+    PosService pos, HttpContext context, CancellationToken ct) =>
+    TypedResults.Ok(await pos.ListReceivingProducts(context, storeId, q, offset, ct)))
+    .WithName("SearchReceivingProducts");
 storeApi.MapGet("/receiving/catalog/products/{id:guid}", async (Guid storeId, Guid id, PosService pos,
     HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await pos.GetReceivingProductById(context, storeId, id, ct))).WithName("ReadReceivingProductById");

@@ -143,6 +143,32 @@ def main():
                             session=session, role="receiver")
     assert reopened_product["shelfLifeDays"] == 180 and reopened_product["brand"] == "Pepsi"
 
+    # Desktop 0.8.30: real receiver search and a product with no barcode.
+    search_path = f"/v1/stores/{STORE}/receiving/catalog/products"
+    call(search_path, expected=401, authenticated=False)
+    call(search_path, session=session, role="cashier", expected=403)
+    call(f"/v1/stores/{FOREIGN_STORE}/receiving/catalog/products", session=session,
+         role="receiver", expected=409)
+    no_barcode_id = str(uuid.uuid4())
+    no_barcode = {"productId": no_barcode_id, "initialSalePrice": 15000,
+                  "product": {"name": "Olma receiving no barcode", "unit": "kg", "requiresExpiry": False,
+                              "category": "Fruit", "brand": None, "shelfLifeDays": None, "barcodes": []}}
+    no_barcode_created = call(f"/v1/stores/{STORE}/receiving/catalog/priced-products", no_barcode,
+                              session=session, role="receiver")
+    assert no_barcode_created["productId"] == no_barcode_id and no_barcode_created["barcode"] == ""
+    assert no_barcode_created["quantityFactor"] == 1
+    assert call(f"/v1/stores/{STORE}/receiving/catalog/priced-products", no_barcode,
+                session=session, role="receiver") == no_barcode_created
+    found_by_name = call(search_path + "?q=Olma&offset=0", session=session, role="receiver")
+    assert any(row["productId"] == no_barcode_id and row["barcode"] == "" for row in found_by_name)
+    call(search_path + "?q=Olma&offset=1", session=session, role="receiver")
+    changed_no_barcode = json.loads(json.dumps(no_barcode))
+    changed_no_barcode["product"]["name"] = "Different name"
+    assert call(f"/v1/stores/{STORE}/receiving/catalog/priced-products", changed_no_barcode,
+                session=session, role="receiver", expected=409)["code"] == "product_id_reused"
+    assert sql(f"SELECT count(*) FROM products WHERE id = '{no_barcode_id}'") == "1"
+    assert sql(f"SELECT count(*) FROM stock_lots WHERE product_id = '{no_barcode_id}'") == "0"
+
     supplier_price = {"expectedVersion": 0, "productId": product_id, "packageUnit": "box",
                       "unitsPerPackage": 12, "packagePrice": 66000,
                       "validFrom": date.today().isoformat(), "validThrough": None}

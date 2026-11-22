@@ -76,7 +76,7 @@ internal sealed partial class PosService
     }
 
     private static bool IsStockMovementKind(string? kind) =>
-        kind is "receipt" or "sale" or "customerRefund" or "quarantine" or "inventory" or
+        kind is "quickReceipt" or "receipt" or "sale" or "customerRefund" or "quarantine" or "inventory" or
             "writeOffStock" or "writeOffQuarantine" or "supplierReturn" or "opening";
 
     private static StockMovementCursor? DecodeStockMovementCursor(string? cursor)
@@ -122,6 +122,12 @@ internal sealed partial class PosService
                        (l.org_id, l.store_id, l.receipt_id, l.product_id, l.lot_id)
                 WHERE (d.org_id, d.store_id) = ($1, $2) AND d.status = 'posted'
                     AND d.posted_at >= b.start_at AND d.posted_at < b.end_at
+                UNION ALL
+                SELECT 'quickReceipt', q.operation_id, b.no_register, q.created_by, q.posted_at,
+                    l.product_id, l.lot_id, l.quantity, 0, NULL, NULL, NULL, l.total_cost, NULL, NULL, l.total_cost
+                FROM quick_receivings q CROSS JOIN bounds b
+                JOIN quick_receiving_lines l USING (org_id,store_id,operation_id)
+                WHERE (q.org_id,q.store_id) = ($1,$2) AND q.posted_at >= b.start_at AND q.posted_at < b.end_at
                 UNION ALL
                 SELECT 'sale', s.id, s.register_id, s.cashier_id, s.created_at, l.product_id, l.lot_id,
                     -l.quantity, 0, NULL, NULL, NULL, NULL, NULL, NULL, -l.inventory_cost
