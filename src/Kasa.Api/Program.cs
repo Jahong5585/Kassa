@@ -158,6 +158,15 @@ builder.Services.AddRateLimiter(options =>
             QueueLimit = 0,
             AutoReplenishment = true
         }));
+    options.AddPolicy("mobile-refresh", context => RateLimitPartition.GetFixedWindowLimiter(
+        context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 30,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0,
+            AutoReplenishment = true
+        }));
 });
 builder.Services.AddOpenApi(options => options.AddDocumentTransformer((document, _, _) =>
 {
@@ -556,7 +565,7 @@ api.MapPost("/mobile-auth/login", async (MobileLogin request, MobileAuthService 
 api.MapPost("/mobile-auth/refresh", async (MobileRefresh request, MobileAuthService mobile,
     HttpContext context, CancellationToken ct) =>
     TypedResults.Ok(await mobile.Refresh(context, request, ct)))
-    .AllowAnonymous()
+    .AllowAnonymous().RequireRateLimiting("mobile-refresh")
     .WithName("MobileRefresh")
     .ProducesProblem(400).ProducesProblem(401).ProducesProblem(429);
 api.MapGet("/mobile-auth/current", async (MobileAuthService mobile, HttpContext context, CancellationToken ct) =>

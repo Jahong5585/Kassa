@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+import secrets
 import subprocess
 import time
 import urllib.error
@@ -21,7 +22,7 @@ EMPLOYEE_A_LOGIN = "android.cashier.a"
 EMPLOYEE_B_LOGIN = "android.cashier.b"
 STORE = "00000000-0000-0000-0000-000000000011"
 FOREIGN_STORE = "00000000-0000-0000-0000-000000000012"
-REGISTER = "00000000-0000-0000-0000-000000000021"
+REGISTER = "00000000-0000-0000-0000-000000009104"
 DEVICE = "00000000-0000-0000-0000-000000009102"
 EMPLOYEE_A = "00000000-0000-0000-0000-000000009101"
 EMPLOYEE_B = "00000000-0000-0000-0000-000000009103"
@@ -92,6 +93,9 @@ def main():
     assert spec["paths"]["/v1/mobile-auth/login"]["post"].get("security") == []
     assert spec["paths"]["/v1/mobile-auth/refresh"]["post"].get("security") == []
 
+    invalid_refresh, _ = call("/v1/mobile-auth/refresh", {}, expected=400, bearer=None)
+    assert invalid_refresh["code"] == "validation_failed"
+
     # A mobile password for an existing OIDC owner can only be established after OIDC confirmation.
     denied, _ = call("/v1/mobile-auth/credentials",
                      {"login": OWNER_LOGIN, "password": OWNER_PASSWORD, "deviceId": DEVICE},
@@ -142,8 +146,9 @@ def main():
         assert credential["mobileEnabled"] is True and credential["staffId"] == employee_id
         employees.append((employee, credential))
 
-    registers, _ = call(f"/v1/stores/{STORE}/registers?offset=0", **admin)
-    register = next(item for item in registers if item["registerId"] == REGISTER)
+    register, _ = call(f"/v1/stores/{STORE}/registers",
+                       {"registerId": REGISTER, "name": "Android integration register",
+                        "cashierId": EMPLOYEE_A, "registerKey": secrets.token_hex(32)}, **admin)
     assigned, _ = call(f"/v1/stores/{STORE}/registers/{REGISTER}/cashiers",
                        {"expectedVersion": register["version"],
                         "cashierIds": [EMPLOYEE_A, EMPLOYEE_B],

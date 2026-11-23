@@ -182,9 +182,10 @@ internal sealed partial class MobileAuthService(NpgsqlDataSource source, Operato
 
     public async Task<MobileSessionCreated> Refresh(HttpContext context, MobileRefresh request, CancellationToken ct)
     {
-        if (!request.RefreshToken.StartsWith(MobileAuthentication.RefreshPrefix, StringComparison.Ordinal) ||
+        if (string.IsNullOrWhiteSpace(request.RefreshToken) ||
+            !request.RefreshToken.StartsWith(MobileAuthentication.RefreshPrefix, StringComparison.Ordinal) ||
             request.RefreshToken.Length is < 48 or > 300)
-            throw new PosError(401, "mobile_refresh_token_invalid");
+            throw new PosError(400, "validation_failed");
         var digest = Digest(request.RefreshToken);
         await using var db = await source.OpenConnectionAsync(ct);
         await using var tx = await db.BeginTransactionAsync(ct);

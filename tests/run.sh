@@ -62,6 +62,8 @@ export ASPNETCORE_URLS="http://127.0.0.1:$api_port"
 export POS_TEST_LOCAL_PASSWORD="A7!$(hex | cut -c1-24)"
 export POS_TEST_LOCAL_HASH="$("$python_command" tests/password_hash.py)"
 export POS_TEST_OPERATOR_PASSWORD="Op9!$(hex | cut -c1-24)"
+export POS_TEST_MOBILE_OWNER_PASSWORD="Mo9!$(hex | cut -c1-24)"
+export POS_TEST_MOBILE_EMPLOYEE_PASSWORD="Me9!$(hex | cut -c1-24)"
 export POS_TEST_DB_CONTAINER="${COMPOSE_PROJECT_NAME}-db-1"
 export POS_TEST_URL="$ASPNETCORE_URLS"
 export ConnectionStrings__Pos="Host=127.0.0.1;Port=$POS_DB_PORT;Database=kasa;Username=kasa_api;Password=$POS_DB_APP_PASSWORD"
@@ -237,8 +239,17 @@ if ! "$promotion_check" && ! "$lot_retail_check" && ! "$label_check"; then
         exit 1
     fi
 fi
+if ! "$python_command" tests/mobile_auth.py; then
+    cat "$logs" >&2
+    exit 1
+fi
 if grep -Fq -- "$POS_TEST_OPERATOR_PASSWORD" "$logs"; then
     echo "Operator password leaked into application logs" >&2
+    exit 1
+fi
+if grep -Fq -- "$POS_TEST_MOBILE_OWNER_PASSWORD" "$logs" ||
+   grep -Fq -- "$POS_TEST_MOBILE_EMPLOYEE_PASSWORD" "$logs"; then
+    echo "Mobile password leaked into application logs" >&2
     exit 1
 fi
 if "$restore_check"; then
